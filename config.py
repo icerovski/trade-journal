@@ -8,10 +8,10 @@ BASE_DIR = Path(__file__).parent.resolve()
 # Database File
 DB_PATH = BASE_DIR / "simple_journal.db"
 
-# Yahoo/Price Config
-# (Assuming you still want to keep your separate price collector logic, 
-# point this to wherever that database lives)
-PRICES_DB_PATH = Path("C:/repos/price_collector/db/prices.db") 
+# IBKR Configuration
+IBKR_XML_PATH = BASE_DIR / "ibrk_import.xml"
+IBKR_TOKEN = "179255757524928752008505"
+IBKR_QUERY_ID = "1056708"
 
 # Risk Settings
 DEFAULT_ATR_WINDOW = 21

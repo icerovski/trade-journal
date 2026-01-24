@@ -5,7 +5,7 @@ from config import DB_PATH
 def get_conn():
     """Connects to the database and returns the connection object."""
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Allows accessing columns by name (row['ticker'])
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
@@ -24,7 +24,20 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print(f"Database initialized at {DB_PATH}")
+
+def trade_exists(date, ticker, side, quantity, price):
+    """Checks if a trade typically already exists to prevent duplication on import."""
+    conn = get_conn()
+    cursor = conn.execute(
+        """
+        SELECT id FROM trades 
+        WHERE date = ? AND ticker = ? AND side = ? AND quantity = ? AND price = ?
+        """,
+        (date, ticker.upper(), side.upper(), float(quantity), float(price))
+    )
+    exists = cursor.fetchone() is not None
+    conn.close()
+    return exists
 
 def add_trade(date, ticker, side, quantity, price, notes=""):
     """Simple insert function."""
@@ -35,4 +48,4 @@ def add_trade(date, ticker, side, quantity, price, notes=""):
     )
     conn.commit()
     conn.close()
-    print(f"✅ Trade recorded: {side} {quantity} {ticker} @ {price}")
+    # Print logic moved to main/service to avoid clutter during bulk imports
