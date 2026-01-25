@@ -1,106 +1,117 @@
 # dashboard.py
 import os
-import time
 import sys
 import pandas as pd
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich import box
 from manager import get_portfolio_data
 
 # --- CONFIGURATION ---
 REFRESH_SECONDS = 60
-COLOR_RESET = "\033[0m"
-COLOR_GREEN = "\033[92m"
-COLOR_RED = "\033[91m"
-COLOR_YELLOW = "\033[93m"
-COLOR_BOLD = "\033[1m"
 
-COLUMNS = [
-    ("TICKER", "ticker", 8, "<"),
-    ("QTY", "total_qty", 8, ">.2f"),
-    ("ENTRY", "avg_entry", 10, ">.2f"),
-    ("PRICE", "current_price", 10, ">.2f"),
-    ("MKT VAL", "market_value", 12, ">,.2f"),
-    ("P/L $", "unrealized_pl", 12, ">,.2f"),
-    ("P/L %", "pl_pct", 9, ">.2f"),
-]
+# Initialize Rich Console
+console = Console()
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def print_dashboard(sort_col="ticker", ascending=True):
-    """Fetches data, sorts it, and prints the full dashboard."""
-    # Retrieve Filtered DF AND the True Total NAV
+    """Fetches data and renders a beautiful table using Rich."""
+    
+    # 1. Fetch Data
     df, total_nav = get_portfolio_data()
     
     if df.empty and total_nav == 0:
-        print("\n📭 Portfolio is empty.")
+        console.print(Panel("📭 Portfolio is empty.", style="yellow"))
         return False
 
-    # 1. SORTING
+    # 2. Sort Data
     if not df.empty and sort_col in df.columns:
         df = df.sort_values(by=sort_col, ascending=ascending)
 
-    # 2. HEADER
+    # 3. HEADER (NAV Summary)
     visible_equity = df['market_value'].sum() if not df.empty else 0.0
     
-    print(f"\n{COLOR_BOLD}=== PORTFOLIO SNAPSHOT ==={COLOR_RESET}")
-    print(f"Total Account NAV:   ${total_nav:,.2f}  (All Assets & Cash)")
-    print(f"Visible Stock Equity: ${visible_equity:,.2f}")
-    print("-" * 50)
+    summary_text = (
+        f"[bold]Total Account NAV:[/bold]   [green]${total_nav:,.2f}[/green]  (All Assets)\n"
+        f"[bold]Visible Stock Equity:[/bold] [blue]${visible_equity:,.2f}[/blue]"
+    )
+    console.print(Panel(summary_text, title="PORTFOLIO SNAPSHOT", expand=False))
 
     if df.empty:
-        print("(No active stock positions to display)")
+        console.print("[italic dim]No active stock positions to display[/italic dim]")
         return True
 
-    # 3. TABLE HEADERS
-    header_parts = []
-    for name, _, width, fmt_spec in COLUMNS:
-        align = fmt_spec[0] if fmt_spec and fmt_spec[0] in "<>^" else "<"
-        s = f"{name:{align}{width}}"
-        header_parts.append(s)
+    # 4. BUILD THE TABLE
+    table = Table(box=box.SIMPLE_HEAD) # Clean, modern look
     
-    print(f"\n{COLOR_BOLD}" + " | ".join(header_parts) + f"{COLOR_RESET}")
-    print("-" * (sum(c[2] for c in COLUMNS) + 3 * (len(COLUMNS) - 1)))
+    # Define Columns (Rich handles width automatically)
+    table.add_column("TICKER", justify="left", style="bold cyan")
+    table.add_column("QTY", justify="right")
+    table.add_column("ENTRY", justify="right")
+    table.add_column("PRICE", justify="right")
+    table.add_column("MKT VAL", justify="right")
+    table.add_column("P/L $", justify="right")
+    table.add_column("P/L %", justify="right")
 
-    # 4. ROWS
+    # 5. ADD ROWS
     for _, row in df.iterrows():
-        row_parts = []
-        for _, col_key, width, fmt_spec in COLUMNS:
-            val = row.get(col_key)
-            if isinstance(val, (int, float)):
-                val_str = f"{val:{fmt_spec}}"
-            else:
-                align = fmt_spec[0] if fmt_spec and fmt_spec[0] in "<>^" else "<"
-                val_str = f"{str(val):{align}{width}}"
+        # Color Logic for P/L
+        pl_val = row['unrealized_pl']
+        pl_pct = row['pl_pct']
+        
+        pl_color = "green" if pl_val >= 0 else "red"
+        
+        # Format values
+        ticker = str(row['ticker'])
+        qty = f"{row['total_qty']:,.2f}"
+        entry = f"{row['avg_entry']:,.2f}"
+        price = f"{row['current_price']:,.2f}"
+        mkt_val = f"{row['market_value']:,.2f}"
+        
+        # Apply color tags to the specific P/L cells
+        pl_str = f"[{pl_color}]{pl_val:,.2f}[/{pl_color}]"
+        pct_str = f"[{pl_color}]{pl_pct:,.2f}%[/{pl_color}]"
+        
+        table.add_row(ticker, qty, entry, price, mkt_val, pl_str, pct_str)
 
-            if col_key in ["unrealized_pl", "pl_pct"] and isinstance(val, (int, float)):
-                if val > 0: val_str = f"{COLOR_GREEN}{val_str}{COLOR_RESET}"
-                elif val < 0: val_str = f"{COLOR_RED}{val_str}{COLOR_RESET}"
-            
-            row_parts.append(val_str)
-        print(" | ".join(row_parts))
-
-    # 5. FOOTER (Visible Only)
-    print("-" * (sum(c[2] for c in COLUMNS) + 3 * (len(COLUMNS) - 1)))
-    
+    # 6. TOTALS ROW (Footer)
     total_pl = df['unrealized_pl'].sum()
     total_cost = (df['total_qty'] * df['avg_entry']).sum()
     total_pct = (total_pl / total_cost * 100) if total_cost else 0.0
+    tot_color = "green" if total_pl >= 0 else "red"
 
-    pl_color = COLOR_GREEN if total_pl >= 0 else COLOR_RED
-    
-    print(f"{COLOR_BOLD}Visible Unrealized P/L: {pl_color}${total_pl:,.2f} ({total_pct:.2f}%){COLOR_RESET}")
+    table.add_section() # Adds a nice separator line
+    table.add_row(
+        "TOTALS", 
+        "", "", "", 
+        f"[bold]${visible_equity:,.2f}[/bold]", 
+        f"[bold {tot_color}]${total_pl:,.2f}[/bold {tot_color}]", 
+        f"[bold {tot_color}]{total_pct:,.2f}%[/bold {tot_color}]"
+    )
+
+    console.print(table)
     return True
 
 def dashboard_loop():
     sort_col = "ticker"
     ascending = True
-    sort_map = {"t": "ticker", "q": "total_qty", "e": "avg_entry", "p": "current_price", "v": "market_value", "pl": "unrealized_pl", "%": "pl_pct"}
+    
+    # Map for easy typing
+    sort_map = {
+        "t": "ticker", "q": "total_qty", "e": "avg_entry", 
+        "p": "current_price", "v": "market_value", "pl": "unrealized_pl", "%": "pl_pct"
+    }
 
     while True:
         try:
             clear_screen()
             print_dashboard(sort_col, ascending)
-            print(f"\n[R]efresh ({REFRESH_SECONDS}s) | [S]ort | [Q]uit")
+            
+            console.print(f"\n[dim]Refresh: {REFRESH_SECONDS}s | [bold]S[/bold]ort | [bold]Q[/bold]uit[/dim]")
             
             cmd = input("> ").strip().lower()
 
@@ -109,7 +120,10 @@ def dashboard_loop():
             elif cmd == 's':
                 key = input("Sort by (t/q/e/p/v/pl/%): ").strip().lower()
                 if key in sort_map:
-                    sort_col = sort_map[key]
-                    ascending = not ascending if sort_map[key] == sort_col else True
+                    if sort_map[key] == sort_col:
+                        ascending = not ascending
+                    else:
+                        sort_col = sort_map[key]
+                        ascending = True
         except KeyboardInterrupt:
             break
