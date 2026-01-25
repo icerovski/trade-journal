@@ -6,12 +6,7 @@ from pathlib import Path
 # Get the folder where this code lives
 BASE_DIR = Path(__file__).parent.resolve()
 
-# --- DATA DIRECTORY SETUP ---
-# This ensures the 'data' folder always exists
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
-
-# --- SECURITY: LOAD .ENV FILE ---
+# --- 1. LOAD .ENV FILE ---
 env_path = BASE_DIR / ".env"
 if env_path.exists():
     with open(env_path) as f:
@@ -23,9 +18,26 @@ if env_path.exists():
                 except ValueError:
                     pass
 
-# --- CONFIGURATION ---
+# --- 2. DATA DIRECTORY SETUP ---
+# Check if a custom path is set in .env (e.g. OneDrive)
+custom_path = os.environ.get("JOURNAL_DATA_DIR")
 
-# Database File (Now inside data/)
+if custom_path:
+    DATA_DIR = Path(custom_path)
+    # Safety check: if the path implies a folder that doesn't exist, try to create it
+    # or warn the user.
+    if not DATA_DIR.exists():
+        print(f"⚠️  Warning: Custom data path not found: {DATA_DIR}")
+        print("Creating it now...")
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+else:
+    # Fallback to local 'data' folder
+    DATA_DIR = BASE_DIR / "data"
+    DATA_DIR.mkdir(exist_ok=True)
+
+# --- 3. CONFIGURATION ---
+
+# Database File
 DB_PATH = DATA_DIR / "simple_journal.db"
 
 # Risk Settings
@@ -37,6 +49,6 @@ IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "MISSING_TOKEN")
 IBKR_QUERY_ID_OPENING = os.environ.get("IBKR_QUERY_ID_OPENING", "0")
 IBKR_QUERY_ID_YTD = os.environ.get("IBKR_QUERY_ID_YTD", "0")
 
-# XML File Paths (Now inside data/)
+# XML File Paths
 IBKR_OPENING_XML = DATA_DIR / "ibkr_opening.xml"
 IBKR_YTD_XML = DATA_DIR / "ibkr_ytd.xml"
