@@ -1,9 +1,11 @@
 # manager.py
 import pandas as pd
 import yfinance as yf
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from dateutil.parser import parse
 from db import get_conn
+from config import EXCLUDED_ASSET_CATEGORIES, EXCLUDED_TICKERS, IBKR_PRICING_XML # <--- Imported
 
 # ---------------------------------------------------------
 # 1. INPUT PARSING UTILS
@@ -38,10 +40,38 @@ def parse_input_string(user_input):
 # 2. CORE PORTFOLIO LOGIC
 # ---------------------------------------------------------
 
-def calculate_ticker_stats(group):
-    # Sort Chronologically
-    group = group.sort_values(['date', 'id'])
+def load_ibkr_prices():
+    """
+    Parses the ibkr_pricing.xml file to get 'markPrice' for tickers.
+    Returns a dict: {'AAPL': 150.25, 'BOND_XYZ': 98.5}
+    """
+    if not IBKR_PRICING_XML.exists():
+        return {}
     
+    price_map = {}
+    try:
+        tree = ET.parse(IBKR_PRICING_XML)
+        root = tree.getroot()
+        positions = root.findall(".//OpenPosition")
+        for p in positions:
+            sym = p.get('symbol')
+            # 'markPrice' is the standard field for current value
+            price = p.get('markPrice') or p.get('positionValue') # Fallback if markPrice missing
+            
+            # If markPrice is missing, try calculating: value / position
+            if not price and p.get('position') and p.get('position') != '0':
+                 val = float(p.get('positionValue') or 0)
+                 qty = float(p.get('position'))
+                 price = val / qty
+            
+            if sym and price:
+                price_map[sym] = float(price)
+    except Exception:
+        pass # Fail silently, we have other fallbacks
+    return price_map
+
+def calculate_ticker_stats(group):
+    group = group.sort_values(['date', 'id'])
     net_qty = 0.0
     avg_cost = 0.0
     
@@ -53,7 +83,6 @@ def calculate_ticker_stats(group):
         if side in ['EXP', 'EXPIRE']:
             side = 'SELL' if net_qty > 0 else 'BUY'
 
-        # Logic for Long/Short/Flat states
         if abs(net_qty) < 0.000001:
             if side == 'BUY':
                 net_qty = trade_qty
@@ -84,42 +113,70 @@ def calculate_ticker_stats(group):
     return pd.Series({'total_qty': net_qty, 'avg_entry': avg_cost})
 
 
-def get_portfolio_df():
+def get_portfolio_data():
     conn = get_conn()
     df = pd.read_sql("SELECT * FROM trades", conn)
     conn.close()
 
     if df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), 0.0
 
+    # 1. PASS ONE: Calculate Everything
     df['signed_qty'] = df.apply(lambda x: x['quantity'] if x['side'] == 'BUY' else -x['quantity'], axis=1)
-    
-    # Pre-filter closed positions to optimize performance
     qty_check = df.groupby('ticker')['signed_qty'].sum()
     active_tickers = qty_check[qty_check.abs() > 0.001].index.tolist()
     
     if not active_tickers:
-        return pd.DataFrame()
+        return pd.DataFrame(), 0.0
 
-    df = df[df['ticker'].isin(active_tickers)].copy()
-
-    # Apply core logic
-    portfolio = df.groupby('ticker').apply(calculate_ticker_stats).reset_index()
+    master_df = df[df['ticker'].isin(active_tickers)].copy()
+    portfolio = master_df.groupby('ticker').apply(calculate_ticker_stats).reset_index()
     portfolio = portfolio[portfolio['total_qty'].abs() > 0.001].copy()
 
-    if portfolio.empty:
-        return pd.DataFrame()
+    # --- PRICE SOURCES ---
+    # 1. IBKR Snapshot (The most accurate for Bonds/Options)
+    ibkr_prices = load_ibkr_prices()
 
-    def get_live_price(ticker):
+    # 2. Valuation Logic
+    def get_valuation_price(row):
+        ticker = row['ticker']
+        if ticker in ['USD', 'EUR', 'GBP']: return 1.0
+        
+        # Priority 1: IBKR Snapshot (If available)
+        # This solves the "Yahoo doesn't know Bonds" problem
+        if ticker in ibkr_prices and ibkr_prices[ticker] > 0:
+            return ibkr_prices[ticker]
+
+        # Priority 2: Live Price (Yahoo Finance)
         try:
-            return yf.Ticker(ticker).fast_info['last_price']
+            price = yf.Ticker(ticker).fast_info['last_price']
+            if price and price > 0:
+                return price
         except:
-            return 0.0
+            pass
+            
+        # Priority 3: Average Entry Cost (Cost Basis)
+        return row['avg_entry'] if row['avg_entry'] > 0 else 1.0
 
-    portfolio['current_price'] = portfolio['ticker'].apply(get_live_price)
+    portfolio['current_price'] = portfolio.apply(get_valuation_price, axis=1)
     portfolio['market_value'] = portfolio['total_qty'] * portfolio['current_price']
-    portfolio['unrealized_pl'] = portfolio['market_value'] - (portfolio['total_qty'] * portfolio['avg_entry'])
     
+    # True NAV
+    total_nav = portfolio['market_value'].sum()
+
+    # 3. PASS TWO: View Filters
+    cat_map = master_df.drop_duplicates('ticker').set_index('ticker')['asset_category']
+    portfolio['asset_category'] = portfolio['ticker'].map(cat_map).fillna('STK')
+
+    if not portfolio.empty:
+        mask_cat = ~portfolio['asset_category'].isin(EXCLUDED_ASSET_CATEGORIES)
+        portfolio = portfolio[mask_cat].copy()
+
+    if not portfolio.empty:
+        mask_ticker = ~portfolio['ticker'].isin(EXCLUDED_TICKERS)
+        portfolio = portfolio[mask_ticker].copy()
+
+    portfolio['unrealized_pl'] = portfolio['market_value'] - (portfolio['total_qty'] * portfolio['avg_entry'])
     portfolio['pl_pct'] = 0.0
     mask = portfolio['avg_entry'] > 0
     portfolio.loc[mask, 'pl_pct'] = (
@@ -127,7 +184,7 @@ def get_portfolio_df():
         (portfolio.loc[mask, 'total_qty'] * portfolio.loc[mask, 'avg_entry'])
     ) * 100
 
-    return portfolio
+    return portfolio, total_nav
 
 # ---------------------------------------------------------
 # 3. ATR & RISK LOGIC
@@ -136,65 +193,46 @@ def get_portfolio_df():
 class ATRCalculator:
     @staticmethod
     def calculate(df, window=21, method='SMA'):
-        if df.empty or len(df) < window + 1:
-            return None
+        if df.empty or len(df) < window + 1: return None
         df.columns = df.columns.str.lower()
         high_low = df['high'] - df['low']
         high_close = (df['high'] - df['close'].shift()).abs()
         low_close = (df['low'] - df['close'].shift()).abs()
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        if method == 'EMA':
-            atr = tr.ewm(span=window, adjust=False).mean()
-        else:
-            atr = tr.rolling(window=window).mean()
+        if method == 'EMA': atr = tr.ewm(span=window, adjust=False).mean()
+        else: atr = tr.rolling(window=window).mean()
         return float(atr.iloc[-1]) if not atr.dropna().empty else None
 
     @staticmethod
     def fetch_yf_data(ticker, timeframe):
-        tf_map = {
-            'daily': {'interval': '1d', 'period': '1y'},
-            'weekly': {'interval': '1wk', 'period': '2y'},
-            'monthly': {'interval': '1mo', 'period': '5y'},
-        }
+        tf_map = {'daily': {'interval': '1d', 'period': '1y'}, 'weekly': {'interval': '1wk', 'period': '2y'}, 'monthly': {'interval': '1mo', 'period': '5y'}}
         cfg = tf_map.get(timeframe, tf_map['daily'])
-        try:
-            return yf.Ticker(ticker).history(period=cfg['period'], interval=cfg['interval'])
-        except:
-            return pd.DataFrame()
+        try: return yf.Ticker(ticker).history(period=cfg['period'], interval=cfg['interval'])
+        except: return pd.DataFrame()
 
     @staticmethod
     def get_highest_high(ticker, since_date):
         try:
             df = yf.Ticker(ticker).history(start=since_date, interval="1d")
             return df['High'].max() if not df.empty else 0.0
-        except:
-            return 0.0
+        except: return 0.0
 
 def get_atr_gauge(ticker, entry_price, entry_date_str):
     configs = [
-        ('ATR_21d_SMA', 'daily', 21, 'SMA'),
-        ('ATR_21d_EMA', 'daily', 21, 'EMA'),
-        ('ATR_12w_SMA', 'weekly', 12, 'SMA'),
-        ('ATR_12w_EMA', 'weekly', 12, 'EMA'),
-        ('ATR_6m_SMA',  'monthly', 6, 'SMA'),
-        ('ATR_6m_EMA',  'monthly', 6, 'EMA'),
+        ('ATR_21d_SMA', 'daily', 21, 'SMA'), ('ATR_21d_EMA', 'daily', 21, 'EMA'),
+        ('ATR_12w_SMA', 'weekly', 12, 'SMA'), ('ATR_12w_EMA', 'weekly', 12, 'EMA'),
+        ('ATR_6m_SMA',  'monthly', 6, 'SMA'), ('ATR_6m_EMA',  'monthly', 6, 'EMA'),
     ]
-    
     highest_high = 0.0
     if entry_date_str:
         highest_high = ATRCalculator.get_highest_high(ticker, entry_date_str)
-    
-    if highest_high < entry_price:
-        highest_high = entry_price
+    if highest_high < entry_price: highest_high = entry_price
 
     results = {}
     data_cache = {}
-
     for label, tf, win, meth in configs:
-        if tf not in data_cache:
-            data_cache[tf] = ATRCalculator.fetch_yf_data(ticker, tf)
+        if tf not in data_cache: data_cache[tf] = ATRCalculator.fetch_yf_data(ticker, tf)
         atr = ATRCalculator.calculate(data_cache[tf], window=win, method=meth)
-        
         res = {'atr': atr, 'fsl': None, 'fpct': None, 'tsl': None, 'tpct': None}
         if atr:
             res['fsl'] = entry_price - atr
@@ -202,5 +240,4 @@ def get_atr_gauge(ticker, entry_price, entry_date_str):
             res['tsl'] = highest_high - atr
             res['tpct'] = (atr / highest_high) * 100
         results[label] = res
-
     return results, highest_high

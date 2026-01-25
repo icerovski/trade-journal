@@ -11,7 +11,8 @@ from config import (
     IBKR_QUERY_ID_OPENING, 
     IBKR_QUERY_ID_YTD, 
     IBKR_OPENING_XML, 
-    IBKR_YTD_XML
+    IBKR_YTD_XML,
+    IBKR_PRICING_XML # <--- Imported
 )
 
 # --- GENERIC DOWNLOADER ---
@@ -60,7 +61,19 @@ def download_flex_report(query_id, save_path):
         print(f"❌ Connection failed: {e}")
         return False
 
-# --- 1. OPENING BALANCE LOGIC (SNAPSHOT) ---
+# --- NEW: FETCH PRICES ONLY ---
+def fetch_latest_prices():
+    """
+    Downloads the Open Positions report (Query 1) to use as a Pricing Snapshot.
+    Does NOT import trades to DB.
+    """
+    print("🔄 Fetching Pricing Snapshot (using Open Positions Query)...")
+    if download_flex_report(IBKR_QUERY_ID_OPENING, IBKR_PRICING_XML):
+        print("✅ Pricing snapshot saved.")
+        return True
+    return False
+
+# --- 1. OPENING BALANCE LOGIC ---
 def fetch_opening_balance(target_date_str=None):
     if download_flex_report(IBKR_QUERY_ID_OPENING, IBKR_OPENING_XML):
         print("✅ XML downloaded. Parsing Opening Positions...")
@@ -96,7 +109,6 @@ def parse_opening_positions(file_path, target_date_str=None):
             side = 'BUY' if position > 0 else 'SELL'
             qty = abs(position)
             
-            # Synthetic ID: OPEN-{Date}-{Ticker}
             syn_id = f"OPEN-{opening_date}-{ticker}"
             
             if trade_exists(syn_id): continue
@@ -109,7 +121,7 @@ def parse_opening_positions(file_path, target_date_str=None):
                 price=cost_basis,
                 asset_category=asset_cat,
                 notes="Opening Balance",
-                source="IBKR_SNAPSHOT",  # <--- Source Tag
+                source="IBKR_SNAPSHOT",
                 external_id=syn_id
             )
             count += 1
@@ -146,7 +158,6 @@ def parse_ytd_trades(file_path, start_date_str=None, end_date_str=None):
         date_skip_count = 0
 
         for t in trades:
-            # 1. Date Filter
             raw_date = t.get('tradeDate')
             if not raw_date: continue
             
@@ -164,13 +175,11 @@ def parse_ytd_trades(file_path, start_date_str=None, end_date_str=None):
                 date_skip_count += 1
                 continue
 
-            # 2. Duplicate Check
             external_id = t.get('tradeID') or t.get('ibOrderId')
             if external_id and trade_exists(external_id):
                 skipped_count += 1
                 continue
 
-            # 3. Import
             ticker = t.get('symbol')
             side = t.get('buySell')
             qty = t.get('quantity')
@@ -193,7 +202,7 @@ def parse_ytd_trades(file_path, start_date_str=None, end_date_str=None):
                 asset_category=asset_cat,
                 expiry=fmt_expiry,
                 notes="IBKR YTD",
-                source="IBKR_YTD",  # <--- Source Tag
+                source="IBKR_YTD",
                 external_id=external_id
             )
             added_count += 1

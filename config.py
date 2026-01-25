@@ -19,19 +19,14 @@ if env_path.exists():
                     pass
 
 # --- 2. DATA DIRECTORY SETUP ---
-# Check if a custom path is set in .env (e.g. OneDrive)
 custom_path = os.environ.get("JOURNAL_DATA_DIR")
-
 if custom_path:
     DATA_DIR = Path(custom_path)
-    # Safety check: if the path implies a folder that doesn't exist, try to create it
-    # or warn the user.
     if not DATA_DIR.exists():
         print(f"⚠️  Warning: Custom data path not found: {DATA_DIR}")
         print("Creating it now...")
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 else:
-    # Fallback to local 'data' folder
     DATA_DIR = BASE_DIR / "data"
     DATA_DIR.mkdir(exist_ok=True)
 
@@ -52,3 +47,8 @@ IBKR_QUERY_ID_YTD = os.environ.get("IBKR_QUERY_ID_YTD", "0")
 # XML File Paths
 IBKR_OPENING_XML = DATA_DIR / "ibkr_opening.xml"
 IBKR_YTD_XML = DATA_DIR / "ibkr_ytd.xml"
+IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
+
+# --- 4. VIEW SETTINGS ---
+EXCLUDED_ASSET_CATEGORIES = ["OPT", "BOND", "BILL", "WAR", "CASH", "FOREX", "FX", "CURRENCY"]
+EXCLUDED_TICKERS = ["EUR.USD", "USD.EUR"]
