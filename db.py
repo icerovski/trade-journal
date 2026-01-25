@@ -58,22 +58,22 @@ def add_trade(date, ticker, side, quantity, price, asset_category="STK",
 
 def archive_database():
     """
-    Renames the current database file to a timestamped backup
-    and initializes a fresh one.
+    Renames the current database file to a timestamped backup inside data/
     """
     if not DB_PATH.exists():
         print("❌ No database found to archive.")
         return
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Save archive in the same DATA_DIR
     archive_name = f"journal_archive_{timestamp}.db"
-    archive_path = BASE_DIR / archive_name
+    archive_path = DB_PATH.parent / archive_name 
     
     try:
         shutil.move(str(DB_PATH), str(archive_path))
         print(f"✅ Database archived to: {archive_name}")
         print("🔄 Initializing fresh database...")
         init_db()
-        print("✅ New 'simple_journal.db' created. Ready for Opening Balance.")
+        print("✅ New 'simple_journal.db' created.")
     except Exception as e:
         print(f"❌ Error archiving database: {e}")

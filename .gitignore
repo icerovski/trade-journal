@@ -9,8 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-# Database (Local data)
-*.db
+# The entire data directory
+data/
 
 # Secrets (Sensitive data)
 .env
