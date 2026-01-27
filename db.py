@@ -1,79 +1,68 @@
 # db.py
 import sqlite3
-import shutil
+import os
 from datetime import datetime
-from config import DB_PATH, BASE_DIR
+from config import DB_PATH
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return sqlite3.connect(DB_PATH)
 
 def init_db():
     conn = get_conn()
-    conn.execute("""
+    c = conn.cursor()
+    # Trades table: Stores history imported from IBKR
+    c.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,       -- YYYY-MM-DD
-            ticker TEXT NOT NULL,     -- AAPL
-            side TEXT NOT NULL,       -- BUY, SELL, EXP
-            quantity REAL NOT NULL,   -- Always positive
-            price REAL NOT NULL,      -- Execution price
-            asset_category TEXT DEFAULT 'STK',
-            expiry TEXT,              -- YYYY-MM-DD (for options)
+            date TEXT,
+            ticker TEXT,
+            side TEXT,
+            quantity REAL,
+            price REAL,
+            asset_category TEXT,
+            expiry TEXT,
             notes TEXT,
-            source TEXT DEFAULT 'MANUAL', -- 'MANUAL', 'IBKR_SNAPSHOT', 'IBKR_YTD'
-            external_id TEXT UNIQUE   -- IBKR Trade ID to prevent duplicates
+            source TEXT,
+            external_id TEXT UNIQUE
         )
-    """)
+    ''')
     conn.commit()
     conn.close()
 
-def trade_exists(external_id):
-    if not external_id:
-        return False
+def add_trade(date, ticker, side, quantity, price, asset_category="STK", expiry=None, notes="", source="MANUAL", external_id=None):
+    """
+    Inserts a trade into the database.
+    Used mainly by ibkr.py to save imported XML history.
+    """
     conn = get_conn()
-    cursor = conn.execute("SELECT 1 FROM trades WHERE external_id = ?", (external_id,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
-
-def add_trade(date, ticker, side, quantity, price, asset_category="STK", 
-              expiry=None, notes="", source="MANUAL", external_id=None):
-    conn = get_conn()
+    c = conn.cursor()
     try:
-        conn.execute(
-            """INSERT INTO trades 
-               (date, ticker, side, quantity, price, asset_category, expiry, notes, source, external_id) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (date, ticker.upper(), side.upper(), float(quantity), float(price), 
-             asset_category, expiry, notes, source, external_id)
-        )
+        c.execute('''
+            INSERT OR IGNORE INTO trades 
+            (date, ticker, side, quantity, price, asset_category, expiry, notes, source, external_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (date, ticker, side, quantity, price, asset_category, expiry, notes, source, external_id))
         conn.commit()
-        print(f"✅ Recorded: {side} {quantity} {ticker} @ {price}")
     except sqlite3.IntegrityError:
-        print(f"⚠️  Skipping duplicate trade (ID: {external_id})")
+        print(f"⚠️ Trade {external_id} already exists.")
     finally:
         conn.close()
 
-def archive_database():
-    """
-    Renames the current database file to a timestamped backup inside data/
-    """
-    if not DB_PATH.exists():
-        print("❌ No database found to archive.")
-        return
+def trade_exists(external_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM trades WHERE external_id = ?", (external_id,))
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Save archive in the same DATA_DIR
-    archive_name = f"journal_archive_{timestamp}.db"
-    archive_path = DB_PATH.parent / archive_name 
-    
-    try:
-        shutil.move(str(DB_PATH), str(archive_path))
-        print(f"✅ Database archived to: {archive_name}")
-        print("🔄 Initializing fresh database...")
+def archive_database():
+    if os.path.exists(DB_PATH):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_name = f"{DB_PATH}.{timestamp}.bak"
+        os.rename(DB_PATH, new_name)
+        print(f"📦 Database archived to: {new_name}")
         init_db()
-        print("✅ New 'simple_journal.db' created.")
-    except Exception as e:
-        print(f"❌ Error archiving database: {e}")
+        print("✨ New database initialized.")
+    else:
+        print("❌ No database found to archive.")

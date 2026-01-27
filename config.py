@@ -1,54 +1,32 @@
 # config.py
 import os
-import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Get the folder where this code lives
-BASE_DIR = Path(__file__).parent.resolve()
+# Load secrets from .env file (Token & IDs)
+load_dotenv()
 
-# --- 1. LOAD .ENV FILE ---
-env_path = BASE_DIR / ".env"
-if env_path.exists():
-    with open(env_path) as f:
-        for line in f:
-            if line.strip() and not line.startswith("#"):
-                try:
-                    key, value = line.strip().split("=", 1)
-                    os.environ[key] = value.strip()
-                except ValueError:
-                    pass
+# --- PATHS ---
+# We define the project root and data directory
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = BASE_DIR / "portfolio.db"
 
-# --- 2. DATA DIRECTORY SETUP ---
-custom_path = os.environ.get("JOURNAL_DATA_DIR")
-if custom_path:
-    DATA_DIR = Path(custom_path)
-    if not DATA_DIR.exists():
-        print(f"⚠️  Warning: Custom data path not found: {DATA_DIR}")
-        print("Creating it now...")
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-else:
-    DATA_DIR = BASE_DIR / "data"
-    DATA_DIR.mkdir(exist_ok=True)
+# Ensure data directory exists
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- 3. CONFIGURATION ---
+# XML File Destinations (The "Source of Truth" files)
+IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"  # Stores Option 2 (Snapshot)
+IBKR_YTD_XML = DATA_DIR / "ibkr_ytd.xml"          # Stores Option 3 (History)
+IBKR_OPENING_XML = DATA_DIR / "ibkr_opening.xml"  # Stores Option 4 (Opening)
 
-# Database File
-DB_PATH = DATA_DIR / "simple_journal.db"
-
-# Risk Settings
-DEFAULT_ATR_WINDOW = 21
-RISK_REWARD_RATIO = 2.0
-
-# IBKR Configuration
+# --- IBKR API SECRETS ---
+# You must set these in your .env file!
 IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "MISSING_TOKEN")
-IBKR_QUERY_ID_OPENING = os.environ.get("IBKR_QUERY_ID_OPENING", "0")
-IBKR_QUERY_ID_YTD = os.environ.get("IBKR_QUERY_ID_YTD", "0")
+IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")       # Maps to Option 2
+IBKR_QUERY_ID_YTD = os.environ.get("IBKR_QUERY_ID_YTD", "0")       # Maps to Option 3
+IBKR_QUERY_ID_OPENING = os.environ.get("IBKR_QUERY_ID_OPENING", "0") # Maps to Option 4
 
-# XML File Paths
-IBKR_OPENING_XML = DATA_DIR / "ibkr_opening.xml"
-IBKR_YTD_XML = DATA_DIR / "ibkr_ytd.xml"
-IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
-
-# --- 4. VIEW SETTINGS ---
-EXCLUDED_ASSET_CATEGORIES = ["OPT", "BOND", "BILL", "WAR", "CASH", "FOREX", "FX", "CURRENCY"]
-EXCLUDED_TICKERS = ["EUR.USD", "USD.EUR"]
+# --- FILTERS ---
+EXCLUDED_TICKERS = {'EUR', 'USD', 'GBP'}  # Currencies to hide from the table
+EXCLUDED_ASSET_CATEGORIES = {'CASH'}      # Categories to hide
