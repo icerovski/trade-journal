@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich import box
 from manager import get_portfolio_data
+from ibkr import fetch_nav_data
 
 # --- CONFIGURATION ---
 REFRESH_SECONDS = 60
@@ -17,6 +18,49 @@ console = Console()
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
+
+def print_nav_table(force_update=True):
+    """
+    Fetches data and prints the NAV table.
+    """
+    data = fetch_nav_data(force_download=force_update)
+    
+    if not data:
+        console.print("[red]No NAV data available.[/red]")
+        return 0.0
+
+    total_nav, accounts = data
+    
+    # --- BUILD TABLE ---
+    table = Table(box=box.SIMPLE_HEAD, title="[bold]FAMILY PORTFOLIO NAV[/bold]", title_justify="left")
+    
+    table.add_column("ALIAS", justify="left", style="bold cyan")
+    table.add_column("ACCOUNT ID", justify="left", style="dim")
+    table.add_column("NAV (EUR)", justify="right", style="bold green")
+    table.add_column("% ALLOC", justify="right")
+
+    for acc in accounts:
+        # Calculate percentage
+        pct = (acc['nav'] / total_nav * 100) if total_nav else 0.0
+        
+        table.add_row(
+            acc['alias'],
+            acc['id'],
+            f"€{acc['nav']:,.2f}",
+            f"{pct:.1f}%"
+        )
+
+    # --- FOOTER ---
+    table.add_section()
+    table.add_row(
+        "TOTAL", 
+        "", 
+        f"[bold underline]€{total_nav:,.2f}[/bold underline]", 
+        "100%"
+    )
+    
+    console.print(table)
+    return total_nav
 
 def print_dashboard(sort_col="ticker", ascending=True):
     """Fetches data and renders a beautiful table using Rich."""

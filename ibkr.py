@@ -10,6 +10,8 @@ from config import (
     IBKR_TOKEN, 
     IBKR_QUERY_ID_OPENING, 
     IBKR_QUERY_ID_YTD, 
+    IBKR_QUERY_ID_NAV,
+    IBKR_NAV_XML,
     IBKR_OPENING_XML, 
     IBKR_YTD_XML,
     IBKR_PRICING_XML # <--- Imported
@@ -212,3 +214,80 @@ def parse_ytd_trades(file_path, start_date_str=None, end_date_str=None):
         
     except Exception as e:
         print(f"❌ Error parsing YTD XML: {e}")
+    
+# --- 3. NAV / ACCOUNT BALANCE LOGIC ---
+def fetch_nav_data(force_download=False):
+    """
+    Orchestrates getting the NAV/Cash report using IBKR_QUERY_ID_NAV.
+    1. Downloads fresh data if force_download=True.
+    2. Parses the XML.
+    Returns: (total_nav, list_of_accounts)
+    """
+    if force_download:
+        print("🔄 Downloading fresh NAV report...")
+        if not download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_XML):
+            print("❌ Download failed.")
+            return None
+
+    # Parse whatever file we have (fresh or cached)
+    return parse_nav_report(IBKR_NAV_XML)
+
+    # print("--- Fetching Account NAV ---")
+    # if download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_XML):
+    #     print("✅ NAV Report downloaded. Parsing...")
+    #     return parse_nav_report(IBKR_NAV_XML)
+    # return None
+
+def parse_nav_report(file_path):
+    """
+    Parses the NAV report for MULTIPLE sub-accounts.
+    Extracts Account ID, Alias, and Net Liquidation Value (total).
+    Returns list of account dicts.
+    """
+    if not file_path.exists():
+        return None
+    
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        
+        # IBKR creates a separate FlexStatement for each sub-account
+        statements = root.findall(".//FlexStatement")
+        
+        if not statements:
+            print("❌ No account statements found in XML.")
+            return None
+
+        accounts = []
+        grand_total_nav = 0.0
+        
+        for stmt in statements:
+            # 1. Get Account ID
+            acct_id = stmt.get('accountId', 'Unknown')
+            
+            # 2. Find the Equity Summary (Base Currency)
+            summary = stmt.find(".//EquitySummaryByReportDateInBase")
+            
+            if summary is not None:
+                # 3. Extract Details
+                alias = summary.get('acctAlias', '-')
+                nav = float(summary.get('total', 0.0))
+                cash = float(summary.get('cash', 0.0))
+                
+                # 4. Accumulate
+                accounts.append({
+                    'id': acct_id,
+                    'alias': alias,
+                    'nav': nav,
+                    'cash': cash
+                })
+                grand_total_nav += nav
+
+        # 5. Sort by Alias for consistency
+        accounts.sort(key=lambda x: x['alias'])
+
+        return grand_total_nav, accounts
+
+    except Exception as e:
+        print(f"❌ Error parsing NAV XML: {e}")
+        return None

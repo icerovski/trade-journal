@@ -3,8 +3,8 @@ import sys
 from datetime import datetime
 from db import init_db, add_trade, archive_database
 from manager import get_atr_gauge, parse_input_string
-from dashboard import dashboard_loop
-from ibkr import fetch_opening_balance, fetch_ytd_trades, fetch_latest_prices # <--- Added
+from dashboard import dashboard_loop, print_nav_table
+from ibkr import fetch_opening_balance, fetch_ytd_trades, fetch_latest_prices
 
 # --- CONSTANTS ---
 TRADE_PROMPT = """
@@ -31,7 +31,8 @@ def show_menu():
     print("6. Fetch Opening Balances (Snapshot)")
     print("7. Fetch Trades (Date Range)")
     print("8. Fetch Latest Prices (IBKR Snapshot)")
-    print("9. ARCHIVE & START NEW YEAR")
+    print("9. Fetch Total NAV (IBKR Balance)") # <--- New Option
+    print("10. ARCHIVE & START NEW YEAR")     # <--- Renumber Archive
     print("0. Exit")
     return input("Choice: ").strip()
 
@@ -130,6 +131,11 @@ def handle_latest_prices():
     print("It will NOT import new trades.")
     fetch_latest_prices()
 
+def handle_nav_report():
+    print("\n--- Fetching Account Balances ---")
+    # We pass True to force a fresh download from IBKR
+    print_nav_table(force_update=True)
+
 def handle_reset():
     print("\n⚠️  WARNING: This will ARCHIVE the current database and start fresh.")
     print("You should do this at the start of a new year.")
@@ -151,7 +157,8 @@ if __name__ == "__main__":
         elif choice == '6': handle_opening_balance()
         elif choice == '7': handle_ytd_trades()
         elif choice == '8': handle_latest_prices()
-        elif choice == '9': handle_reset()
+        elif choice == '9': handle_nav_report()
+        elif choice == '10': handle_reset()          # <--- Update Choice
         elif choice == '0': 
             print("Goodbye.")
             sys.exit()

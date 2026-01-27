@@ -43,11 +43,13 @@ RISK_REWARD_RATIO = 2.0
 IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "MISSING_TOKEN")
 IBKR_QUERY_ID_OPENING = os.environ.get("IBKR_QUERY_ID_OPENING", "0")
 IBKR_QUERY_ID_YTD = os.environ.get("IBKR_QUERY_ID_YTD", "0")
+IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
 
 # XML File Paths
 IBKR_OPENING_XML = DATA_DIR / "ibkr_opening.xml"
 IBKR_YTD_XML = DATA_DIR / "ibkr_ytd.xml"
 IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
+IBKR_NAV_XML = DATA_DIR / "ibkr_nav.xml"
 
 # --- 4. VIEW SETTINGS ---
 EXCLUDED_ASSET_CATEGORIES = ["OPT", "BOND", "BILL", "WAR", "CASH", "FOREX", "FX", "CURRENCY"]
