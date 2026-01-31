@@ -1,56 +1,41 @@
 # config.py
 import os
-import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Get the folder where this code lives
-BASE_DIR = Path(__file__).parent.resolve()
+# 1. Load Environment Variables
+load_dotenv()
 
-# --- 1. LOAD .ENV FILE ---
-env_path = BASE_DIR / ".env"
-if env_path.exists():
-    with open(env_path) as f:
-        for line in f:
-            if line.strip() and not line.startswith("#"):
-                try:
-                    key, value = line.strip().split("=", 1)
-                    os.environ[key] = value.strip()
-                except ValueError:
-                    pass
+# 2. Define Data Directory
+# We look for 'DATA_PATH' in the .env file. 
+# If not found, we default to a local "data" folder in the project directory.
+env_data_path = os.environ.get("DATA_PATH")
 
-# --- 2. DATA DIRECTORY SETUP ---
-custom_path = os.environ.get("JOURNAL_DATA_DIR")
-if custom_path:
-    DATA_DIR = Path(custom_path)
-    if not DATA_DIR.exists():
-        print(f"⚠️  Warning: Custom data path not found: {DATA_DIR}")
-        print("Creating it now...")
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+if env_data_path:
+    DATA_DIR = Path(env_data_path)
 else:
+    BASE_DIR = Path(__file__).resolve().parent
     DATA_DIR = BASE_DIR / "data"
-    DATA_DIR.mkdir(exist_ok=True)
 
-# --- 3. CONFIGURATION ---
+# Ensure the directory exists (create it if missing)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    print(f"⚠️ Warning: Could not create data directory at {DATA_DIR}: {e}")
 
-# Database File
+# 3. Database Path
 DB_PATH = DATA_DIR / "simple_journal.db"
 
-# Risk Settings
-DEFAULT_ATR_WINDOW = 21
-RISK_REWARD_RATIO = 2.0
-
-# IBKR Configuration
-IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "MISSING_TOKEN")
-IBKR_QUERY_ID_OPENING = os.environ.get("IBKR_QUERY_ID_OPENING", "0")
-IBKR_QUERY_ID_YTD = os.environ.get("IBKR_QUERY_ID_YTD", "0")
+# 4. IBKR Configuration
+IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "")
+IBKR_QUERY_ID_TRADES = os.environ.get("IBKR_QUERY_ID_TRADES", "0") # Renamed from YTD
 IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
 
-# XML File Paths
-IBKR_OPENING_XML = DATA_DIR / "ibkr_opening.xml"
-IBKR_YTD_XML = DATA_DIR / "ibkr_ytd.xml"
-IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
+# 5. XML File Paths
+IBKR_TRADES_XML = DATA_DIR / "trades.xml" # Renamed from YTD
 IBKR_NAV_XML = DATA_DIR / "ibkr_nav.xml"
+IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
 
-# --- 4. VIEW SETTINGS ---
-EXCLUDED_ASSET_CATEGORIES = ["OPT", "BOND", "BILL", "WAR", "CASH", "FOREX", "FX", "CURRENCY"]
-EXCLUDED_TICKERS = ["EUR.USD", "USD.EUR"]
+# 6. Exclusions
+EXCLUDED_TICKERS = {"EUR", "USD", "GBP"}
+EXCLUDED_ASSET_CATEGORIES = {"CASH", "OPT"}
