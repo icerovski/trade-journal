@@ -35,7 +35,3 @@ IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
 IBKR_TRADES_XML = DATA_DIR / "trades.xml" # Renamed from YTD
 IBKR_NAV_XML = DATA_DIR / "ibkr_nav.xml"
 IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
-
-# 6. Exclusions
-EXCLUDED_TICKERS = {"EUR", "USD", "GBP"}
-EXCLUDED_ASSET_CATEGORIES = {"CASH", "OPT"}

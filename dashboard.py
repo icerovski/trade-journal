@@ -1,173 +1,97 @@
-# dashboard.py
 import os
-import sys
 import pandas as pd
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
 from rich import box
-from manager import get_portfolio_data
-from ibkr import fetch_nav_data
 
-# --- CONFIGURATION ---
-REFRESH_SECONDS = 60
-
-# Initialize Rich Console
 console = Console()
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def print_nav_table(force_update=True):
+def print_nav_table(portfolio_manager):
     """
-    Fetches data and prints the NAV table.
+    Uses the PortfolioManager to fetch and display NAV data.
     """
-    data = fetch_nav_data(force_download=force_update)
+    # Fetch data (Force download ensures we get fresh data)
+    data = portfolio_manager.fetch_nav_data(force_download=True)
     
     if not data:
-        console.print("[red]No NAV data available.[/red]")
+        console.print("[red]No NAV data available. Check connection/config.[/red]")
         return 0.0
-
-    total_nav, accounts = data
     
-    # --- BUILD TABLE ---
-    table = Table(box=box.SIMPLE_HEAD, title="[bold]FAMILY PORTFOLIO NAV[/bold]", title_justify="left")
+    total, accounts = data
     
-    table.add_column("ALIAS", justify="left", style="bold cyan")
-    table.add_column("ACCOUNT ID", justify="left", style="dim")
-    table.add_column("NAV (EUR)", justify="right", style="bold green")
-    table.add_column("% ALLOC", justify="right")
-
-    for acc in accounts:
-        # Calculate percentage
-        pct = (acc['nav'] / total_nav * 100) if total_nav else 0.0
-        
-        table.add_row(
-            acc['alias'],
-            acc['id'],
-            f"€{acc['nav']:,.2f}",
-            f"{pct:.1f}%"
-        )
-
-    # --- FOOTER ---
+    # Create Table
+    table = Table(box=box.SIMPLE_HEAD, title="[bold]ACCOUNT BALANCES (IBKR)[/bold]")
+    table.add_column("ALIAS", style="cyan")
+    table.add_column("NAV", justify="right", style="green")
+    
+    for a in accounts:
+        table.add_row(str(a['alias']), f"€{a['nav']:,.2f}")
+    
     table.add_section()
-    table.add_row(
-        "TOTAL", 
-        "", 
-        f"[bold underline]€{total_nav:,.2f}[/bold underline]", 
-        "100%"
-    )
+    table.add_row("TOTAL", f"€{total:,.2f}")
     
     console.print(table)
-    return total_nav
+    return total
 
-def print_dashboard(sort_col="ticker", ascending=True):
-    """Fetches data and renders a beautiful table using Rich."""
+def print_rich_portfolio(df, total_nav_override=None):
+    """
+    Displays the portfolio dataframe.
     
-    # 1. Fetch Data
-    df, total_nav = get_portfolio_data()
-    
-    if df.empty and total_nav == 0:
-        console.print(Panel("📭 Portfolio is empty.", style="yellow"))
-        return False
-
-    # 2. Sort Data
-    if not df.empty and sort_col in df.columns:
-        df = df.sort_values(by=sort_col, ascending=ascending)
-
-    # 3. HEADER (NAV Summary)
-    visible_equity = df['market_value'].sum() if not df.empty else 0.0
-    
-    summary_text = (
-        f"[bold]Total Account NAV:[/bold]   [green]${total_nav:,.2f}[/green]  (All Assets)\n"
-        f"[bold]Visible Stock Equity:[/bold] [blue]${visible_equity:,.2f}[/blue]"
-    )
-    console.print(Panel(summary_text, title="PORTFOLIO SNAPSHOT", expand=False))
-
+    Args:
+        df: The DataFrame from PortfolioManager
+        total_nav_override: (float) The official Net Liquidation Value from IBKR.
+                            If provided, this is used for the Header AUM.
+    """
     if df.empty:
-        console.print("[italic dim]No active stock positions to display[/italic dim]")
-        return True
+        console.print("[yellow]No active positions found.[/yellow]")
+        return
 
-    # 4. BUILD THE TABLE
-    table = Table(box=box.SIMPLE_HEAD) # Clean, modern look
+    # Determine AUM for the Header
+    if total_nav_override:
+        total_aum = total_nav_override
+        title_suffix = "(Real NAV)"
+    else:
+        total_aum = df['MarketValue'].sum()
+        title_suffix = "(Sum of Pos)"
+
+    # Sort by Market Value (descending)
+    df = df.sort_values('MarketValue', ascending=False)
     
-    # Define Columns (Rich handles width automatically)
-    table.add_column("TICKER", justify="left", style="bold cyan")
+    # Create Table
+    table = Table(box=box.SIMPLE_HEAD, title=f"PORTFOLIO [AUM: {df.iloc[0]['CCY']} {total_aum:,.0f}] {title_suffix}")
+    
+    table.add_column("TICKER", style="bold cyan")
+    table.add_column("COMPANY", style="dim", max_width=25, overflow="ellipsis")
+    table.add_column("DATE", justify="right")
     table.add_column("QTY", justify="right")
     table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
-    table.add_column("MKT VAL", justify="right")
-    table.add_column("P/L $", justify="right")
+    table.add_column("MKT VAL", justify="right", style="bold")
+    table.add_column("P/L", justify="right")
     table.add_column("P/L %", justify="right")
+    table.add_column("AAGR", justify="right", style="magenta")
 
-    # 5. ADD ROWS
     for _, row in df.iterrows():
-        # Color Logic for P/L
-        pl_val = row['unrealized_pl']
-        pl_pct = row['pl_pct']
+        # Color logic
+        pl_color = "green" if row['P/L'] >= 0 else "red"
         
-        pl_color = "green" if pl_val >= 0 else "red"
-        
-        # Format values
-        ticker = str(row['ticker'])
-        qty = f"{row['total_qty']:,.2f}"
-        entry = f"{row['avg_entry']:,.2f}"
-        price = f"{row['current_price']:,.2f}"
-        mkt_val = f"{row['market_value']:,.2f}"
-        
-        # Apply color tags to the specific P/L cells
-        pl_str = f"[{pl_color}]{pl_val:,.2f}[/{pl_color}]"
-        pct_str = f"[{pl_color}]{pl_pct:,.2f}%[/{pl_color}]"
-        
-        table.add_row(ticker, qty, entry, price, mkt_val, pl_str, pct_str)
+        # Date formatting
+        date_str = row['Date'].strftime('%Y-%m-%d') if pd.notnull(row['Date']) else "-"
 
-    # 6. TOTALS ROW (Footer)
-    total_pl = df['unrealized_pl'].sum()
-    total_cost = (df['total_qty'] * df['avg_entry']).sum()
-    total_pct = (total_pl / total_cost * 100) if total_cost else 0.0
-    tot_color = "green" if total_pl >= 0 else "red"
-
-    table.add_section() # Adds a nice separator line
-    table.add_row(
-        "TOTALS", 
-        "", "", "", 
-        f"[bold]${visible_equity:,.2f}[/bold]", 
-        f"[bold {tot_color}]${total_pl:,.2f}[/bold {tot_color}]", 
-        f"[bold {tot_color}]{total_pct:,.2f}%[/bold {tot_color}]"
-    )
+        table.add_row(
+            str(row['Ticker']),
+            str(row['Name']),
+            date_str,
+            f"{row['Qty']:,.0f}",
+            f"{row['Entry']:,.2f}",
+            f"{row['Price']:,.2f}",
+            f"{row['MarketValue']:,.0f}",
+            f"[{pl_color}]{row['P/L']:,.0f}[/{pl_color}]",
+            f"[{pl_color}]{row['Pct']:.1f}%[/{pl_color}]",
+            f"{row['AAGR']:.1f}%"
+        )
 
     console.print(table)
-    return True
-
-def dashboard_loop():
-    sort_col = "ticker"
-    ascending = True
-    
-    # Map for easy typing
-    sort_map = {
-        "t": "ticker", "q": "total_qty", "e": "avg_entry", 
-        "p": "current_price", "v": "market_value", "pl": "unrealized_pl", "%": "pl_pct"
-    }
-
-    while True:
-        try:
-            clear_screen()
-            print_dashboard(sort_col, ascending)
-            
-            console.print(f"\n[dim]Refresh: {REFRESH_SECONDS}s | [bold]S[/bold]ort | [bold]Q[/bold]uit[/dim]")
-            
-            cmd = input("> ").strip().lower()
-
-            if cmd == 'q': break
-            elif cmd == 'r' or cmd == '': continue
-            elif cmd == 's':
-                key = input("Sort by (t/q/e/p/v/pl/%): ").strip().lower()
-                if key in sort_map:
-                    if sort_map[key] == sort_col:
-                        ascending = not ascending
-                    else:
-                        sort_col = sort_map[key]
-                        ascending = True
-        except KeyboardInterrupt:
-            break

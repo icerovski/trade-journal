@@ -1,293 +1,151 @@
-# ibkr.py
 import requests
-import time
-import os
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from dateutil.parser import parse
-from db import add_trade, trade_exists
+from pathlib import Path
+
 from config import (
     IBKR_TOKEN, 
-    IBKR_QUERY_ID_OPENING, 
-    IBKR_QUERY_ID_YTD, 
-    IBKR_QUERY_ID_NAV,
-    IBKR_NAV_XML,
-    IBKR_OPENING_XML, 
-    IBKR_YTD_XML,
-    IBKR_PRICING_XML # <--- Imported
+    IBKR_QUERY_ID_TRADES, 
+    IBKR_TRADES_XML
 )
+from db import add_trade, trade_exists
 
-# --- GENERIC DOWNLOADER ---
-def download_flex_report(query_id, save_path):
-    if "YOUR_" in IBKR_TOKEN or "YOUR_" in str(query_id):
-        print("❌ Error: Please update IBKR config in config.py")
-        return False
-
-    print(f"--- Connecting to IBKR (Query {query_id}) ---")
-    base_url = "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest"
-    req_url = f"{base_url}?t={IBKR_TOKEN}&q={query_id}&v=3"
+# --- 1. GENERIC DOWNLOADER ---
+def download_flex_report(query_id):
+    """
+    Generic helper to download any Flex Query by ID.
+    Returns the XML Root Element or None.
+    """
+    if query_id == "0" or not IBKR_TOKEN:
+        print("❌ Error: IBKR Credentials/Query ID missing in .env")
+        return None
+        
+    url = f"https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest?t={IBKR_TOKEN}&q={query_id}&v=3"
     
+    print(f"⏳ Requesting report (ID: {query_id})...")
     try:
-        print("Requesting report generation...")
-        response = requests.get(req_url)
-        
-        if "ErrorCode" in response.text:
-            print(f"❌ API Error: {response.text}")
-            return False
-
-        root = ET.fromstring(response.content)
-        code_elem = root.find('ReferenceCode')
-        if code_elem is None:
-            print("❌ Error: No ReferenceCode returned.")
-            return False
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            print(f"❌ HTTP Error: {resp.status_code}")
+            return None
             
-        reference_code = code_elem.text
-        print(f"✅ Report initiated (Ref: {reference_code}). Waiting 10s...")
-        time.sleep(10)
-
-        dl_url = "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement"
-        dl_req = f"{dl_url}?q={reference_code}&t={IBKR_TOKEN}&v=3"
-        
-        file_response = requests.get(dl_req)
-        
-        if file_response.status_code != 200:
-            print("❌ Failed to download report.")
-            return False
+        root = ET.fromstring(resp.content)
+        if root.find("Status") is not None and root.find("Status").text == "Success":
+            code = root.find("ReferenceCode").text
+            base_url = root.find("Url").text
+            dl_url = f"{base_url}?q={code}&t={IBKR_TOKEN}&v=3"
             
-        with open(save_path, 'wb') as f:
-            f.write(file_response.content)
+            # Wait for generation (IBKR async)
+            import time
+            time.sleep(1)
             
-        return True
-        
-    except Exception as e:
-        print(f"❌ Connection failed: {e}")
-        return False
-
-# --- NEW: FETCH PRICES ONLY ---
-def fetch_latest_prices():
-    """
-    Downloads the Open Positions report (Query 1) to use as a Pricing Snapshot.
-    Does NOT import trades to DB.
-    """
-    print("🔄 Fetching Pricing Snapshot (using Open Positions Query)...")
-    if download_flex_report(IBKR_QUERY_ID_OPENING, IBKR_PRICING_XML):
-        print("✅ Pricing snapshot saved.")
-        return True
-    return False
-
-# --- 1. OPENING BALANCE LOGIC ---
-def fetch_opening_balance(target_date_str=None):
-    if download_flex_report(IBKR_QUERY_ID_OPENING, IBKR_OPENING_XML):
-        print("✅ XML downloaded. Parsing Opening Positions...")
-        parse_opening_positions(IBKR_OPENING_XML, target_date_str)
-
-def parse_opening_positions(file_path, target_date_str=None):
-    try:
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        positions = root.findall(".//OpenPosition")
-        
-        if not positions:
-            print("ℹ️  No positions found.")
-            return
-
-        count = 0
-        if target_date_str:
-            opening_date = target_date_str
-        else:
-            current_year = datetime.now().year
-            opening_date = f"{current_year}-01-01"
-
-        print(f"ℹ️  Importing positions as of: {opening_date}")
-
-        for p in positions:
-            ticker = p.get('symbol')
-            position = float(p.get('position', 0))
-            cost_basis = float(p.get('costBasisPrice', 0))
-            asset_cat = p.get('assetCategory', 'STK')
-            
-            if position == 0: continue
-
-            side = 'BUY' if position > 0 else 'SELL'
-            qty = abs(position)
-            
-            syn_id = f"OPEN-{opening_date}-{ticker}"
-            
-            if trade_exists(syn_id): continue
-
-            add_trade(
-                date=opening_date,
-                ticker=ticker,
-                side=side,
-                quantity=qty,
-                price=cost_basis,
-                asset_category=asset_cat,
-                notes="Opening Balance",
-                source="IBKR_SNAPSHOT",
-                external_id=syn_id
-            )
-            count += 1
-
-        print(f"✅ Imported {count} opening positions.")
-
-    except Exception as e:
-        print(f"❌ Error parsing Opening XML: {e}")
-
-# --- 2. YTD TRADES LOGIC ---
-def fetch_ytd_trades(start_date_str=None, end_date_str=None):
-    if download_flex_report(IBKR_QUERY_ID_YTD, IBKR_YTD_XML):
-        print("✅ XML downloaded. Parsing Trades...")
-        parse_ytd_trades(IBKR_YTD_XML, start_date_str, end_date_str)
-
-def parse_ytd_trades(file_path, start_date_str=None, end_date_str=None):
-    try:
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        trades = root.findall(".//Trade")
-        
-        if not trades:
-            print("ℹ️  No trades found.")
-            return
-
-        start_dt = parse(start_date_str) if start_date_str else None
-        end_dt = parse(end_date_str) if end_date_str else None
-
-        if start_dt:
-            print(f"🔎 Filtering for trades after: {start_date_str}")
-
-        added_count = 0
-        skipped_count = 0
-        date_skip_count = 0
-
-        for t in trades:
-            raw_date = t.get('tradeDate')
-            if not raw_date: continue
-            
-            if len(raw_date) == 8:
-                t_date_str = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            report_resp = requests.get(dl_url)
+            if report_resp.status_code == 200:
+                return ET.fromstring(report_resp.content)
             else:
-                t_date_str = raw_date
+                print(f"❌ Download Error: {report_resp.status_code}")
+        else:
+            err = root.find("ErrorMessage")
+            print(f"❌ IBKR API Error: {err.text if err is not None else 'Unknown'}")
             
-            t_dt = parse(t_date_str)
-
-            if start_dt and t_dt < start_dt:
-                date_skip_count += 1
-                continue
-            if end_dt and t_dt > end_dt:
-                date_skip_count += 1
-                continue
-
-            external_id = t.get('tradeID') or t.get('ibOrderId')
-            if external_id and trade_exists(external_id):
-                skipped_count += 1
-                continue
-
-            ticker = t.get('symbol')
-            side = t.get('buySell')
-            qty = t.get('quantity')
-            price = t.get('tradePrice')
-            asset_cat = t.get('assetCategory') or "STK"
-            raw_expiry = t.get('expiry')
-
-            fmt_expiry = None
-            if raw_expiry and len(raw_expiry) == 8:
-                fmt_expiry = f"{raw_expiry[:4]}-{raw_expiry[4:6]}-{raw_expiry[6:]}"
-
-            if not (ticker and side and qty and price): continue
-            
-            add_trade(
-                date=t_date_str, 
-                ticker=ticker, 
-                side=side, 
-                quantity=abs(float(qty)), 
-                price=price, 
-                asset_category=asset_cat,
-                expiry=fmt_expiry,
-                notes="IBKR YTD",
-                source="IBKR_YTD",
-                external_id=external_id
-            )
-            added_count += 1
-
-        print(f"\nSummary: {added_count} new trades added.")
-        print(f"Skipped: {skipped_count} duplicates, {date_skip_count} outside date range.")
-        
     except Exception as e:
-        print(f"❌ Error parsing YTD XML: {e}")
+        print(f"❌ Connection Error: {e}")
+        
+    return None
+
+# --- 2. TRADE HISTORY IMPORT (Legacy DB) ---
+
+def parse_and_store_trades(root):
+    """
+    Parses 'Trade' elements from the XML and stores them in the SQLite DB.
+    """
+    count = 0
+    trades = root.findall(".//Trade")
+    print(f"🔍 Found {len(trades)} trades in XML...")
+
+    for t in trades:
+        # 1. Date
+        raw_date = t.get('tradeDate')
+        if not raw_date: continue
+        
+        try:
+            # Handle YYYYMMDD
+            if len(raw_date) == 8 and raw_date.isdigit():
+                date_str = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            else:
+                date_str = parse(raw_date).strftime("%Y-%m-%d")
+        except:
+            continue
+
+        # 2. ID & Existence Check
+        ext_id = t.get('tradeID') or t.get('ibOrderId')
+        # Fallback ID for robustness
+        if not ext_id: 
+            ext_id = f"MAN-{date_str}-{t.get('symbol')}-{t.get('tradePrice')}"
+        
+        if trade_exists(ext_id): continue
+
+        # 3. Attributes
+        ticker = t.get('symbol')
+        side = t.get('buySell')
+        qty = float(t.get('quantity', 0))
+        price = float(t.get('tradePrice', 0))
+        asset = t.get('assetCategory', 'STK')
+        desc = t.get('description') or t.get('listingExchange')
+
+        if not ticker or not side: continue
+
+        add_trade(
+            date=date_str, ticker=ticker, side=side, 
+            quantity=abs(qty), price=price, asset_category=asset, 
+            notes=f"IBKR Import {datetime.now().date()}",
+            source="IBKR_XML",
+            external_id=ext_id,
+            description=desc
+        )
+        count += 1
     
-# --- 3. NAV / ACCOUNT BALANCE LOGIC ---
-def fetch_nav_data(force_download=False):
-    """
-    Orchestrates getting the NAV/Cash report using IBKR_QUERY_ID_NAV.
-    1. Downloads fresh data if force_download=True.
-    2. Parses the XML.
-    Returns: (total_nav, list_of_accounts)
-    """
-    if force_download:
-        print("🔄 Downloading fresh NAV report...")
-        if not download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_XML):
-            print("❌ Download failed.")
-            return None
+    print(f"✅ Successfully imported {count} new trades.")
 
-    # Parse whatever file we have (fresh or cached)
-    return parse_nav_report(IBKR_NAV_XML)
-
-    # print("--- Fetching Account NAV ---")
-    # if download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_XML):
-    #     print("✅ NAV Report downloaded. Parsing...")
-    #     return parse_nav_report(IBKR_NAV_XML)
-    # return None
-
-def parse_nav_report(file_path):
+def fetch_trade_history(days=365):
     """
-    Parses the NAV report for MULTIPLE sub-accounts.
-    Extracts Account ID, Alias, and Net Liquidation Value (total).
-    Returns list of account dicts.
+    Downloads the Trade History Flex Query and imports it.
     """
+    print(f"📥 Fetching Trade History (Last {days} days)...")
+    
+    # 1. Download
+    root = download_flex_report(IBKR_QUERY_ID_TRADES)
+    if not root: return
+
+    # 2. Save XML for backup
+    try:
+        tree = ET.ElementTree(root)
+        tree.write(IBKR_TRADES_XML)
+        print(f"💾 Saved XML backup to {IBKR_TRADES_XML}")
+    except Exception as e:
+        print(f"⚠️ Could not save backup XML: {e}")
+
+    # 3. Parse & Import
+    parse_and_store_trades(root)
+
+def import_trades_from_file(filename):
+    """
+    Imports trades from a local XML file (e.g., 'trades_manual.xml').
+    """
+    file_path = Path(filename)
     if not file_path.exists():
-        return None
-    
+        # Try looking in data dir
+        from config import DATA_DIR
+        file_path = DATA_DIR / filename
+        
+    if not file_path.exists():
+        print(f"❌ File not found: {filename}")
+        return
+
+    print(f"📂 Importing from {file_path}...")
     try:
         tree = ET.parse(file_path)
-        root = tree.getroot()
-        
-        # IBKR creates a separate FlexStatement for each sub-account
-        statements = root.findall(".//FlexStatement")
-        
-        if not statements:
-            print("❌ No account statements found in XML.")
-            return None
-
-        accounts = []
-        grand_total_nav = 0.0
-        
-        for stmt in statements:
-            # 1. Get Account ID
-            acct_id = stmt.get('accountId', 'Unknown')
-            
-            # 2. Find the Equity Summary (Base Currency)
-            summary = stmt.find(".//EquitySummaryByReportDateInBase")
-            
-            if summary is not None:
-                # 3. Extract Details
-                alias = summary.get('acctAlias', '-')
-                nav = float(summary.get('total', 0.0))
-                cash = float(summary.get('cash', 0.0))
-                
-                # 4. Accumulate
-                accounts.append({
-                    'id': acct_id,
-                    'alias': alias,
-                    'nav': nav,
-                    'cash': cash
-                })
-                grand_total_nav += nav
-
-        # 5. Sort by Alias for consistency
-        accounts.sort(key=lambda x: x['alias'])
-
-        return grand_total_nav, accounts
-
+        parse_and_store_trades(tree.getroot())
     except Exception as e:
-        print(f"❌ Error parsing NAV XML: {e}")
-        return None
+        print(f"❌ Error parsing file: {e}")

@@ -1,8 +1,6 @@
 # db.py
 import sqlite3
-import shutil
-from datetime import datetime
-from config import DB_PATH, BASE_DIR
+from config import DB_PATH
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -11,27 +9,38 @@ def get_conn():
 
 def init_db():
     conn = get_conn()
-    conn.execute("""
+    cursor = conn.cursor()
+    
+    # 1. Create Table (with description)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,       -- YYYY-MM-DD
-            ticker TEXT NOT NULL,     -- AAPL
-            side TEXT NOT NULL,       -- BUY, SELL, EXP
-            quantity REAL NOT NULL,   -- Always positive
-            price REAL NOT NULL,      -- Execution price
+            date TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            description TEXT,         -- NEW: Company Name
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
             asset_category TEXT DEFAULT 'STK',
-            expiry TEXT,              -- YYYY-MM-DD (for options)
+            expiry TEXT,
             notes TEXT,
-            source TEXT DEFAULT 'MANUAL', -- 'MANUAL', 'IBKR_SNAPSHOT', 'IBKR_YTD'
-            external_id TEXT UNIQUE   -- IBKR Trade ID to prevent duplicates
+            source TEXT DEFAULT 'MANUAL',
+            external_id TEXT UNIQUE
         )
     """)
+    
+    # 2. Migration: Add 'description' if it's missing from an old DB
+    cursor.execute("PRAGMA table_info(trades)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if 'description' not in columns:
+        print("⚠️  Migrating DB: Adding 'description' column...")
+        cursor.execute("ALTER TABLE trades ADD COLUMN description TEXT")
+
     conn.commit()
     conn.close()
 
 def trade_exists(external_id):
-    if not external_id:
-        return False
+    if not external_id: return False
     conn = get_conn()
     cursor = conn.execute("SELECT 1 FROM trades WHERE external_id = ?", (external_id,))
     exists = cursor.fetchone() is not None
@@ -39,41 +48,26 @@ def trade_exists(external_id):
     return exists
 
 def add_trade(date, ticker, side, quantity, price, asset_category="STK", 
-              expiry=None, notes="", source="MANUAL", external_id=None):
+              expiry=None, notes="", source="MANUAL", external_id=None, description=None):
     conn = get_conn()
     try:
         conn.execute(
             """INSERT INTO trades 
-               (date, ticker, side, quantity, price, asset_category, expiry, notes, source, external_id) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (date, ticker, side, quantity, price, asset_category, expiry, notes, source, external_id, description) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, ticker.upper(), side.upper(), float(quantity), float(price), 
-             asset_category, expiry, notes, source, external_id)
+             asset_category, expiry, notes, source, external_id, description)
         )
         conn.commit()
-        print(f"✅ Recorded: {side} {quantity} {ticker} @ {price}")
     except sqlite3.IntegrityError:
-        print(f"⚠️  Skipping duplicate trade (ID: {external_id})")
+        pass 
     finally:
         conn.close()
 
 def archive_database():
-    """
-    Renames the current database file to a timestamped backup inside data/
-    """
-    if not DB_PATH.exists():
-        print("❌ No database found to archive.")
-        return
-
+    import shutil
+    from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Save archive in the same DATA_DIR
-    archive_name = f"journal_archive_{timestamp}.db"
-    archive_path = DB_PATH.parent / archive_name 
-    
-    try:
-        shutil.move(str(DB_PATH), str(archive_path))
-        print(f"✅ Database archived to: {archive_name}")
-        print("🔄 Initializing fresh database...")
-        init_db()
-        print("✅ New 'simple_journal.db' created.")
-    except Exception as e:
-        print(f"❌ Error archiving database: {e}")
+    backup_path = DB_PATH.parent / f"simple_journal_archive_{timestamp}.db"
+    shutil.copy(DB_PATH, backup_path)
+    print(f"📦 Database archived to: {backup_path.name}")
