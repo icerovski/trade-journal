@@ -28,10 +28,9 @@ DB_PATH = DATA_DIR / "simple_journal.db"
 
 # 4. IBKR Configuration
 IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "")
-IBKR_QUERY_ID_TRADES = os.environ.get("IBKR_QUERY_ID_TRADES", "0") # Renamed from YTD
+IBKR_QUERY_ID_TRADES = os.environ.get("IBKR_QUERY_ID_TRADES", "0")
 IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
 
 # 5. XML File Paths
-IBKR_TRADES_XML = DATA_DIR / "trades.xml" # Renamed from YTD
+IBKR_TRADES_CSV = DATA_DIR / "trades.csv"
 IBKR_NAV_XML = DATA_DIR / "ibkr_nav.xml"
-IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
