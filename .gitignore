@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.gemini
 
 # The entire data directory
 data/
@@ -16,3 +17,5 @@ data/
 .env
 trades.csv
 ibkr_nav.xml
+.gemini/
+gha-creds-*.json
