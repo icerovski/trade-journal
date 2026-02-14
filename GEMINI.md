@@ -79,6 +79,10 @@ DATA_PATH="C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData"
 *   **Ticker Mapping:** IBKR symbols are mapped to Yahoo Finance tickers via heuristics (e.g., `.DE` for XETRA, `-P` for preferred shares).
 *   **Safety:** `.gitignore` excludes `.venv`, `.env`, and local data files to protect sensitive financial history.
 
+
+### Testing
+When you finish a feature always create a test and make sure if it is working properly. Ask me questions if you have to.
+
 ## 5. Development Log
 
 ### [2026-02-14] Branch Initialization
@@ -94,3 +98,8 @@ DATA_PATH="C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData"
 *   Added logic to archive existing YTD files before downloading fresh data.
 *   Added automatic processing of previous year's Full Year (FY) data if present.
 *   Integrated the new sync option into the CLI menu in `main.py`.
+
+### [2026-02-14] Testing & Dependency Management
+*   Added missing dependencies (`pandas`, `python-dotenv`) via `uv`.
+*   Created automated test suite in `tests/test_ibkr.py` to verify synchronization logic.
+*   Verified that `main.py` starts correctly and tests pass.
