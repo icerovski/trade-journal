@@ -47,7 +47,7 @@ def init_db():
     
     for col_name, col_type in migrations:
         if col_name not in columns:
-            print(f"⚠️  Migrating DB: Adding '{col_name}' column...")
+            print(f"-> Migrating DB: Adding '{col_name}' column...")
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
 
     conn.commit()
@@ -88,4 +88,4 @@ def archive_database():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = DB_PATH.parent / f"simple_journal_archive_{timestamp}.db"
     shutil.copy(DB_PATH, backup_path)
-    print(f"📦 Database archived to: {backup_path.name}")
+    print(f"-> Database archived to: {backup_path.name}")

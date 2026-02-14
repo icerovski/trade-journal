@@ -14,17 +14,20 @@ def clear_screen():
 def calculate_dashboard_data(portfolio_manager, asset_class_filter=None):
     """
     Substep 1: Make all calculations.
-    Returns (DataFrame, total_nav)
+    Returns (DataFrame, total_nav, report_date)
     """
-    # 1. Fetch NAV
-    nav_data = portfolio_manager.fetch_nav_data(force_download=False)
-    real_nav = nav_data[0] if nav_data else None
+    # 1. Fetch NAV from LOCAL file only (force_download=False)
+    nav_res = portfolio_manager.fetch_nav_data(force_download=False)
+    if nav_res:
+        real_nav, _, report_date = nav_res
+    else:
+        real_nav, report_date = None, "Unknown"
     
     # 2. Get Data (Passing NAV for % calc)
     df = portfolio_manager.get_dashboard(asset_class_filter=asset_class_filter, total_nav=real_nav)
-    return df, real_nav
+    return df, real_nav, report_date
 
-def generate_portfolio_table(df, total_nav_override=None):
+def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown"):
     """
     Substep 2: Format the dashboard and return the Rich Table object.
     """
@@ -34,10 +37,10 @@ def generate_portfolio_table(df, total_nav_override=None):
     # Determine AUM for the Header
     if total_nav_override:
         total_aum = total_nav_override
-        title_suffix = "(Real NAV)"
+        title_suffix = f"(IBKR NAV as of {report_date})"
     else:
         total_aum = df['MarketValue'].sum()
-        title_suffix = "(Sum of Pos)"
+        title_suffix = "(Sum of Positions)"
 
     # Sort by Market Value
     df = df.sort_values('MarketValue', ascending=False)
@@ -103,9 +106,9 @@ def generate_portfolio_table(df, total_nav_override=None):
 
     return table
 
-def print_rich_portfolio(df, total_nav_override=None):
+def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown"):
     """Simple wrapper for one-time print."""
-    table = generate_portfolio_table(df, total_nav_override)
+    table = generate_portfolio_table(df, total_nav_override, report_date)
     console.print(table)
 
 def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30):
@@ -121,27 +124,27 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
                 # 1. Recalculate
                 from portfolio_manager import PortfolioManager
                 pm = PortfolioManager() # Refresh data from DB each time
-                df, real_nav = calculate_dashboard_data(pm, asset_class_filter)
+                df, real_nav, report_date = calculate_dashboard_data(pm, asset_class_filter)
                 
                 # 2. Update Display
-                table = generate_portfolio_table(df, real_nav)
+                table = generate_portfolio_table(df, real_nav, report_date)
                 live.update(table, refresh=True)
                 
                 time.sleep(refresh_interval)
     except KeyboardInterrupt:
         console.print("\n[yellow]Live dashboard stopped.[/yellow]")
 
-def print_nav_table(portfolio_manager):
+def print_nav_table(portfolio_manager, force_download=False):
     """
     Uses the PortfolioManager to fetch and display NAV data.
     """
-    data = portfolio_manager.fetch_nav_data(force_download=True)
+    data = portfolio_manager.fetch_nav_data(force_download=force_download)
     if not data:
-        console.print("[red]No NAV data available. Check connection/config.[/red]")
+        console.print("[red]No local NAV data available. Please Sync first.[/red]")
         return 0.0
     
-    total, accounts = data
-    table = Table(box=box.SIMPLE_HEAD, title="[bold]ACCOUNT BALANCES (IBKR)[/bold]")
+    total, accounts, report_date = data
+    table = Table(box=box.SIMPLE_HEAD, title=f"[bold]ACCOUNT BALANCES (IBKR as of {report_date})[/bold]")
     table.add_column("ALIAS", style="cyan")
     table.add_column("NAV", justify="right", style="green")
     

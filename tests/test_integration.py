@@ -102,11 +102,12 @@ MSFT,BUY,{current_year}0201,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
             mock_yf.side_effect = yf_side_effect
             
             # Mock NAV fetch
-            with patch.object(portfolio_manager.PortfolioManager, 'fetch_nav_data', return_value=(5000.0, [])):
-                df, nav = dashboard.calculate_dashboard_data(pm)
+            with patch.object(portfolio_manager.PortfolioManager, 'fetch_nav_data', return_value=(5000.0, [], "2026-02-13")):
+                df, nav, report_date = dashboard.calculate_dashboard_data(pm)
                 
                 # Assertions on Dashboard DataFrame
                 self.assertEqual(nav, 5000.0)
+                self.assertEqual(report_date, "2026-02-13")
                 
                 aapl_row = df[df['Ticker'] == 'AAPL'].iloc[0]
                 self.assertEqual(aapl_row['P/L'], (200 - 170) * 5) # 150

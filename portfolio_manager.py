@@ -132,12 +132,18 @@ class PortfolioManager:
         Clocked Open Logic: 
         Replays the ledger for each asset. If quantity hits zero, the position is 'clocked' closed.
         Returns a list of dictionaries representing currently open positions.
+        
+        Args:
+            asset_class_filter (str or list): Category to include (e.g. 'STK' or ['STK', 'ETF'])
         """
         df = self._clean_data()
 
         if asset_class_filter:
-            ac_filter = asset_class_filter.upper()
-            df = df[df['AssetClass'] == ac_filter]
+            if isinstance(asset_class_filter, str):
+                df = df[df['AssetClass'] == asset_class_filter.upper()]
+            elif isinstance(asset_class_filter, list):
+                upper_filters = [f.upper() for f in asset_class_filter]
+                df = df[df['AssetClass'].isin(upper_filters)]
         
         grouped = df.groupby('Conid')
         open_positions = []
@@ -294,13 +300,17 @@ class PortfolioManager:
     def parse_nav_report(self, root):
         accounts = []
         total_nav = 0.0
+        report_date = "Unknown"
         # Check if root exists
-        if root is None: return 0.0, []
+        if root is None: return 0.0, [], report_date
 
-        for row in root.findall(".//EquitySummaryByReportDateInBase"):
+        rows = root.findall(".//EquitySummaryByReportDateInBase")
+        for row in rows:
+            if report_date == "Unknown":
+                report_date = row.get("reportDate", "Unknown")
             alias = row.get("acctAlias")
             if not alias: alias = row.get("accountId") or "Unknown"
             nav_val = float(row.get("total", 0)) 
             accounts.append({'alias': alias, 'nav': nav_val})
             total_nav += nav_val
-        return total_nav, accounts
+        return total_nav, accounts, report_date
