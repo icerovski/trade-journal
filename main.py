@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 from db import init_db, archive_database
-from ibkr import import_trades_from_file, fetch_trade_history
+from ibkr import import_trades_from_file, fetch_trade_history, sync_ibkr_trades
 from dashboard import print_nav_table, print_rich_portfolio
 from portfolio_manager import PortfolioManager
 from config import DATA_DIR
@@ -19,12 +19,15 @@ def handle_trades_menu():
     """Legacy menu for database operations."""
     print("\n1. Download from IBKR (Last 365 Days)")
     print("2. Import from local file (trades_manual.csv)")
+    print("3. Incremental Sync from IBKR (YTD + Prev FY)")
     choice = input("Choice: ").strip()
     
     if choice == '1':
         fetch_trade_history(365)
     elif choice == '2':
         import_trades_from_file('trades_manual.csv')
+    elif choice == '3':
+        sync_ibkr_trades()
 
 def main():
     # Initialize DB (Optional)

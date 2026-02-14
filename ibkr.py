@@ -6,11 +6,13 @@ from datetime import datetime
 from dateutil.parser import parse
 import csv
 import io
+import shutil
 
 from config import (
     IBKR_TOKEN, 
     IBKR_QUERY_ID_TRADES, 
-    IBKR_TRADES_CSV
+    IBKR_TRADES_CSV,
+    DATA_DIR
 )
 from db import add_trade, trade_exists
 
@@ -185,7 +187,6 @@ def import_trades_from_file(filename):
     """
     Manual import override.
     """
-    from config import DATA_DIR
     file_path = Path(filename)
     if not file_path.exists():
         file_path = DATA_DIR / filename
@@ -198,3 +199,51 @@ def import_trades_from_file(filename):
         print("⚠️ XML import deprecated for trades. Please use CSV.")
     else:
         parse_csv_trades(file_path)
+
+def sync_ibkr_trades():
+    """
+    Incremental Sync Logic:
+    1. Check for previous year's Full Year file (e.g., 2025_FY.csv).
+    2. Archive existing YTD file for the current year.
+    3. Download fresh YTD file.
+    4. Parse both the previous FY (if not already processed) and the new YTD.
+    """
+    now = datetime.now()
+    current_year = now.year
+    prev_year = current_year - 1
+    
+    archive_dir = DATA_DIR / "Archive"
+    archive_dir.mkdir(exist_ok=True)
+    
+    print(f"🔄 Starting Incremental Sync for {current_year}...")
+
+    # 1. Archive old YTD if it exists
+    ytd_filename = f"{current_year}_YTD.csv"
+    ytd_path = DATA_DIR / ytd_filename
+    
+    if ytd_path.exists():
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        archive_path = archive_dir / f"{current_year}_YTD_{timestamp}.csv"
+        print(f"📦 Archiving current YTD to {archive_path.name}")
+        shutil.move(str(ytd_path), str(archive_path))
+
+    # 2. Download Fresh YTD
+    # Note: We use the same Query ID, assuming the Flex Query is set to 'Year to Date' or similar.
+    print(f"📥 Downloading fresh YTD for {current_year}...")
+    downloaded_path = download_flex_report(IBKR_QUERY_ID_TRADES, ytd_path, force_download=True)
+    
+    if not downloaded_path:
+        print("❌ Failed to download fresh YTD data.")
+        return
+
+    # 3. Process Files
+    # We process the previous FY file if it exists (to ensure no gaps)
+    prev_fy_path = DATA_DIR / f"{prev_year}_FY.csv"
+    if prev_fy_path.exists():
+        print(f"📂 Processing previous year data: {prev_fy_path.name}")
+        parse_csv_trades(prev_fy_path)
+    
+    print(f"📂 Processing current year data: {ytd_filename}")
+    parse_csv_trades(downloaded_path)
+    
+    print("✅ Incremental Sync Complete.")

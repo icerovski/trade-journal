@@ -88,3 +88,9 @@ DATA_PATH="C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData"
 
 ### [2026-02-14] Documentation & Git Configuration
 *   Updated `.gitignore` to include `GEMINI.md` and remove `.gemini`.
+
+### [2026-02-14] Incremental IBKR Sync & Archiving
+*   Implemented `sync_ibkr_trades()` in `ibkr.py`.
+*   Added logic to archive existing YTD files before downloading fresh data.
+*   Added automatic processing of previous year's Full Year (FY) data if present.
+*   Integrated the new sync option into the CLI menu in `main.py`.
