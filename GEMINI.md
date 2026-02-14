@@ -78,3 +78,10 @@ DATA_PATH="C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData"
 ### Development Conventions
 *   **Ticker Mapping:** IBKR symbols are mapped to Yahoo Finance tickers via heuristics (e.g., `.DE` for XETRA, `-P` for preferred shares).
 *   **Safety:** `.gitignore` excludes `.venv`, `.env`, and local data files to protect sensitive financial history.
+
+## 5. Development Log
+
+### [2026-02-14] Branch Initialization
+*   Created branch `gemini-development`.
+*   Committed initial project structure including GitHub workflows and `GEMINI.md`.
+*   Established this log to track autonomous development steps.
