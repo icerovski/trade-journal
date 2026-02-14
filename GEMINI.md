@@ -103,3 +103,14 @@ When you finish a feature always create a test and make sure if it is working pr
 *   Added missing dependencies (`pandas`, `python-dotenv`) via `uv`.
 *   Created automated test suite in `tests/test_ibkr.py` to verify synchronization logic.
 *   Verified that `main.py` starts correctly and tests pass.
+
+### [2026-02-14] DB Metadata & Live Dashboard
+*   Extended `trades` table schema to include `Conid`, `ListingExchange`, `Currency`, and `UnderlyingSymbol`.
+*   Refactored `PortfolioManager` to load trades directly from SQLite by default.
+*   Implemented idempotent sync to fill gaps in database without duplicates.
+*   Refactored dashboard into discrete calculation and formatting substeps.
+*   Added **LIVE Portfolio** dashboard with 30-second auto-refresh.
+
+### [2026-02-15] End-to-End Integration Testing
+*   Created `tests/test_integration.py` providing a full mock of the IBKR -> DB -> Position -> Dashboard flow.
+*   Verified "Reset-on-Zero" math and P/L calculations within the integration suite.
