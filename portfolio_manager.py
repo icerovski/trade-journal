@@ -158,7 +158,17 @@ class PortfolioManager:
                 side = str(row['Buy/Sell']).strip().upper()
                 q = abs(row['Quantity'])
                 p = row['Price']
+                source = str(row.get('source', '')).upper()
                 
+                # RESET ON OPENING BALANCE: 
+                # If we encounter an opening balance, it represents the state at that date.
+                # We wipe previous history for this asset to avoid double counting.
+                if 'OPENING_BALANCE' in source:
+                    qty = q
+                    total_cost = q * p
+                    first_entry_date = row['TradeDate']
+                    continue
+
                 if side == 'BUY':
                     if qty == 0:
                         # Position was closed or is brand new, clocking start date

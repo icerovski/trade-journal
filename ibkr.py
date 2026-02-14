@@ -29,7 +29,6 @@ def download_flex_report(query_id, output_path, force_download=False):
         try:
             file_date = pd.Timestamp(file_path.stat().st_mtime, unit='s').date()
             if file_date == pd.Timestamp.now().date():
-                # print(f"-> Found fresh local file: {file_path.name}")
                 return file_path
         except Exception:
             pass 
@@ -80,7 +79,7 @@ def download_flex_report(query_id, output_path, force_download=False):
     return None
 
 
-# --- 2. CSV TRADE PARSER (New!) ---
+# --- 2. CSV TRADE PARSER ---
 def parse_csv_trades(file_path):
     """
     Reads the IBKR CSV format and saves to DB.
@@ -92,22 +91,18 @@ def parse_csv_trades(file_path):
     
     try:
         # IBKR CSVs usually have a header row. 
-        # We assume standard headers based on your selection.
         df = pd.read_csv(file_path)
         
         # Clean column names (remove spaces)
         df.columns = df.columns.str.strip()
         
-        # Filter for actual trades (DataDiscriminator is often 'Order')
-        # Adjust this filter based on your specific CSV structure if needed.
-        # Common valid rows have a proper 'Symbol' and 'Buy/Sell'
+        # Filter for actual trades
         if 'Symbol' in df.columns:
             df = df.dropna(subset=['Symbol'])
         
         count = 0
         
         for _, row in df.iterrows():
-            # 1. Extract Fields (Handle typical IBKR column names)
             ticker = row.get('Symbol')
             side = str(row.get('Buy/Sell', '')).upper()
             date_raw = str(row.get('TradeDate', '')).replace('-', '')
@@ -167,29 +162,22 @@ def parse_csv_trades(file_path):
         
     except Exception as e:
         print(f"ERROR: CSV Parsing Error: {e}")
-        # Debug helper: print columns if failed
-        try:
-            print(f"   Available Columns: {list(pd.read_csv(file_path).columns)}")
-        except:
-            pass
 
 
-# --- 3. WRAPPER FUNCTIONS ---
+# --- 3. Restored Working Fetch ---
 
 def fetch_trade_history(days=365):
     """
-    Downloads the Trade CSV and imports it.
+    Restored working version: Downloads into trades.csv.
     """
     from config import IBKR_QUERY_ID_TRADES
-    print(f"-> Fetching Trade History (CSV)...")
+    print(f"-> Fetching Trade History into trades.csv...")
     
-    # 1. Download (Saves to trades.csv)
-    # Note: Ensure IBKR_TRADES_CSV ends in .csv in config.py
     file_path = download_flex_report(IBKR_QUERY_ID_TRADES, IBKR_TRADES_CSV, force_download=True)
     
-    # 2. Parse (As CSV)
     if file_path:
-        parse_csv_trades(file_path)
+        print(f"SUCCESS: Data saved to trades.csv")
+    return file_path
 
 def import_trades_from_file(filename):
     """
@@ -198,20 +186,11 @@ def import_trades_from_file(filename):
     file_path = Path(filename)
     if not file_path.exists():
         file_path = DATA_DIR / filename
-        
-    if str(filename).endswith('.xml'):
-        # Legacy XML support if needed
-        tree = ET.parse(file_path)
-        # Call the old parse_and_store_trades(tree.getroot()) if you still have XMLs
-        # (For now assuming only CSV moving forward)
-        print("WARNING: XML import deprecated for trades. Please use CSV.")
-    else:
-        parse_csv_trades(file_path)
+    parse_csv_trades(file_path)
 
 def migrate_opening_positions():
     """
     Migrates data from open_positions.csv if it exists in Archive.
-    This file uses ';' as delimiter and has different column names.
     """
     file_path = DATA_DIR / "Archive" / "open_positions.csv"
     if not file_path.exists():
@@ -219,34 +198,39 @@ def migrate_opening_positions():
 
     print(f"-> Migrating opening positions from {file_path.name}...")
     try:
-        # This file usually has ';' as delimiter
-        df = pd.read_csv(file_path, sep=';')
+        # Using cp1251 encoding to handle potential cyrillic characters
+        df = pd.read_csv(file_path, sep=';', encoding='cp1251')
         df.columns = df.columns.str.strip()
         
         count = 0
         for _, row in df.iterrows():
-            # Check LevelOfDetail - we only want 'SUMMARY' or rows with a date
-            detail = str(row.get('LevelOfDetail', '')).upper()
+            # Skip if it's a header row or doesn't have a valid quantity
+            try:
+                qty = float(row.get('Quantity', 0))
+            except (ValueError, TypeError):
+                continue
+                
+            # If we have a specific lot date, use it. Otherwise, look for ReportDate.
             date_raw = row.get('OpenDateTime')
+            if pd.isna(date_raw) or str(date_raw).strip() == "" or str(date_raw).strip() == "OpenDateTime":
+                # Check for Summary level
+                if str(row.get('LevelOfDetail', '')).upper() == 'SUMMARY':
+                    date_raw = row.get('ReportDate')
+                else:
+                    continue
             
-            # If we have a date, it's a specific lot. If not, it's a summary.
-            # To avoid double counting, we ONLY take specific lots (with dates)
             if pd.isna(date_raw) or str(date_raw).strip() == "":
                 continue
                 
             ticker = row.get('Symbol')
-            qty = float(row.get('Quantity', 0))
-            price = float(row.get('OpenPrice', 0)) # Using OpenPrice for lots
+            price = float(row.get('OpenPrice', 0))
             conid = str(row.get('Conid', ''))
-            
-            # Create synthetic ID
             ext_id = f"OPEN-{ticker}-{conid}-{date_raw}-{qty}"
             
             if trade_exists(ext_id):
                 continue
                 
             try:
-                # Format date (usually 14.1.2026 or similar)
                 date_str = pd.to_datetime(date_raw, dayfirst=True).strftime("%Y-%m-%d")
             except:
                 continue
@@ -269,55 +253,37 @@ def migrate_opening_positions():
     except Exception as e:
         print(f"ERROR: Opening positions migration failed: {e}")
 
-def sync_ibkr_trades():
+def process_local_csvs():
     """
-    Incremental Sync Logic:
-    1. Check for opening positions migration.
-    2. Always check for previous year's Full Year file (e.g., 2025_FY.csv).
-    3. Archive existing YTD file for the current year.
-    4. Download fresh YTD file.
-    5. Process both files. The trade_exists() check ensures no duplicates.
+    Scans the data directory for working CSVs and incorporates them into the DB.
     """
-    from config import IBKR_QUERY_ID_TRADES
-    
-    now = datetime.now()
-    current_year = now.year
-    prev_year = current_year - 1
-    
-    archive_dir = DATA_DIR / "Archive"
-    archive_dir.mkdir(exist_ok=True)
-    
-    print(f"-> Starting Sync for {current_year} (including history)...")
-
-    # 1. Opening Balance Migration
+    print("-> Incorporating local data into database (skipping duplicates)...")
     migrate_opening_positions()
 
-    # 2. Process Historical Data (Migration/Fill Gaps)
-    prev_fy_path = DATA_DIR / f"{prev_year}_FY.csv"
-    if prev_fy_path.exists():
-        print(f"-> Checking historical data for gaps: {prev_fy_path.name}")
-        parse_csv_trades(prev_fy_path)
-    
-    # 3. Archive old YTD if it exists
-    ytd_filename = f"{current_year}_YTD.csv"
-    ytd_path = DATA_DIR / ytd_filename
-    
-    if ytd_path.exists():
-        timestamp = now.strftime("%Y%m%d_%H%M%S")
-        archive_path = archive_dir / f"{current_year}_YTD_{timestamp}.csv"
-        print(f"-> Archiving current YTD to {archive_path.name}")
-        shutil.move(str(ytd_path), str(archive_path))
+    # Process trades.csv (the default fetch target)
+    if IBKR_TRADES_CSV.exists():
+        parse_csv_trades(IBKR_TRADES_CSV)
 
-    # 4. Download Fresh YTD
-    print(f"-> Downloading fresh YTD for {current_year}...")
-    downloaded_path = download_flex_report(IBKR_QUERY_ID_TRADES, ytd_path, force_download=True)
-    
-    if not downloaded_path:
-        print("ERROR: Failed to download fresh YTD data.")
-        return
+    # Process any other year-specific files
+    csv_files = list(DATA_DIR.glob("*_FY.csv")) + list(DATA_DIR.glob("*_YTD.csv"))
+    csv_files.sort()
 
-    # 5. Process new YTD
-    print(f"-> Processing current year data: {ytd_filename}")
-    parse_csv_trades(downloaded_path)
+    for file_path in csv_files:
+        parse_csv_trades(file_path)
     
-    print("SUCCESS: Sync Complete.")
+    print("SUCCESS: Database up to date.")
+
+def download_trade_report(year=None, is_ytd=True):
+    """
+    Wrapper for specific year downloads.
+    """
+    from config import IBKR_QUERY_ID_TRADES
+    if year is None:
+        return fetch_trade_history()
+        
+    suffix = "YTD" if is_ytd else "FY"
+    filename = f"{year}_{suffix}.csv"
+    output_path = DATA_DIR / filename
+    print(f"-> Downloading {filename} from IBKR...")
+    downloaded = download_flex_report(IBKR_QUERY_ID_TRADES, output_path, force_download=True)
+    return downloaded
