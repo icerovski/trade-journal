@@ -85,3 +85,6 @@ DATA_PATH="C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData"
 *   Created branch `gemini-development`.
 *   Committed initial project structure including GitHub workflows and `GEMINI.md`.
 *   Established this log to track autonomous development steps.
+
+### [2026-02-14] Documentation & Git Configuration
+*   Updated `.gitignore` to include `GEMINI.md` and remove `.gemini`.
