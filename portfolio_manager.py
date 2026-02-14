@@ -127,8 +127,12 @@ class PortfolioManager:
             
         return None 
 
-    def calculate_positions(self, asset_class_filter=None):
-        """Aggregates trades by 'Conid' to calculate current Quantity and Entry Price."""
+    def identify_open_positions(self, asset_class_filter=None):
+        """
+        Clocked Open Logic: 
+        Replays the ledger for each asset. If quantity hits zero, the position is 'clocked' closed.
+        Returns a list of dictionaries representing currently open positions.
+        """
         df = self._clean_data()
 
         if asset_class_filter:
@@ -136,13 +140,14 @@ class PortfolioManager:
             df = df[df['AssetClass'] == ac_filter]
         
         grouped = df.groupby('Conid')
-        position_list = []
+        open_positions = []
 
         for conid, group in grouped:
             qty = 0.0
             total_cost = 0.0
             first_entry_date = None
             
+            # Sort chronologically to replay accurately
             for _, row in group.iterrows():
                 side = str(row['Buy/Sell']).strip().upper()
                 q = abs(row['Quantity'])
@@ -150,37 +155,45 @@ class PortfolioManager:
                 
                 if side == 'BUY':
                     if qty == 0:
+                        # Position was closed or is brand new, clocking start date
                         first_entry_date = row['TradeDate']
                     total_cost += q * p
                     qty += q
                 elif side == 'SELL':
                     if qty > 0:
+                        # Weighted Average Cost logic
                         avg_price = total_cost / qty
                         qty -= q
                         total_cost -= q * avg_price
+                    
+                    # CLOCKED CLOSED: Reset if quantity hits zero
                     if qty <= 0.0001:
                         qty = 0
                         total_cost = 0
                         first_entry_date = None
 
+            # If after replaying history we have a residual quantity, it is OPEN
             if qty > 0.0001:
-                avg_entry = total_cost / qty
                 latest_data = group.iloc[-1]
-                position_list.append({
+                open_positions.append({
                     'Name': latest_data['Description'],
                     'Ticker': latest_data['Symbol'],
                     'Conid': conid,
                     'ListingExchange': latest_data['ListingExchange'],
                     'AssetClass': latest_data['AssetClass'],
                     'UnderlyingSymbol': latest_data['UnderlyingSymbol'],
-                    # Handle both CurrencyPrimary (from CSV) and CCY (from internal dashboard logic if reused)
                     'CCY': latest_data.get('CurrencyPrimary') or latest_data.get('CCY') or 'EUR', 
                     'Date': first_entry_date,
                     'Qty': qty,
-                    'Entry': avg_entry
+                    'Entry': total_cost / qty
                 })
 
-        self.positions = pd.DataFrame(position_list)
+        return open_positions
+
+    def calculate_positions(self, asset_class_filter=None):
+        """Wrapper that sets self.positions based on identified open positions."""
+        open_list = self.identify_open_positions(asset_class_filter=asset_class_filter)
+        self.positions = pd.DataFrame(open_list)
         return self.positions
 
     def get_dashboard(self, asset_class_filter=None, total_nav=None):
