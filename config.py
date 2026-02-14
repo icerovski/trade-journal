@@ -4,7 +4,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 1. Load Environment Variables
-load_dotenv()
+# We use override=True so that .env values take precedence over system env vars
+load_dotenv(override=True)
 
 # 2. Define Data Directory
 # We look for 'DATA_PATH' in the .env file. 

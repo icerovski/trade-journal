@@ -9,8 +9,6 @@ import io
 import shutil
 
 from config import (
-    IBKR_TOKEN, 
-    IBKR_QUERY_ID_TRADES, 
     IBKR_TRADES_CSV,
     DATA_DIR
 )
@@ -23,6 +21,7 @@ def download_flex_report(query_id, output_path, force_download=False):
     Returns the Path object if successful, or None if failed.
     Does NOT parse the final report (because it might be CSV or XML).
     """
+    from config import IBKR_TOKEN
     file_path = Path(output_path)
     
     # A. Local Cache Check
@@ -37,7 +36,7 @@ def download_flex_report(query_id, output_path, force_download=False):
 
     # B. Credential Check
     if query_id == "0" or not IBKR_TOKEN:
-        print("❌ Error: IBKR Credentials/Query ID missing in .env")
+        print(f"❌ Error: IBKR Credentials/Query ID missing in .env (ID: {query_id})")
         return None
         
     # C. Step 1: Send Request (Always returns XML)
@@ -173,6 +172,7 @@ def fetch_trade_history(days=365):
     """
     Downloads the Trade CSV and imports it.
     """
+    from config import IBKR_QUERY_ID_TRADES
     print(f"📥 Fetching Trade History (CSV)...")
     
     # 1. Download (Saves to trades.csv)
@@ -208,6 +208,7 @@ def sync_ibkr_trades():
     3. Download fresh YTD file.
     4. Parse both the previous FY (if not already processed) and the new YTD.
     """
+    from config import IBKR_QUERY_ID_TRADES
     now = datetime.now()
     current_year = now.year
     prev_year = current_year - 1
