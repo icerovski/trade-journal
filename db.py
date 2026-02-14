@@ -11,13 +11,13 @@ def init_db():
     conn = get_conn()
     cursor = conn.cursor()
     
-    # 1. Create Table (with description)
+    # 1. Create Table (with all necessary IBKR columns)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
             ticker TEXT NOT NULL,
-            description TEXT,         -- NEW: Company Name
+            description TEXT,
             side TEXT NOT NULL,
             quantity REAL NOT NULL,
             price REAL NOT NULL,
@@ -25,16 +25,30 @@ def init_db():
             expiry TEXT,
             notes TEXT,
             source TEXT DEFAULT 'MANUAL',
-            external_id TEXT UNIQUE
+            external_id TEXT UNIQUE,
+            conid TEXT,               -- NEW: IBKR unique ID
+            listing_exchange TEXT,    -- NEW: e.g. IBIS, AEB
+            currency TEXT,            -- NEW: e.g. USD, EUR
+            underlying_symbol TEXT    -- NEW: For mapping options/funds
         )
     """)
     
-    # 2. Migration: Add 'description' if it's missing from an old DB
+    # 2. Migrations: Add missing columns
     cursor.execute("PRAGMA table_info(trades)")
     columns = [info[1] for info in cursor.fetchall()]
-    if 'description' not in columns:
-        print("⚠️  Migrating DB: Adding 'description' column...")
-        cursor.execute("ALTER TABLE trades ADD COLUMN description TEXT")
+    
+    migrations = [
+        ('description', 'TEXT'),
+        ('conid', 'TEXT'),
+        ('listing_exchange', 'TEXT'),
+        ('currency', 'TEXT'),
+        ('underlying_symbol', 'TEXT')
+    ]
+    
+    for col_name, col_type in migrations:
+        if col_name not in columns:
+            print(f"⚠️  Migrating DB: Adding '{col_name}' column...")
+            cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
 
     conn.commit()
     conn.close()
@@ -48,15 +62,19 @@ def trade_exists(external_id):
     return exists
 
 def add_trade(date, ticker, side, quantity, price, asset_category="STK", 
-              expiry=None, notes="", source="MANUAL", external_id=None, description=None):
+              expiry=None, notes="", source="MANUAL", external_id=None, 
+              description=None, conid=None, listing_exchange=None, 
+              currency=None, underlying_symbol=None):
     conn = get_conn()
     try:
         conn.execute(
             """INSERT INTO trades 
-               (date, ticker, side, quantity, price, asset_category, expiry, notes, source, external_id, description) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (date, ticker, side, quantity, price, asset_category, expiry, notes, 
+                source, external_id, description, conid, listing_exchange, currency, underlying_symbol) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, ticker.upper(), side.upper(), float(quantity), float(price), 
-             asset_category, expiry, notes, source, external_id, description)
+             asset_category, expiry, notes, source, external_id, description,
+             conid, listing_exchange, currency, underlying_symbol)
         )
         conn.commit()
     except sqlite3.IntegrityError:

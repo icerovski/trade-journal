@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from pathlib import Path
+from db import get_conn
 
 class PortfolioManager:
     """
@@ -16,15 +17,45 @@ class PortfolioManager:
         "JPM PR C": "JPM-PC",
     }
     
-    def __init__(self, file_path_or_dataframe):
-        if isinstance(file_path_or_dataframe, (Path, str)):
-            self.raw_data = pd.read_csv(file_path_or_dataframe)
-        elif isinstance(file_path_or_dataframe, pd.DataFrame):
-            self.raw_data = file_path_or_dataframe
+    def __init__(self, source=None):
+        """
+        source can be:
+        - None (loads from SQLite DB)
+        - Path/str (loads from CSV)
+        - pd.DataFrame
+        """
+        if source is None:
+            self.raw_data = self._load_from_db()
+        elif isinstance(source, (Path, str)):
+            self.raw_data = pd.read_csv(source)
+        elif isinstance(source, pd.DataFrame):
+            self.raw_data = source
         else:
-            raise ValueError("Input must be a file path (str/Path) or a DataFrame.")
+            raise ValueError("Input must be None (for DB), a file path, or a DataFrame.")
             
         self.positions = pd.DataFrame()
+
+    def _load_from_db(self):
+        """Loads all trades from the SQLite database."""
+        conn = get_conn()
+        df = pd.read_sql_query("SELECT * FROM trades", conn)
+        conn.close()
+        
+        # Rename DB columns to match internal processing expectations
+        rename_map = {
+            'date': 'TradeDate',
+            'ticker': 'Symbol',
+            'side': 'Buy/Sell',
+            'quantity': 'Quantity',
+            'price': 'Price',
+            'asset_category': 'AssetClass',
+            'description': 'Description',
+            'conid': 'Conid',
+            'listing_exchange': 'ListingExchange',
+            'currency': 'CurrencyPrimary',
+            'underlying_symbol': 'UnderlyingSymbol'
+        }
+        return df.rename(columns=rename_map)
 
     # --- PART 1: CSV / Position Processing ---
 
@@ -36,8 +67,14 @@ class PortfolioManager:
         df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
         df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
         
+        # Ensure we have essential columns even if empty
+        for col in ['Conid', 'ListingExchange', 'CurrencyPrimary', 'UnderlyingSymbol']:
+            if col not in df.columns:
+                df[col] = np.nan
+
         if 'Conid' in df.columns:
-            df['Conid'] = df['Conid'].astype(str)
+            # For manual trades, we use Symbol as Conid if Conid is missing
+            df['Conid'] = df['Conid'].fillna(df['Symbol']).astype(str)
         
         df = df.dropna(subset=['TradeDate', 'Quantity', 'Price'])
         df = df[df['Buy/Sell'].isin(['BUY', 'SELL'])]
@@ -58,6 +95,8 @@ class PortfolioManager:
 
         # Asset Specific Logic
         if asset == 'OPT':
+            # Option tickers in Yahoo usually look like: AAPL230616C00150000
+            # IBKR symbols for options are often already in a similar format or need cleanup
             return symbol.replace(" ", "")
 
         if asset in ['STK', 'ETF', 'FUND']:
@@ -134,7 +173,8 @@ class PortfolioManager:
                     'ListingExchange': latest_data['ListingExchange'],
                     'AssetClass': latest_data['AssetClass'],
                     'UnderlyingSymbol': latest_data['UnderlyingSymbol'],
-                    'CCY': latest_data['CurrencyPrimary'],
+                    # Handle both CurrencyPrimary (from CSV) and CCY (from internal dashboard logic if reused)
+                    'CCY': latest_data.get('CurrencyPrimary') or latest_data.get('CCY') or 'EUR', 
                     'Date': first_entry_date,
                     'Qty': qty,
                     'Entry': avg_entry
@@ -166,11 +206,12 @@ class PortfolioManager:
             if ticker:
                 try:
                     data = yf.Ticker(ticker)
-                    hist = data.history(period="1d")
-                    if not hist.empty:
-                        price = hist['Close'].iloc[-1]
-                    else:
-                        price = data.info.get('regularMarketPrice', np.nan)
+                    # Use fast_info if available for efficiency, fallback to history
+                    price = data.fast_info.get('last_price', np.nan)
+                    if np.isnan(price):
+                        hist = data.history(period="1d")
+                        if not hist.empty:
+                            price = hist['Close'].iloc[-1]
                 except Exception:
                     pass
             current_prices.append(price)

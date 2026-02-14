@@ -108,12 +108,11 @@ def parse_csv_trades(file_path):
         
         for _, row in df.iterrows():
             # 1. Extract Fields (Handle typical IBKR column names)
-            # You might need to adjust these keys if your CSV headers are different
-            ticker = row.get('Symbol') or row.get('ClientAccountID') # Fallback
+            ticker = row.get('Symbol')
             side = str(row.get('Buy/Sell', '')).upper()
             date_raw = str(row.get('TradeDate', '')).replace('-', '')
             
-            # Skip rows that aren't trades (e.g., headers repeated or summaries)
+            # Skip rows that aren't trades
             if not ticker or side not in ['BUY', 'SELL']:
                 continue
 
@@ -123,15 +122,20 @@ def parse_csv_trades(file_path):
             except:
                 continue
 
-            # 3. Numeric Fields
+            # 3. Numeric & Meta Fields
             try:
                 qty = float(row.get('Quantity', 0))
                 price = float(row.get('TradePrice', 0))
                 asset = row.get('AssetClass', 'STK')
                 desc = row.get('Description', '')
                 
+                # Metadata for Ticker Mapping & Position Calculation
+                conid = str(row.get('Conid', ''))
+                exchange = str(row.get('ListingExchange', ''))
+                currency = str(row.get('CurrencyPrimary', ''))
+                underlying = str(row.get('UnderlyingSymbol', ''))
+
                 # Create Unique ID
-                # If IBKR provides an ID, use it. Otherwise, create a synthetic one.
                 ib_id = row.get('IBOrderID') or row.get('TradeID')
                 if ib_id:
                     ext_id = str(ib_id)
@@ -151,7 +155,11 @@ def parse_csv_trades(file_path):
                 notes=f"IBKR CSV Import {datetime.now().date()}",
                 source="IBKR_CSV",
                 external_id=ext_id,
-                description=desc
+                description=desc,
+                conid=conid,
+                listing_exchange=exchange,
+                currency=currency,
+                underlying_symbol=underlying
             )
             count += 1
             
@@ -203,12 +211,13 @@ def import_trades_from_file(filename):
 def sync_ibkr_trades():
     """
     Incremental Sync Logic:
-    1. Check for previous year's Full Year file (e.g., 2025_FY.csv).
+    1. Always check for previous year's Full Year file (e.g., 2025_FY.csv).
     2. Archive existing YTD file for the current year.
     3. Download fresh YTD file.
-    4. Parse both the previous FY (if not already processed) and the new YTD.
+    4. Process both files. The trade_exists() check ensures no duplicates.
     """
     from config import IBKR_QUERY_ID_TRADES
+    
     now = datetime.now()
     current_year = now.year
     prev_year = current_year - 1
@@ -216,9 +225,15 @@ def sync_ibkr_trades():
     archive_dir = DATA_DIR / "Archive"
     archive_dir.mkdir(exist_ok=True)
     
-    print(f"🔄 Starting Incremental Sync for {current_year}...")
+    print(f"🔄 Starting Sync for {current_year} (including {prev_year} history)...")
 
-    # 1. Archive old YTD if it exists
+    # 1. Process Historical Data (Migration/Fill Gaps)
+    prev_fy_path = DATA_DIR / f"{prev_year}_FY.csv"
+    if prev_fy_path.exists():
+        print(f"📂 Checking historical data for gaps: {prev_fy_path.name}")
+        parse_csv_trades(prev_fy_path)
+    
+    # 2. Archive old YTD if it exists
     ytd_filename = f"{current_year}_YTD.csv"
     ytd_path = DATA_DIR / ytd_filename
     
@@ -228,8 +243,7 @@ def sync_ibkr_trades():
         print(f"📦 Archiving current YTD to {archive_path.name}")
         shutil.move(str(ytd_path), str(archive_path))
 
-    # 2. Download Fresh YTD
-    # Note: We use the same Query ID, assuming the Flex Query is set to 'Year to Date' or similar.
+    # 3. Download Fresh YTD
     print(f"📥 Downloading fresh YTD for {current_year}...")
     downloaded_path = download_flex_report(IBKR_QUERY_ID_TRADES, ytd_path, force_download=True)
     
@@ -237,14 +251,8 @@ def sync_ibkr_trades():
         print("❌ Failed to download fresh YTD data.")
         return
 
-    # 3. Process Files
-    # We process the previous FY file if it exists (to ensure no gaps)
-    prev_fy_path = DATA_DIR / f"{prev_year}_FY.csv"
-    if prev_fy_path.exists():
-        print(f"📂 Processing previous year data: {prev_fy_path.name}")
-        parse_csv_trades(prev_fy_path)
-    
+    # 4. Process new YTD
     print(f"📂 Processing current year data: {ytd_filename}")
     parse_csv_trades(downloaded_path)
     
-    print("✅ Incremental Sync Complete.")
+    print("✅ Sync Complete.")
