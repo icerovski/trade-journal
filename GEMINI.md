@@ -143,3 +143,10 @@ When you finish a feature always create a test and make sure if it is working pr
 ### [2026-02-15] Data Directory Cleanup & Storage Centralization
 *   Confirmed `simple_journal.db` is correctly managed in the central OneDrive directory (`C:/Users/User/OneDrive/Accounts/HTC_EOOD/TradeJournalData`).
 *   Deleted the redundant local `data/` directory to maintain a single source of truth and prevent configuration confusion.
+
+### [2026-02-15] Risk-Focused Dashboard & Hybrid Open Logic
+*   **Portfolio Logic**: Refactored `PortfolioManager` to use a **Hybrid approach** (IBKR Snapshot as ground truth + Ledger for recent manual trades). Added a **Pure Ledger Replay** mode for comparison and auditing.
+*   **Market Data**: Implemented **Smart Market Data** with online ISIN searching via Yahoo Finance, automated Option ticker construction, and an IBKR **MarkPrice fallback** to eliminate `nan` prices.
+*   **Manual Trade Management**: Added a dedicated interface in `main.py` allowing **single-line entry** (e.g., `aapl, buy, 100, 112.5`) and database persistence.
+*   **Visual Refactor**: Updated the dashboard to **group positions by Asset Class**, added absolute **P/L** and **AGE** (investment duration) columns, and implemented professional subtotals and grand totals.
+*   **Data Integrity**: Fixed a duplication bug by filtering IBKR CSV imports for `EXECUTION` rows only and optimized database loading to target only active positions.

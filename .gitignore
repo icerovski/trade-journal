@@ -17,4 +17,4 @@ data/
 trades.csv
 ibkr_nav.xml
 gha-creds-*.json
-GEMINI.md
+/GEMINI.md
