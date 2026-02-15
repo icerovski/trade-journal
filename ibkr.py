@@ -3,10 +3,6 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from dateutil.parser import parse
-import csv
-import io
-import shutil
 
 from config import (
     IBKR_TRADES_CSV,
@@ -100,6 +96,10 @@ def parse_csv_trades(file_path):
         if 'Symbol' in df.columns:
             df = df.dropna(subset=['Symbol'])
         
+        # Only process EXECUTION level of detail (avoids duplicates from SYMBOL_SUMMARY)
+        if 'LevelOfDetail' in df.columns:
+            df = df[df['LevelOfDetail'] == 'EXECUTION']
+        
         count = 0
         
         for _, row in df.iterrows():
@@ -175,6 +175,17 @@ def fetch_trade_history(days=365):
     file_path = download_flex_report(IBKR_QUERY_ID_TRADES, IBKR_TRADES_CSV, force_download=True)
     return file_path
 
+def fetch_open_positions():
+    """
+    Downloads the latest Open Positions report from IBKR.
+    """
+    from config import IBKR_QUERY_ID_OPEN_POSITIONS, IBKR_OPEN_POSITIONS_CSV
+    print(f"-> Fetching latest Open Positions from IBKR...")
+    file_path = download_flex_report(IBKR_QUERY_ID_OPEN_POSITIONS, IBKR_OPEN_POSITIONS_CSV, force_download=True)
+    if file_path:
+        print(f"SUCCESS: Open Positions saved to {IBKR_OPEN_POSITIONS_CSV.name}")
+    return file_path
+
 def download_trade_report(year=None, is_ytd=True):
     """
     Downloads a trade report for a specific year.
@@ -193,15 +204,6 @@ def download_trade_report(year=None, is_ytd=True):
     if downloaded:
         print(f"SUCCESS: {filename} saved to data folder.")
     return downloaded
-
-def import_trades_from_file(filename):
-    """
-    Manual import override.
-    """
-    file_path = Path(filename)
-    if not file_path.exists():
-        file_path = DATA_DIR / filename
-    parse_csv_trades(file_path)
 
 def migrate_opening_positions():
     """
@@ -288,10 +290,3 @@ def process_local_csvs():
         parse_csv_trades(file_path)
     
     print("SUCCESS: Database up to date with all local CSVs.")
-
-def sync_ibkr_trades():
-    """
-    Legacy convenience function.
-    """
-    fetch_trade_history()
-    process_local_csvs()

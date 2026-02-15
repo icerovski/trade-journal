@@ -82,10 +82,17 @@ def add_trade(date, ticker, side, quantity, price, asset_category="STK",
     finally:
         conn.close()
 
-def archive_database():
-    import shutil
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = DB_PATH.parent / f"simple_journal_archive_{timestamp}.db"
-    shutil.copy(DB_PATH, backup_path)
-    print(f"-> Database archived to: {backup_path.name}")
+def get_manual_trades():
+    """Returns all trades with source='MANUAL'."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT id, date, ticker, side, quantity, price FROM trades WHERE source = 'MANUAL' ORDER BY date DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def delete_trade(trade_id):
+    """Deletes a trade by its database ID."""
+    conn = get_conn()
+    conn.execute("DELETE FROM trades WHERE id = ?", (trade_id,))
+    conn.commit()
+    conn.close()

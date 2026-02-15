@@ -8,10 +8,7 @@ from rich.live import Live
 
 console = Console()
 
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-def calculate_dashboard_data(portfolio_manager, asset_class_filter=None):
+def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_ledger=False):
     """
     Substep 1: Make all calculations.
     Returns (DataFrame, total_nav, report_date)
@@ -24,41 +21,26 @@ def calculate_dashboard_data(portfolio_manager, asset_class_filter=None):
         real_nav, report_date = None, "Unknown"
     
     # 2. Get Data (Passing NAV for % calc)
-    df = portfolio_manager.get_dashboard(asset_class_filter=asset_class_filter, total_nav=real_nav)
+    df = portfolio_manager.get_dashboard(asset_class_filter=asset_class_filter, total_nav=real_nav, use_ledger=use_ledger)
     return df, real_nav, report_date
 
 def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
     """
     Substep 2: Format the dashboard and return the Rich Table object.
+    Groups by Asset Class and includes Risk Metrics (Age, ATR Placeholder).
     """
     if df.empty:
         return Table.grid().add_row("[yellow]No active positions found.[/yellow]")
 
-    # Determine AUM for the Header
-    if total_nav_override:
-        total_aum = total_nav_override
-        title_suffix = f"(IBKR NAV as of {report_date})"
-    else:
-        total_aum = df['MarketValue'].sum()
-        title_suffix = "(Sum of Positions)"
-
-    # Handle Sorting
-    if sort_by == "MarketValue":
-        df = df.sort_values('MarketValue', ascending=False)
-    elif sort_by == "Pct":
-        df = df.sort_values('Pct', ascending=False)
-    else: # Default: Ticker
-        df = df.sort_values('Ticker', ascending=True)
+    # 1. Prepare Table
+    ccy = df.iloc[0]['CCY'] if not df.empty else "EUR"
+    total_aum = total_nav_override if total_nav_override else df['MarketValue'].sum()
+    title = f"[bold]PORTFOLIO RISK DASHBOARD [AUM: {ccy} {total_aum:,.0f}] (Report: {report_date})[/bold]"
+    table = Table(box=box.HORIZONTALS, title=title, header_style="bold cyan", show_footer=True)
     
-    # Use currency from first row if available
-    ccy = df.iloc[0]['CCY'] if not df.empty else "???"
-    
-    # Create Table
-    table = Table(box=box.SIMPLE_HEAD, title=f"[bold]PORTFOLIO [AUM: {ccy} {total_aum:,.0f}] {title_suffix}[/bold]")
-    
-    table.add_column("TICKER", style="bold cyan")
+    # Columns
+    table.add_column("TICKER", style="bold")
     table.add_column("COMPANY", style="dim", max_width=20, overflow="ellipsis")
-    table.add_column("DATE", justify="right")
     table.add_column("QTY", justify="right")
     table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
@@ -66,48 +48,78 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
     table.add_column("P/L", justify="right")
     table.add_column("P/L %", justify="right")
     table.add_column("AAGR", justify="right", style="magenta")
+    table.add_column("AGE", justify="right", style="yellow")
+    table.add_column("ATR", justify="right", style="dim") # Placeholder
     table.add_column("% NAV", justify="right", style="blue")
 
-    # --- Print Rows ---
-    for _, row in df.iterrows():
-        pl_color = "green" if row['P/L'] >= 0 else "red"
-        date_str = row['Date'].strftime('%Y-%m-%d') if pd.notnull(row['Date']) else "-"
+    # 2. Group by Asset Class
+    asset_groups = df.groupby('AssetClass')
+    
+    today = pd.Timestamp.now()
+    
+    for asset_class, group in asset_groups:
+        # Sort group
+        if sort_by == "MarketValue":
+            group = group.sort_values('MarketValue', ascending=False)
+        elif sort_by == "Pct":
+            group = group.sort_values('Pct', ascending=False)
+        else:
+            group = group.sort_values('Ticker', ascending=True)
+
+        # Add Section Header
+        table.add_row(f"[bold white underline]{asset_class}[/bold white underline]", "", "", "", "", "", "", "", "", "", "", "")
+
+        group_mv = group['MarketValue'].sum()
+        group_pl = group['P/L'].sum()
+        group_nav = group['NavPct'].sum()
+
+        for _, row in group.iterrows():
+            pl_color = "green" if row['P/L'] >= 0 else "red"
+            
+            # Calculate Age String
+            entry_date = pd.to_datetime(row['Date'])
+            days = (today - entry_date).days
+            if days > 365:
+                age_str = f"{days/365.25:.1f}y"
+            else:
+                age_str = f"{days}d"
+
+            table.add_row(
+                str(row['Ticker']),
+                str(row['Name']),
+                f"{row['Qty']:,.0f}",
+                f"{row['Entry']:,.2f}",
+                f"{row['Price']:,.2f}",
+                f"{row['MarketValue']:,.0f}",
+                f"[{pl_color}]{row['P/L']:,.0f}[/{pl_color}]",
+                f"[{pl_color}]{row['Pct']:.1f}%[/{pl_color}]",
+                f"{row['AAGR']:.1f}%",
+                age_str,
+                "---", # ATR Placeholder
+                f"{row['NavPct']:.1f}%"
+            )
         
-        # Handle NavPct safely
-        nav_pct = row.get('NavPct', 0.0)
-
+        # Subtotal for Asset Class
         table.add_row(
-            str(row['Ticker']),
-            str(row['Name']),
-            date_str,
-            f"{row['Qty']:,.0f}",
-            f"{row['Entry']:,.2f}",
-            f"{row['Price']:,.2f}",
-            f"{row['MarketValue']:,.0f}",
-            f"[{pl_color}]{row['P/L']:,.0f}[/{pl_color}]",
-            f"[{pl_color}]{row['Pct']:.1f}%[/{pl_color}]",
-            f"{row['AAGR']:.1f}%",
-            f"{nav_pct:.1f}%"
+            f"[dim]{asset_class} TOTAL[/dim]", "", "", "", "",
+            f"[dim]{group_mv:,.0f}[/dim]",
+            f"[dim]{group_pl:,.0f}[/dim]", "", "", "", "",
+            f"[dim]{group_nav:.1f}%[/dim]"
         )
+        table.add_section()
 
-    # --- Totals ---
+    # 3. Final Footer
     total_mv = df['MarketValue'].sum()
     total_pl = df['P/L'].sum()
-    total_nav_pct = df['NavPct'].sum() # Sum of exposures
-    
     total_cost = total_mv - total_pl
     total_pct = (total_pl / total_cost * 100) if total_cost > 0 else 0.0
     total_color = "green" if total_pl >= 0 else "red"
 
-    table.add_section()
-    table.add_row(
-        "TOTAL", "", "", "", "", "",
-        f"{total_mv:,.0f}",
-        f"[{total_color}]{total_pl:,.0f}[/{total_color}]",
-        f"[{total_color}]{total_pct:.1f}%[/{total_color}]",
-        "",
-        f"{total_nav_pct:.1f}%"
-    )
+    table.columns[0].footer = "GRAND TOTAL"
+    table.columns[5].footer = f"{total_mv:,.0f}"
+    table.columns[6].footer = f"[{total_color}]{total_pl:,.0f}[/{total_color}]"
+    table.columns[7].footer = f"[{total_color}]{total_pct:.1f}%[/{total_color}]"
+    table.columns[11].footer = f"{df['NavPct'].sum():.1f}%"
 
     return table
 
