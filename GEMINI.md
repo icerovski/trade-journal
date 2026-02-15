@@ -114,3 +114,17 @@ When you finish a feature always create a test and make sure if it is working pr
 ### [2026-02-15] End-to-End Integration Testing
 *   Created `tests/test_integration.py` providing a full mock of the IBKR -> DB -> Position -> Dashboard flow.
 *   Verified "Reset-on-Zero" math and P/L calculations within the integration suite.
+
+### [2026-02-15] Instrument Filtering & Local-First Policy
+*   Implemented instrument selection menu (Stocks, Options, Bonds, All).
+*   Updated `PortfolioManager` to support multi-category filtering (e.g., STK + ETF).
+*   Implemented "Local-First" data policy: dashboard uses DB/local files by default; network sync must be explicitly triggered.
+*   Resolved `UnicodeEncodeError` by replacing emojis with standard text symbols in console output.
+*   Integrated IBKR report date into NAV and Portfolio headers.
+
+### [2026-02-15] Granular CLI Menu Structure & Data Integrity Fixes
+*   Restructured main menu into four distinct operations: Fetch Trades, Fetch NAV, Incorporate CSVs, View Dashboard.
+*   Added support for fetching specific years (FY/YTD) from IBKR while maintaining `trades.csv` as the quick default.
+*   **Opening Balance Fix:** Implemented `cp1251` encoding and header-skip logic for `open_positions.csv` migration.
+*   **Double-Counting Prevention:** Updated ledger replay to reset an asset's history when an `OPENING_BALANCE` source is encountered.
+*   Verified XLB share count correctly totals 1,418.
