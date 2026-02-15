@@ -16,18 +16,19 @@ def show_menu():
 
 def handle_fetch_trades():
     print("\n--- FETCH TRADES ---")
-    print("1. Fetch Recent History (Restored Default)")
-    print("2. Fetch Specific Year (Experimental)")
+    print("1. Fetch Current Year (YTD)")
+    print("2. Fetch Specific Year (Full Year)")
     choice = input("Choice: ").strip()
     
-    if choice == '2':
+    if choice == '1':
+        fetch_trade_history() # Downloads into trades.csv
+    elif choice == '2':
         year_input = input("Enter Year (e.g. 2025): ").strip()
-        year = int(year_input) if year_input else 2026
-        type_input = input("Full Year or YTD? (F/Y, default Y): ").strip().upper()
-        is_ytd = False if type_input == 'F' else True
-        download_trade_report(year=year, is_ytd=is_ytd)
+        from datetime import datetime
+        year = int(year_input) if year_input else datetime.now().year - 1
+        download_trade_report(year=year, is_ytd=False)
     else:
-        fetch_trade_history() # Restored default logic
+        print("Invalid choice.")
 
 def handle_fetch_nav():
     print("\n--- FETCH NAV ---")
@@ -54,6 +55,19 @@ def ask_asset_class():
         return 'BILL' # IBKR often uses 'BILL' for treasuries
     return None # All
 
+def ask_sort_by():
+    print("\n--- SORT BY ---")
+    print("1. Ticker (A-Z)")
+    print("2. Market Value (High-Low)")
+    print("3. P/L % (High-Low)")
+    choice = input("Choice (default 1): ").strip()
+    
+    if choice == '2':
+        return "MarketValue"
+    elif choice == '3':
+        return "Pct"
+    return "Ticker"
+
 def main():
     # Initialize DB
     init_db()
@@ -73,6 +87,7 @@ def main():
 
         elif choice == '4':
             filter_val = ask_asset_class()
+            sort_val = ask_sort_by()
             
             print("\n1. Static View")
             print("2. Live View (30s refresh)")
@@ -80,10 +95,10 @@ def main():
             
             manager = PortfolioManager()
             if view_type == '2':
-                run_live_dashboard(manager, asset_class_filter=filter_val)
+                run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val)
             else:
                 df, real_nav, report_date = calculate_dashboard_data(manager, asset_class_filter=filter_val)
-                print_rich_portfolio(df, total_nav_override=real_nav, report_date=report_date)
+                print_rich_portfolio(df, total_nav_override=real_nav, report_date=report_date, sort_by=sort_val)
 
         elif choice == '0':
             print("Exiting...")

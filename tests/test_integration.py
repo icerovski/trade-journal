@@ -26,6 +26,7 @@ class TestFullFeatures(unittest.TestCase):
             patch("db.DB_PATH", self.test_db),
             patch("config.DB_PATH", self.test_db),
             patch("ibkr.DATA_DIR", self.test_dir),
+            patch("ibkr.IBKR_TRADES_CSV", self.test_dir / "trades.csv"),
             patch("portfolio_manager.get_conn", lambda: sqlite3.connect(self.test_db))
         ]
         for p in self.patches:

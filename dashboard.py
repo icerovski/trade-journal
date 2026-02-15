@@ -27,7 +27,7 @@ def calculate_dashboard_data(portfolio_manager, asset_class_filter=None):
     df = portfolio_manager.get_dashboard(asset_class_filter=asset_class_filter, total_nav=real_nav)
     return df, real_nav, report_date
 
-def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown"):
+def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
     """
     Substep 2: Format the dashboard and return the Rich Table object.
     """
@@ -42,8 +42,13 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown")
         total_aum = df['MarketValue'].sum()
         title_suffix = "(Sum of Positions)"
 
-    # Sort by Market Value
-    df = df.sort_values('MarketValue', ascending=False)
+    # Handle Sorting
+    if sort_by == "MarketValue":
+        df = df.sort_values('MarketValue', ascending=False)
+    elif sort_by == "Pct":
+        df = df.sort_values('Pct', ascending=False)
+    else: # Default: Ticker
+        df = df.sort_values('Ticker', ascending=True)
     
     # Use currency from first row if available
     ccy = df.iloc[0]['CCY'] if not df.empty else "???"
@@ -106,12 +111,12 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown")
 
     return table
 
-def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown"):
+def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
     """Simple wrapper for one-time print."""
-    table = generate_portfolio_table(df, total_nav_override, report_date)
+    table = generate_portfolio_table(df, total_nav_override, report_date, sort_by=sort_by)
     console.print(table)
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30):
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30, sort_by="Ticker"):
     """
     Continuous refresh loop for the dashboard.
     """
@@ -127,7 +132,7 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
                 df, real_nav, report_date = calculate_dashboard_data(pm, asset_class_filter)
                 
                 # 2. Update Display
-                table = generate_portfolio_table(df, real_nav, report_date)
+                table = generate_portfolio_table(df, real_nav, report_date, sort_by=sort_by)
                 live.update(table, refresh=True)
                 
                 time.sleep(refresh_interval)

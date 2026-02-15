@@ -128,3 +128,18 @@ When you finish a feature always create a test and make sure if it is working pr
 *   **Opening Balance Fix:** Implemented `cp1251` encoding and header-skip logic for `open_positions.csv` migration.
 *   **Double-Counting Prevention:** Updated ledger replay to reset an asset's history when an `OPENING_BALANCE` source is encountered.
 *   Verified XLB share count correctly totals 1,418.
+
+### [2026-02-15] Dashboard Sorting & Test Isolation
+*   Implemented sorting functionality for the portfolio dashboard (Ticker, Market Value, P/L %).
+*   Updated `main.py` and `dashboard.py` to support user-selected sorting preferences.
+*   Created `tests/test_dashboard_sort.py` to verify sorting logic.
+*   Fixed `tests/test_integration.py` to ensure complete isolation from real data files by patching `IBKR_TRADES_CSV`.
+
+### [2026-02-15] Simplified Trade Fetching Logic
+*   Restructured the "Fetch Trades" menu to distinguish between Current Year (YTD) and Specific Year (Full Year).
+*   Enforced "Full Year" mode for specific year downloads, removing the manual toggle.
+*   Updated `ibkr.py` logs to reflect the YTD focus for recent history.
+
+### [2026-02-15] Data Directory Cleanup & Storage Centralization
+*   Confirmed `simple_journal.db` is correctly managed in the central OneDrive directory (`C:/Users/User/OneDrive/Accounts/HTC_EOOD/TradeJournalData`).
+*   Deleted the redundant local `data/` directory to maintain a single source of truth and prevent configuration confusion.

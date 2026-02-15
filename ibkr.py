@@ -171,7 +171,7 @@ def fetch_trade_history(days=365):
     Downloads the Trade CSV (Restored working default).
     """
     from config import IBKR_QUERY_ID_TRADES
-    print(f"-> Fetching Recent History into trades.csv...")
+    print(f"-> Fetching Current Year YTD into trades.csv...")
     file_path = download_flex_report(IBKR_QUERY_ID_TRADES, IBKR_TRADES_CSV, force_download=True)
     return file_path
 
