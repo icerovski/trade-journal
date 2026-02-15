@@ -164,20 +164,35 @@ def parse_csv_trades(file_path):
         print(f"ERROR: CSV Parsing Error: {e}")
 
 
-# --- 3. Restored Working Fetch ---
+# --- 3. WRAPPER FUNCTIONS ---
 
 def fetch_trade_history(days=365):
     """
-    Restored working version: Downloads into trades.csv.
+    Downloads the Trade CSV (Restored working default).
     """
     from config import IBKR_QUERY_ID_TRADES
-    print(f"-> Fetching Trade History into trades.csv...")
-    
+    print(f"-> Fetching Recent History into trades.csv...")
     file_path = download_flex_report(IBKR_QUERY_ID_TRADES, IBKR_TRADES_CSV, force_download=True)
-    
-    if file_path:
-        print(f"SUCCESS: Data saved to trades.csv")
     return file_path
+
+def download_trade_report(year=None, is_ytd=True):
+    """
+    Downloads a trade report for a specific year.
+    """
+    from config import IBKR_QUERY_ID_TRADES
+    now = datetime.now()
+    if year is None:
+        year = now.year
+    
+    suffix = "YTD" if is_ytd else "FY"
+    filename = f"{year}_{suffix}.csv"
+    output_path = DATA_DIR / filename
+
+    print(f"-> Downloading {filename} from IBKR...")
+    downloaded = download_flex_report(IBKR_QUERY_ID_TRADES, output_path, force_download=True)
+    if downloaded:
+        print(f"SUCCESS: {filename} saved to data folder.")
+    return downloaded
 
 def import_trades_from_file(filename):
     """
@@ -204,16 +219,15 @@ def migrate_opening_positions():
         
         count = 0
         for _, row in df.iterrows():
-            # Skip if it's a header row or doesn't have a valid quantity
+            # Skip header or invalid quantity
             try:
                 qty = float(row.get('Quantity', 0))
             except (ValueError, TypeError):
                 continue
                 
-            # If we have a specific lot date, use it. Otherwise, look for ReportDate.
+            # Use OpenDateTime for specific lots, otherwise ReportDate for SUMMARY row
             date_raw = row.get('OpenDateTime')
             if pd.isna(date_raw) or str(date_raw).strip() == "" or str(date_raw).strip() == "OpenDateTime":
-                # Check for Summary level
                 if str(row.get('LevelOfDetail', '')).upper() == 'SUMMARY':
                     date_raw = row.get('ReportDate')
                 else:
@@ -249,41 +263,35 @@ def migrate_opening_positions():
                 underlying_symbol=row.get('UnderlyingSymbol')
             )
             count += 1
-        print(f"SUCCESS: Migrated {count} lots from opening positions.")
+        print(f"SUCCESS: Migrated {count} entries from opening positions.")
     except Exception as e:
         print(f"ERROR: Opening positions migration failed: {e}")
 
 def process_local_csvs():
     """
-    Scans the data directory for working CSVs and incorporates them into the DB.
+    Scans the data directory for all relevant CSV files and incorporates them into the DB.
     """
     print("-> Incorporating local data into database (skipping duplicates)...")
+    
+    # 1. Opening Positions (Important for XLB and other starting balances)
     migrate_opening_positions()
 
-    # Process trades.csv (the default fetch target)
+    # 2. Main trades.csv
     if IBKR_TRADES_CSV.exists():
         parse_csv_trades(IBKR_TRADES_CSV)
 
-    # Process any other year-specific files
+    # 3. Year-specific files
     csv_files = list(DATA_DIR.glob("*_FY.csv")) + list(DATA_DIR.glob("*_YTD.csv"))
     csv_files.sort()
 
     for file_path in csv_files:
         parse_csv_trades(file_path)
     
-    print("SUCCESS: Database up to date.")
+    print("SUCCESS: Database up to date with all local CSVs.")
 
-def download_trade_report(year=None, is_ytd=True):
+def sync_ibkr_trades():
     """
-    Wrapper for specific year downloads.
+    Legacy convenience function.
     """
-    from config import IBKR_QUERY_ID_TRADES
-    if year is None:
-        return fetch_trade_history()
-        
-    suffix = "YTD" if is_ytd else "FY"
-    filename = f"{year}_{suffix}.csv"
-    output_path = DATA_DIR / filename
-    print(f"-> Downloading {filename} from IBKR...")
-    downloaded = download_flex_report(IBKR_QUERY_ID_TRADES, output_path, force_download=True)
-    return downloaded
+    fetch_trade_history()
+    process_local_csvs()
