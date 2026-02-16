@@ -86,28 +86,64 @@ class PortfolioManager:
         except Exception: pass
         return None
 
-    def _map_to_yahoo_ticker(self, row):
-        symbol, exchange, asset, ccy, underlying = row['Ticker'], str(row['ListingExchange']), row['AssetClass'], row['CCY'], str(row['UnderlyingSymbol'])
-        
-        if asset == 'OPT':
-            return symbol.replace(" ", "")
+    def resolve_yf_ticker(self, ticker_ibkr, isin=None):
+        """
+        Public method to resolve an IBKR ticker to a Yahoo Finance ticker.
+        Priority: 1. Provided ISIN, 2. ISIN from open_positions.csv, 3. Heuristics
+        """
+        # A. If ISIN not provided, try to find it in open_positions.csv
+        if not isin:
+            from config import DATA_DIR
+            path = DATA_DIR / "open_positions.csv"
+            if path.exists():
+                try:
+                    df_open = pd.read_csv(path, on_bad_lines='skip')
+                    match = df_open[df_open['Symbol'].str.upper() == ticker_ibkr.upper()]
+                    if not match.empty:
+                        isin = match.iloc[0].get('ISIN')
+                except Exception: pass
 
-        if 'ISIN' in row and not pd.isna(row['ISIN']):
-            online = self._search_online_ticker(row['ISIN'])
+        # B. Use ISIN to find YF Ticker
+        if isin and not pd.isna(isin):
+            online = self._search_online_ticker(isin)
             if online: return online
 
+        # C. Heuristics Fallback (Simplified row structure for the mapper)
+        # We try to guess the metadata if we only have the ticker
+        from config import DATA_DIR
+        path = DATA_DIR / "open_positions.csv"
+        exchange, asset, ccy, underlying = "", "STK", "USD", ""
+        if path.exists():
+            try:
+                df_open = pd.read_csv(path, on_bad_lines='skip')
+                match = df_open[df_open['Symbol'].str.upper() == ticker_ibkr.upper()]
+                if not match.empty:
+                    row = match.iloc[0]
+                    exchange = str(row.get('ListingExchange', ''))
+                    asset = str(row.get('AssetClass', 'STK'))
+                    ccy = str(row.get('CurrencyPrimary', 'USD'))
+                    underlying = str(row.get('UnderlyingSymbol', ''))
+            except Exception: pass
+
+        # Map logic (Moved from _map_to_yahoo_ticker)
+        if asset == 'OPT': return ticker_ibkr.replace(" ", "")
         if asset in ['STK', 'ETF', 'FUND']:
             if 'IBIS' in exchange: 
-                t = underlying if (underlying and underlying != 'nan') else symbol
+                t = underlying if (underlying and underlying != 'nan') else ticker_ibkr
                 return f"{t}.DE"
-            if exchange == 'AEB': return f"{symbol}.AS"
-            if 'LSE' in exchange: return f"{symbol}.L"
+            if exchange == 'AEB': return f"{ticker_ibkr}.AS"
+            if 'LSE' in exchange: return f"{ticker_ibkr}.L"
             if ccy == 'USD':
-                if ' PR' in symbol: return symbol.replace(' PR ', '-P').replace(' PR', '-P').replace(' ', '-')
-                return symbol.replace(' ', '-').replace('.', '-')
-            if ccy == 'EUR': return f"{symbol}.DE"
-        if asset == 'CRYPTO': return f"{symbol}-USD"
-        return None 
+                if ' PR' in ticker_ibkr: return ticker_ibkr.replace(' PR ', '-P').replace(' PR', '-P').replace(' ', '-')
+                return ticker_ibkr.replace(' ', '-').replace('.', '-')
+            if ccy == 'EUR': return f"{ticker_ibkr}.DE"
+        if asset == 'CRYPTO': return f"{ticker_ibkr}-USD"
+        
+        return ticker_ibkr # Final raw fallback
+
+    def _map_to_yahoo_ticker(self, row):
+        """Internal bridge to resolve_yf_ticker using full row data."""
+        return self.resolve_yf_ticker(row['Ticker'], row.get('ISIN'))
 
     def _get_broker_verified_positions(self):
         from config import DATA_DIR
@@ -120,11 +156,9 @@ class PortfolioManager:
             df['MarkPrice'] = pd.to_numeric(df['MarkPrice'], errors='coerce')
             df['PercentOfNAV'] = pd.to_numeric(df['PercentOfNAV'], errors='coerce')
             df = df.dropna(subset=['Quantity', 'CostBasisPrice', 'Conid'])
-
             lots = df[df['LevelOfDetail'] == 'LOT'].copy()
             lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].str.split(';').str[0], errors='coerce')
             earliest_dates = lots.groupby('Conid')['OpenDateClean'].min().to_dict()
-            
             summaries = df[df['LevelOfDetail'] == 'SUMMARY'].copy()
             broker_data = {}
             report_date = pd.to_datetime(summaries['ReportDate'].iloc[0], errors='coerce')
@@ -137,33 +171,24 @@ class PortfolioManager:
                     'Description': group['Description'].iloc[0], 'Symbol': group['Symbol'].iloc[0],
                     'AssetClass': group['AssetClass'].iloc[0], 'Currency': group['CurrencyPrimary'].iloc[0],
                     'ListingExchange': group['ListingExchange'].iloc[0], 'UnderlyingSymbol': group['UnderlyingSymbol'].iloc[0],
-                    'ISIN': group.get('ISIN', [np.nan]).iloc[0],
-                    'MarkPrice': group['MarkPrice'].iloc[0],
+                    'ISIN': group.get('ISIN', [np.nan]).iloc[0], 'MarkPrice': group['MarkPrice'].iloc[0],
                     'NavPct': group['PercentOfNAV'].sum()
                 }
             return broker_data, report_date
-        except Exception as e:
-            return {}, None
+        except Exception: return {}, None
 
     def identify_open_positions(self, asset_class_filter=None):
         ledger_df = self._clean_data()
         broker_verified, report_date = self._get_broker_verified_positions()
-        
-        # Normalize filters
         filters = []
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
             ledger_df = ledger_df[ledger_df['AssetClass'].isin(filters)]
-        
         manual_trades = ledger_df[ledger_df['source'] == 'MANUAL'].copy()
         pending_manual = manual_trades[manual_trades['TradeDate'] > report_date] if report_date else manual_trades
         open_positions, matched_tickers = [], set()
-
         for conid, v in broker_verified.items():
-            # 1. Apply Asset Class Filter to Broker Data
-            if filters and v['AssetClass'].upper() not in filters:
-                continue
-
+            if filters and v['AssetClass'].upper() not in filters: continue
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
             adjustments = pending_manual[pending_manual['Symbol'] == ticker]
             for _, row in adjustments.iterrows():
@@ -174,7 +199,6 @@ class PortfolioManager:
                     qty = new_qty
                 else: qty = max(0, qty - q)
                 if row['TradeDate'] < first_date: first_date = row['TradeDate']
-            
             if qty > 0.0001:
                 open_positions.append({
                     'Name': v['Description'], 'Ticker': ticker, 'Conid': conid,
@@ -183,7 +207,6 @@ class PortfolioManager:
                     'Date': first_date, 'Qty': qty, 'Entry': entry, 'MarkPrice': v['MarkPrice'], 'NavPctVerified': v['NavPct']
                 })
             matched_tickers.add(ticker)
-
         remaining_manual = pending_manual[~pending_manual['Symbol'].isin(matched_tickers)]
         for ticker, group in remaining_manual.groupby('Symbol'):
             qty, total_cost, first_date = 0.0, 0.0, None
@@ -207,45 +230,27 @@ class PortfolioManager:
         return open_positions
 
     def identify_open_positions_ledger(self, asset_class_filter=None):
-        """
-        Pure Ledger Replay Logic:
-        Identifies open positions by replaying the entire trade history.
-        """
         full_df = self._clean_data() 
-        
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
             full_df = full_df[full_df['AssetClass'].isin(filters)]
-            
         grouped = full_df.groupby('Conid')
         open_positions = []
-
         for conid, group in grouped:
-            qty = 0.0
-            total_cost = 0.0
-            first_date = None
-            
+            qty, total_cost, first_date = 0.0, 0.0, None
             for _, row in group.iterrows():
                 side, q, p = str(row['Buy/Sell']).strip().upper(), abs(row['Quantity']), row['Price']
-                source = str(row.get('source', '')).upper()
-                
-                if 'OPENING_BALANCE' in source:
+                if 'OPENING_BALANCE' in str(row.get('source', '')).upper():
                     qty, total_cost, first_date = q, q * p, row['TradeDate']
                     continue
-
                 if side == 'BUY':
                     if qty <= 0.0001: first_date = row['TradeDate']
                     total_cost += q * p
                     qty += q
-                elif side == 'SELL':
-                    if qty > 0:
-                        avg_price = total_cost / qty
-                        qty -= q
-                        total_cost -= q * avg_price
-                    
-                    if qty <= 0.0001:
-                        qty, total_cost, first_date = 0, 0, None
-
+                elif side == 'SELL' and qty > 0:
+                    total_cost -= q * (total_cost / qty)
+                    qty -= q
+                    if qty <= 0.0001: qty, total_cost, first_date = 0, 0, None
             if qty > 0.0001:
                 latest = group.iloc[-1]
                 open_positions.append({
@@ -255,47 +260,54 @@ class PortfolioManager:
                     'Date': first_date, 'Qty': qty, 'Entry': total_cost / qty,
                     'ISIN': latest.get('ISIN', np.nan), 'MarkPrice': latest['Price']
                 })
-
         return open_positions
 
     def get_dashboard(self, asset_class_filter=None, total_nav=None, use_ledger=False):
-        """
-        Fetches prices and returns the final formatted dashboard DataFrame.
-        """
+        from db import get_all_risk_settings
+        risk_settings = get_all_risk_settings()
         if use_ledger:
             self.raw_data = self._load_from_db(all_trades=True)
             open_list = self.identify_open_positions_ledger(asset_class_filter=asset_class_filter)
         else:
             open_list = self.identify_open_positions(asset_class_filter=asset_class_filter)
-            
         df = pd.DataFrame(open_list)
         if df.empty: return pd.DataFrame()
-        
-        current_prices = []
+        prices, max_prices = [], []
         for _, row in df.iterrows():
-            ticker = self._map_to_yahoo_ticker(row)
-            price = np.nan
-            if ticker:
+            yf_ticker = self._map_to_yahoo_ticker(row)
+            price, max_p = np.nan, np.nan
+            if yf_ticker:
                 try:
-                    data = yf.Ticker(ticker)
+                    data = yf.Ticker(yf_ticker)
                     price = data.fast_info.get('last_price', np.nan)
                     if np.isnan(price):
                         hist = data.history(period="1d")
                         if not hist.empty: price = hist['Close'].iloc[-1]
+                    if row['Ticker'] in risk_settings and risk_settings[row['Ticker']][1] == 'TRAILING':
+                        full_hist = data.history(start=row['Date'])
+                        if not full_hist.empty: max_p = full_hist['High'].max()
                 except Exception: pass
             if np.isnan(price): price = row.get('MarkPrice', np.nan)
-            current_prices.append(price)
-            
-        df['Price'] = current_prices
+            if np.isnan(max_p): max_p = price
+            prices.append(price); max_prices.append(max_p)
+        df['Price'], df['MaxSinceEntry'] = prices, max_prices
         df['MarketValue'] = df['Price'] * df['Qty']
         df['P/L'] = (df['Price'] - df['Entry']) * df['Qty']
         df['Pct'] = ((df['Price'] - df['Entry']) / df['Entry']) * 100
+        def _apply_risk(row):
+            if row['Ticker'] in risk_settings:
+                atr, s_type = risk_settings[row['Ticker']]
+                sl = (row['MaxSinceEntry'] if s_type == 'TRAILING' else row['Entry']) - atr
+                return f"{atr:.2f} ({s_type[0]})", sl, sl + (3 * atr)
+            return "---", np.nan, np.nan
+        risk_results = df.apply(_apply_risk, axis=1)
+        df['ATR_Display'], df['SL_Price'], df['TP_Price'] = [r[0] for r in risk_results], [r[1] for r in risk_results], [r[2] for r in risk_results]
         today = pd.Timestamp.now()
         df['Years'] = (today - pd.to_datetime(df['Date'])).dt.days / 365.25
         df['AAGR'] = df.apply(self._calc_aagr, axis=1) * 100
         denominator = total_nav if (total_nav and total_nav > 0) else df['MarketValue'].sum()
         df['NavPct'] = (df['MarketValue'] / denominator) * 100
-        return df[['Name', 'Ticker', 'Date', 'Qty', 'Entry', 'Price', 'MarketValue', 'P/L', 'CCY', 'Pct', 'AAGR', 'NavPct', 'AssetClass']]
+        return df[['Name', 'Ticker', 'Date', 'Qty', 'Entry', 'Price', 'MarketValue', 'P/L', 'CCY', 'Pct', 'AAGR', 'NavPct', 'AssetClass', 'ATR_Display', 'SL_Price', 'TP_Price']]
 
     def _calc_aagr(self, row):
         if pd.isna(row['Price']) or row['Entry'] <= 0: return 0.0

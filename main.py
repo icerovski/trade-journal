@@ -1,10 +1,12 @@
 import sys
-from db import init_db, get_manual_trades, delete_trade, add_trade
+from db import init_db, get_manual_trades, delete_trade, add_trade, set_position_risk
 from ibkr import download_trade_report, process_local_csvs, fetch_trade_history, fetch_open_positions
 from dashboard import print_nav_table, print_rich_portfolio, run_live_dashboard, calculate_dashboard_data
 from portfolio_manager import PortfolioManager
+from risk_engine import calculate_atr_metrics
 import pandas as pd
 from datetime import datetime
+from dateutil.parser import parse
 
 def show_menu():
     print("\n--- PRIVATE EQUITY DASHBOARD ---")
@@ -13,7 +15,9 @@ def show_menu():
     print("3. Fetch NAV Balance from IBKR")
     print("4. Incorporate CSVs into Database")
     print("5. Manage Manual Trades")
-    print("6. View Portfolio Dashboard")
+    print("6. Calculate Position ATR")
+    print("7. Assign Risk/ATR to Position")
+    print("8. View Portfolio Dashboard")
     print("0. Exit")
 
 def handle_fetch_trades():
@@ -40,6 +44,20 @@ def handle_fetch_nav():
     manager = PortfolioManager()
     print_nav_table(manager, force_download=True)
 
+def parse_input_line(line):
+    """Common parser for Ticker, Date, Price line."""
+    parts = [p.strip() for p in line.split(',')]
+    if len(parts) < 3:
+        raise ValueError("Need at least Ticker, Date, and Price.")
+    
+    ticker = parts[0].upper()
+    date_val = parse(parts[1]).strftime("%Y-%m-%d")
+    price = float(parts[2])
+    
+    # Optional 4th part could be Side or Qty depending on context
+    remaining = parts[3:] if len(parts) > 3 else []
+    return ticker, date_val, price, remaining
+
 def handle_manual_trades():
     while True:
         print("\n--- MANAGE MANUAL TRADES ---")
@@ -56,28 +74,18 @@ def handle_manual_trades():
         opt = input("Choice: ").strip().upper()
         
         if opt == 'A':
-            print("\nFormat: Ticker, Side (buy/sell), Qty, Price, Date (optional)")
-            print("Example: aapl, buy, 100, 112.5, 21 Feb 2026")
+            print("\nFormat: Ticker, Date, Price, Side (buy/sell), Qty")
+            print("Example: AAPL, 21 Feb 2026, 112.5, buy, 100")
             line = input("Entry: ").strip()
             if not line: continue
             
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) < 4:
-                print("Error: Invalid format. Need at least Ticker, Side, Qty, Price.")
-                continue
-            
             try:
-                ticker = parts[0].upper()
-                side = parts[1].upper()
-                qty = float(parts[2])
-                price = float(parts[3])
-                
-                # Date handling
-                if len(parts) >= 5:
-                    from dateutil.parser import parse
-                    date_val = parse(parts[4]).strftime("%Y-%m-%d")
-                else:
-                    date_val = datetime.now().strftime("%Y-%m-%d")
+                ticker, date_val, price, extra = parse_input_line(line)
+                if len(extra) < 2:
+                    print("Error: Need Side and Qty for manual trades.")
+                    continue
+                side = extra[0].upper()
+                qty = float(extra[1])
                 
                 add_trade(date=date_val, ticker=ticker, side=side, quantity=qty, price=price, source='MANUAL')
                 print(f"SUCCESS: Added {side} {qty} {ticker} @ {price}")
@@ -92,6 +100,75 @@ def handle_manual_trades():
         elif opt == 'B':
             break
 
+def handle_atr_calculator():
+    print("\n--- ATR CALCULATOR ---")
+    print("1. ATR for an EXISTING Position (Auto-fetch Date/Price)")
+    print("2. ATR for a NEW Position (Manual Input)")
+    choice = input("Choice: ").strip()
+
+    if choice == '1':
+        ticker_input = input("Enter Ticker: ").strip().upper()
+        if not ticker_input: return
+        
+        manager = PortfolioManager()
+        open_positions = manager.identify_open_positions()
+        
+        # Find matching ticker
+        pos = next((p for p in open_positions if p['Ticker'].upper() == ticker_input), None)
+        
+        if pos:
+            ticker = pos['Ticker']
+            date_val = pos['Date']
+            price = pos['Entry']
+            print(f"-> Found existing position: {ticker} (Entry: {price:,.2f}, Date: {date_val})")
+        else:
+            print(f"Error: Ticker {ticker_input} not found in open positions.")
+            return
+    elif choice == '2':
+        print("\nEnter details as: Ticker, Date, Price")
+        print("Example: AAPL, 24 jun 2025, 180.5")
+        line = input("Input: ").strip()
+        if not line: return
+        try:
+            ticker, date_val, price, _ = parse_input_line(line)
+        except Exception as e:
+            print(f"Error: {e}")
+            return
+    else:
+        print("Invalid choice.")
+        return
+
+    from rich.console import Console
+    console = Console()
+    with console.status("[bold green]Calculating ATR metrics..."):
+        table = calculate_atr_metrics(ticker, date_val, price)
+        console.print(table)
+
+def handle_assign_risk():
+    print("\n--- ASSIGN RISK/ATR TO POSITION ---")
+    print("Format: Ticker, ATR Value, Stop Type (Fixed/Trailing)")
+    print("Example: AAPL, 4.07, Trailing")
+    line = input("Input: ").strip()
+    if not line: return
+
+    parts = [p.strip() for p in line.split(',')]
+    if len(parts) < 3:
+        print("Error: Need Ticker, ATR, and Type.")
+        return
+
+    try:
+        ticker = parts[0].upper()
+        atr = float(parts[1])
+        stop_type = parts[2].upper()
+        if stop_type not in ['FIXED', 'TRAILING']:
+            print("Error: Type must be FIXED or TRAILING.")
+            return
+        
+        set_position_risk(ticker, atr, stop_type)
+        print(f"SUCCESS: Assigned {atr} {stop_type} stop to {ticker}")
+    except Exception as e:
+        print(f"Error: {e}")
+
 def ask_asset_class():
     print("\n--- SELECT INSTRUMENTS ---")
     print("1. ALL Assets")
@@ -101,14 +178,10 @@ def ask_asset_class():
     print("5. TREASURIES")
     choice = input("Choice: ").strip()
     
-    if choice == '2':
-        return 'STK'
-    elif choice == '3':
-        return 'OPT'
-    elif choice == '4':
-        return 'BOND'
-    elif choice == '5':
-        return 'BILL' 
+    if choice == '2': return 'STK'
+    elif choice == '3': return 'OPT'
+    elif choice == '4': return 'BOND'
+    elif choice == '5': return 'BILL' 
     return None 
 
 def ask_sort_by():
@@ -117,11 +190,8 @@ def ask_sort_by():
     print("2. Market Value (High-Low)")
     print("3. P/L % (High-Low)")
     choice = input("Choice (default 1): ").strip()
-    
-    if choice == '2':
-        return "MarketValue"
-    elif choice == '3':
-        return "Pct"
+    if choice == '2': return "MarketValue"
+    elif choice == '3': return "Pct"
     return "Ticker"
 
 def main():
@@ -135,19 +205,17 @@ def main():
         elif choice == '3': handle_fetch_nav()
         elif choice == '4': process_local_csvs()
         elif choice == '5': handle_manual_trades()
-        elif choice == '6':
+        elif choice == '6': handle_atr_calculator()
+        elif choice == '7': handle_assign_risk()
+        elif choice == '8':
             filter_val = ask_asset_class()
             sort_val = ask_sort_by()
-            
             print("\n--- CALCULATION METHOD ---")
             print("1. Hybrid (Verified by IBKR Snapshot)")
             print("2. Ledger (Pure Database Replay)")
-            method_choice = input("Choice (default 1): ").strip()
-            use_ledger = (method_choice == '2')
-
+            use_ledger = (input("Choice (default 1): ").strip() == '2')
             print("\n1. Static View\n2. Live View (30s refresh)")
             view_type = input("Choice: ").strip()
-            
             manager = PortfolioManager()
             if view_type == '2':
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger)

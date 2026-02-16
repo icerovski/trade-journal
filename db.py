@@ -11,7 +11,7 @@ def init_db():
     conn = get_conn()
     cursor = conn.cursor()
     
-    # 1. Create Table (with all necessary IBKR columns)
+    # 1. Trades Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,14 +26,23 @@ def init_db():
             notes TEXT,
             source TEXT DEFAULT 'MANUAL',
             external_id TEXT UNIQUE,
-            conid TEXT,               -- NEW: IBKR unique ID
-            listing_exchange TEXT,    -- NEW: e.g. IBIS, AEB
-            currency TEXT,            -- NEW: e.g. USD, EUR
-            underlying_symbol TEXT    -- NEW: For mapping options/funds
+            conid TEXT,
+            listing_exchange TEXT,
+            currency TEXT,
+            underlying_symbol TEXT
+        )
+    """)
+
+    # 2. Position Risk Table (Settings for ATR/Stops)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS position_risk (
+            ticker TEXT PRIMARY KEY,
+            atr_value REAL NOT NULL,
+            stop_type TEXT NOT NULL  -- 'FIXED' or 'TRAILING'
         )
     """)
     
-    # 2. Migrations: Add missing columns
+    # Migrations...
     cursor.execute("PRAGMA table_info(trades)")
     columns = [info[1] for info in cursor.fetchall()]
     
@@ -47,11 +56,31 @@ def init_db():
     
     for col_name, col_type in migrations:
         if col_name not in columns:
-            print(f"-> Migrating DB: Adding '{col_name}' column...")
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
 
     conn.commit()
     conn.close()
+
+def set_position_risk(ticker, atr, stop_type):
+    """Saves or updates ATR/Stop settings for a ticker."""
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO position_risk (ticker, atr_value, stop_type) 
+        VALUES (?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET 
+            atr_value = excluded.atr_value,
+            stop_type = excluded.stop_type
+    """, (ticker.upper(), float(atr), stop_type.upper()))
+    conn.commit()
+    conn.close()
+
+def get_all_risk_settings():
+    """Returns all risk settings as a dict {ticker: (atr, type)}."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT ticker, atr_value, stop_type FROM position_risk")
+    rows = cursor.fetchall()
+    conn.close()
+    return {r['ticker']: (r['atr_value'], r['stop_type']) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False

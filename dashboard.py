@@ -36,11 +36,12 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
     ccy = df.iloc[0]['CCY'] if not df.empty else "EUR"
     total_aum = total_nav_override if total_nav_override else df['MarketValue'].sum()
     title = f"[bold]PORTFOLIO RISK DASHBOARD [AUM: {ccy} {total_aum:,.0f}] (Report: {report_date})[/bold]"
-    table = Table(box=box.HORIZONTALS, title=title, header_style="bold cyan", show_footer=True)
+    table = Table(box=box.HORIZONTALS, title=title, header_style="bold cyan", show_footer=True, padding=0)
     
     # Columns
     table.add_column("TICKER", style="bold")
     table.add_column("COMPANY", style="dim", max_width=20, overflow="ellipsis")
+    table.add_column("DATE", justify="right")
     table.add_column("QTY", justify="right")
     table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
@@ -49,7 +50,9 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
     table.add_column("P/L %", justify="right")
     table.add_column("AAGR", justify="right", style="magenta")
     table.add_column("AGE", justify="right", style="yellow")
-    table.add_column("ATR", justify="right", style="dim") # Placeholder
+    table.add_column("ATR", justify="right", style="cyan")
+    table.add_column("SL PRICE", justify="right", style="red")
+    table.add_column("TP PRICE", justify="right", style="green")
     table.add_column("% NAV", justify="right", style="blue")
 
     # 2. Group by Asset Class
@@ -67,7 +70,7 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
             group = group.sort_values('Ticker', ascending=True)
 
         # Add Section Header
-        table.add_row(f"[bold white underline]{asset_class}[/bold white underline]", "", "", "", "", "", "", "", "", "", "", "")
+        table.add_row(f"[bold white underline]{asset_class}[/bold white underline]", "", "", "", "", "", "", "", "", "", "", "", "", "", "")
 
         group_mv = group['MarketValue'].sum()
         group_pl = group['P/L'].sum()
@@ -76,6 +79,9 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
         for _, row in group.iterrows():
             pl_color = "green" if row['P/L'] >= 0 else "red"
             
+            # Date String
+            date_str = row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "-"
+
             # Calculate Age String
             entry_date = pd.to_datetime(row['Date'])
             days = (today - entry_date).days
@@ -84,9 +90,14 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
             else:
                 age_str = f"{days}d"
 
+            # Risk Prices
+            sl_str = f"{row['SL_Price']:,.2f}" if pd.notnull(row['SL_Price']) else "---"
+            tp_str = f"{row['TP_Price']:,.2f}" if pd.notnull(row['TP_Price']) else "---"
+
             table.add_row(
                 str(row['Ticker']),
                 str(row['Name']),
+                date_str,
                 f"{row['Qty']:,.0f}",
                 f"{row['Entry']:,.2f}",
                 f"{row['Price']:,.2f}",
@@ -95,15 +106,17 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
                 f"[{pl_color}]{row['Pct']:.1f}%[/{pl_color}]",
                 f"{row['AAGR']:.1f}%",
                 age_str,
-                "---", # ATR Placeholder
+                str(row.get('ATR_Display', '---')),
+                sl_str,
+                tp_str,
                 f"{row['NavPct']:.1f}%"
             )
         
         # Subtotal for Asset Class
         table.add_row(
-            f"[dim]{asset_class} TOTAL[/dim]", "", "", "", "",
+            f"[dim]{asset_class} TOTAL[/dim]", "", "", "", "", "",
             f"[dim]{group_mv:,.0f}[/dim]",
-            f"[dim]{group_pl:,.0f}[/dim]", "", "", "", "",
+            f"[dim]{group_pl:,.0f}[/dim]", "", "", "", "", "", "",
             f"[dim]{group_nav:.1f}%[/dim]"
         )
         table.add_section()
@@ -116,10 +129,10 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
     total_color = "green" if total_pl >= 0 else "red"
 
     table.columns[0].footer = "GRAND TOTAL"
-    table.columns[5].footer = f"{total_mv:,.0f}"
-    table.columns[6].footer = f"[{total_color}]{total_pl:,.0f}[/{total_color}]"
-    table.columns[7].footer = f"[{total_color}]{total_pct:.1f}%[/{total_color}]"
-    table.columns[11].footer = f"{df['NavPct'].sum():.1f}%"
+    table.columns[6].footer = f"{total_mv:,.0f}"
+    table.columns[7].footer = f"[{total_color}]{total_pl:,.0f}[/{total_color}]"
+    table.columns[8].footer = f"[{total_color}]{total_pct:.1f}%[/{total_color}]"
+    table.columns[14].footer = f"{df['NavPct'].sum():.1f}%"
 
     return table
 
