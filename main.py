@@ -1,9 +1,15 @@
 import sys
+import warnings
+# Suppress specific deprecation warnings from third-party libraries (e.g. yfinance/pandas)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", module="yfinance")
+
 from db import init_db, get_manual_trades, delete_trade, add_trade, set_position_risk
 from ibkr import download_trade_report, process_local_csvs, fetch_trade_history, fetch_open_positions
 from dashboard import print_nav_table, print_rich_portfolio, run_live_dashboard, calculate_dashboard_data
 from portfolio_manager import PortfolioManager
 from risk_engine import calculate_atr_metrics
+import sync_config
 import pandas as pd
 from datetime import datetime
 from dateutil.parser import parse
@@ -18,6 +24,7 @@ def show_menu():
     print("6. Calculate Position ATR")
     print("7. Assign Risk/ATR to Position")
     print("8. View Portfolio Dashboard")
+    print("9. Sync Config to OneDrive (Backup)")
     print("0. Exit")
 
 def handle_fetch_trades():
@@ -222,6 +229,8 @@ def main():
             else:
                 df, real_nav, report_date = calculate_dashboard_data(manager, asset_class_filter=filter_val, use_ledger=use_ledger)
                 print_rich_portfolio(df, total_nav_override=real_nav, report_date=report_date, sort_by=sort_val)
+        elif choice == '9':
+            sync_config.backup()
         elif choice == '0':
             print("Exiting...")
             sys.exit()

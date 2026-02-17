@@ -40,19 +40,22 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
     
     # Columns
     table.add_column("TICKER", style="bold")
-    table.add_column("COMPANY", style="dim", max_width=20, overflow="ellipsis")
+    table.add_column("COMPANY", style="dim", max_width=15, overflow="ellipsis")
     table.add_column("DATE", justify="right")
     table.add_column("QTY", justify="right")
     table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
     table.add_column("MKT VAL", justify="right", style="bold")
     table.add_column("P/L", justify="right")
-    table.add_column("P/L %", justify="right")
+    table.add_column("SL PRICE", justify="right", style="red")
+    table.add_column("DOWN %", justify="right", style="red")
+    table.add_column("TP PRICE", justify="right", style="green")
+    table.add_column("UP %", justify="right", style="green")
+    table.add_column("RISK", justify="right", style="magenta")
+    table.add_column("R/R", justify="right", style="cyan")
     table.add_column("AAGR", justify="right", style="magenta")
     table.add_column("AGE", justify="right", style="yellow")
     table.add_column("ATR", justify="right", style="cyan")
-    table.add_column("SL PRICE", justify="right", style="red")
-    table.add_column("TP PRICE", justify="right", style="green")
     table.add_column("% NAV", justify="right", style="blue")
 
     # 2. Group by Asset Class
@@ -70,10 +73,11 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
             group = group.sort_values('Ticker', ascending=True)
 
         # Add Section Header
-        table.add_row(f"[bold white underline]{asset_class}[/bold white underline]", "", "", "", "", "", "", "", "", "", "", "", "", "", "")
+        table.add_row(f"[bold white underline]{asset_class}[/bold white underline]", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "")
 
         group_mv = group['MarketValue'].sum()
         group_pl = group['P/L'].sum()
+        group_risk = group['Risk_Val'].sum()
         group_nav = group['NavPct'].sum()
 
         for _, row in group.iterrows():
@@ -103,12 +107,15 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
                 f"{row['Price']:,.2f}",
                 f"{row['MarketValue']:,.0f}",
                 f"[{pl_color}]{row['P/L']:,.0f}[/{pl_color}]",
-                f"[{pl_color}]{row['Pct']:.1f}%[/{pl_color}]",
+                sl_str,
+                f"{row['Down_Pct']:.1f}%",
+                tp_str,
+                f"{row['Up_Pct']:.1f}%",
+                f"{row['Risk_Val']:,.0f}",
+                f"{row['RR_Ratio']:.1f}",
                 f"{row['AAGR']:.1f}%",
                 age_str,
-                str(row.get('ATR_Display', '---')),
-                sl_str,
-                tp_str,
+                str(row.get('ATR_Disp', '---')),
                 f"{row['NavPct']:.1f}%"
             )
         
@@ -116,7 +123,8 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
         table.add_row(
             f"[dim]{asset_class} TOTAL[/dim]", "", "", "", "", "",
             f"[dim]{group_mv:,.0f}[/dim]",
-            f"[dim]{group_pl:,.0f}[/dim]", "", "", "", "", "", "",
+            f"[dim]{group_pl:,.0f}[/dim]", "", "", "", "", 
+            f"[dim]{group_risk:,.0f}[/dim]", "", "", "", "",
             f"[dim]{group_nav:.1f}%[/dim]"
         )
         table.add_section()
@@ -124,15 +132,14 @@ def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown",
     # 3. Final Footer
     total_mv = df['MarketValue'].sum()
     total_pl = df['P/L'].sum()
-    total_cost = total_mv - total_pl
-    total_pct = (total_pl / total_cost * 100) if total_cost > 0 else 0.0
-    total_color = "green" if total_pl >= 0 else "red"
+    total_risk = df['Risk_Val'].sum()
+    total_nav_sum = df['NavPct'].sum()
 
     table.columns[0].footer = "GRAND TOTAL"
     table.columns[6].footer = f"{total_mv:,.0f}"
-    table.columns[7].footer = f"[{total_color}]{total_pl:,.0f}[/{total_color}]"
-    table.columns[8].footer = f"[{total_color}]{total_pct:.1f}%[/{total_color}]"
-    table.columns[14].footer = f"{df['NavPct'].sum():.1f}%"
+    table.columns[7].footer = f"{total_pl:,.0f}"
+    table.columns[12].footer = f"{total_risk:,.0f}"
+    table.columns[17].footer = f"{total_nav_sum:.1f}%"
 
     return table
 

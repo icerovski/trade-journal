@@ -263,15 +263,21 @@ class PortfolioManager:
         return open_positions
 
     def get_dashboard(self, asset_class_filter=None, total_nav=None, use_ledger=False):
+        """
+        Fetches prices and returns the final formatted dashboard DataFrame.
+        """
         from db import get_all_risk_settings
         risk_settings = get_all_risk_settings()
+
         if use_ledger:
             self.raw_data = self._load_from_db(all_trades=True)
             open_list = self.identify_open_positions_ledger(asset_class_filter=asset_class_filter)
         else:
             open_list = self.identify_open_positions(asset_class_filter=asset_class_filter)
+            
         df = pd.DataFrame(open_list)
         if df.empty: return pd.DataFrame()
+        
         prices, max_prices = [], []
         for _, row in df.iterrows():
             yf_ticker = self._map_to_yahoo_ticker(row)
@@ -283,31 +289,60 @@ class PortfolioManager:
                     if np.isnan(price):
                         hist = data.history(period="1d")
                         if not hist.empty: price = hist['Close'].iloc[-1]
-                    if row['Ticker'] in risk_settings and risk_settings[row['Ticker']][1] == 'TRAILING':
-                        full_hist = data.history(start=row['Date'])
-                        if not full_hist.empty: max_p = full_hist['High'].max()
+                    
+                    # Max high since entry for trailing stop logic
+                    entry_date = pd.to_datetime(row['Date'])
+                    full_hist = data.history(start=entry_date)
+                    if not full_hist.empty:
+                        max_p = full_hist['High'].max()
                 except Exception: pass
+            
             if np.isnan(price): price = row.get('MarkPrice', np.nan)
             if np.isnan(max_p): max_p = price
             prices.append(price); max_prices.append(max_p)
+            
         df['Price'], df['MaxSinceEntry'] = prices, max_prices
         df['MarketValue'] = df['Price'] * df['Qty']
         df['P/L'] = (df['Price'] - df['Entry']) * df['Qty']
         df['Pct'] = ((df['Price'] - df['Entry']) / df['Entry']) * 100
+        
+        # Risk & Money Management Calculations
         def _apply_risk(row):
-            if row['Ticker'] in risk_settings:
-                atr, s_type = risk_settings[row['Ticker']]
+            ticker = row['Ticker']
+            price = row['Price']
+            if ticker in risk_settings:
+                atr, s_type = risk_settings[ticker]
                 sl = (row['MaxSinceEntry'] if s_type == 'TRAILING' else row['Entry']) - atr
-                return f"{atr:.2f} ({s_type[0]})", sl, sl + (3 * atr)
-            return "---", np.nan, np.nan
-        risk_results = df.apply(_apply_risk, axis=1)
-        df['ATR_Display'], df['SL_Price'], df['TP_Price'] = [r[0] for r in risk_results], [r[1] for r in risk_results], [r[2] for r in risk_results]
+                tp = sl + (3 * atr)
+                
+                # Money Management Metrics (Excel Style)
+                down_pct = ((price - sl) / price * 100) if price > 0 else 0
+                up_pct = ((tp - price) / price * 100) if price > 0 else 0
+                risk_amt = (price - sl) * row['Qty']
+                rr = (tp - price) / (price - sl) if (price - sl) != 0 else 0
+                
+                return f"{atr:.2f} ({s_type[0]})", sl, tp, down_pct, up_pct, risk_amt, rr
+            return "---", np.nan, np.nan, 0, 0, 0, 0
+
+        risk_res = df.apply(_apply_risk, axis=1)
+        df['ATR_Disp'] = [r[0] for r in risk_res]
+        df['SL_Price'] = [r[1] for r in risk_res]
+        df['TP_Price'] = [r[2] for r in risk_res]
+        df['Down_Pct'] = [r[3] for r in risk_res]
+        df['Up_Pct'] = [r[4] for r in risk_res]
+        df['Risk_Val'] = [r[5] for r in risk_res]
+        df['RR_Ratio'] = [r[6] for r in risk_res]
+
         today = pd.Timestamp.now()
         df['Years'] = (today - pd.to_datetime(df['Date'])).dt.days / 365.25
         df['AAGR'] = df.apply(self._calc_aagr, axis=1) * 100
+        
         denominator = total_nav if (total_nav and total_nav > 0) else df['MarketValue'].sum()
         df['NavPct'] = (df['MarketValue'] / denominator) * 100
-        return df[['Name', 'Ticker', 'Date', 'Qty', 'Entry', 'Price', 'MarketValue', 'P/L', 'CCY', 'Pct', 'AAGR', 'NavPct', 'AssetClass', 'ATR_Display', 'SL_Price', 'TP_Price']]
+        
+        return df[['Name', 'Ticker', 'Date', 'Qty', 'Entry', 'Price', 'MarketValue', 'P/L', 'CCY', 'Pct', 
+                   'AAGR', 'NavPct', 'AssetClass', 'ATR_Disp', 'SL_Price', 'TP_Price', 
+                   'Down_Pct', 'Up_Pct', 'Risk_Val', 'RR_Ratio', 'MaxSinceEntry']]
 
     def _calc_aagr(self, row):
         if pd.isna(row['Price']) or row['Entry'] <= 0: return 0.0
