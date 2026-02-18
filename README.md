@@ -138,7 +138,6 @@ note: [Difference btw. CAGR and AAGR](https://share.google/aimode/FEmi3YkShRDfJy
 *   **Data Integrity**: Fixed a duplication bug by filtering IBKR CSV imports for `EXECUTION` rows only and optimized database loading to target only active positions.
 
 
-
 ### [2026-02-15] ATR Risk Engine & Dynamic Trailing Stops
 
 *   **ATR Implementation**: Created `risk_engine.py` to calculate multi-period ATR (21d, 12w, 6m, 8q) using both SMA and EMA methods.
@@ -155,3 +154,11 @@ note: [Difference btw. CAGR and AAGR](https://share.google/aimode/FEmi3YkShRDfJy
 
 *   **UI Compactness**: Minimized horizontal spacing (padding=0) and implemented short date format (DD/MM/YY) for better terminal fit.
 
+
+### Session Summary [2026-02-17]
+- **Data Integrity**: Filtered IBKR CSVs for 'EXECUTION' rows only to stop duplication.
+- **Risk Engine**: Created 'risk_engine.py' for ATR (SMA/EMA) and Trail Stop logic.
+- **Dashboard**: Refactored to match Equity Journal (DATE, P/L, SL, TP, DOWN%, UP%, RISK, R/R).
+- **Automation**: Integrated ISIN resolution for 100% accurate Yahoo Finance pricing.
+- **Manual Control**: Added single-line entry for new trades and risk assignments.
+- **Cloud Sync**: Migrated context and secrets to OneDrive with instructions in 'SETUP_LINKS.md'.

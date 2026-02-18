@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import shutil
 import unittest
 import sqlite3
@@ -13,6 +17,7 @@ import ibkr
 import portfolio_manager
 import dashboard
 from config import DB_PATH
+from data_loader import DataLoader
 
 class TestFullFeatures(unittest.TestCase):
     def setUp(self):
@@ -27,7 +32,8 @@ class TestFullFeatures(unittest.TestCase):
             patch("config.DB_PATH", self.test_db),
             patch("ibkr.DATA_DIR", self.test_dir),
             patch("ibkr.IBKR_TRADES_CSV", self.test_dir / "trades.csv"),
-            patch("portfolio_manager.get_conn", lambda: sqlite3.connect(self.test_db))
+            patch("data_loader.DataLoader.get_connection", lambda: sqlite3.connect(self.test_db)),
+            patch("portfolio_manager.get_all_risk_settings", return_value={})
         ]
         for p in self.patches:
             p.start()
@@ -51,10 +57,10 @@ class TestFullFeatures(unittest.TestCase):
         
         # Create a CSV with a few trades including a Reset-on-Zero scenario
         csv_content = f"""Symbol,Buy/Sell,TradeDate,Quantity,TradePrice,AssetClass,Description,Conid,ListingExchange,CurrencyPrimary,UnderlyingSymbol
-AAPL,BUY,{prev_year}0101,10,150,STK,Apple Inc,123,NASDAQ,USD,AAPL
-AAPL,SELL,{prev_year}0601,-10,180,STK,Apple Inc,123,NASDAQ,USD,AAPL
-AAPL,BUY,{current_year}0101,5,170,STK,Apple Inc,123,NASDAQ,USD,AAPL
-MSFT,BUY,{current_year}0201,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
+AAPL,BUY,{prev_year}-01-01,10,150,STK,Apple Inc,123,NASDAQ,USD,AAPL
+AAPL,SELL,{prev_year}-06-01,-10,180,STK,Apple Inc,123,NASDAQ,USD,AAPL
+AAPL,BUY,{current_year}-01-01,5,170,STK,Apple Inc,123,NASDAQ,USD,AAPL
+MSFT,BUY,{current_year}-02-01,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
 """
         prev_fy_path = self.test_dir / f"{prev_year}_FY.csv"
         prev_fy_path.write_text(csv_content)
@@ -76,15 +82,17 @@ MSFT,BUY,{current_year}0201,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
 
         # --- C. Test Portfolio Calculation ---
         pm = portfolio_manager.PortfolioManager() # Loads from DB
-        positions = pm.calculate_positions()
+        positions = pm.get_open_positions_ledger()
+        
+        df_pos = pd.DataFrame(positions)
         
         # Check AAPL: Should be 5 shares @ 170 (The 10 @ 150 was reset by the sell)
-        aapl = positions[positions['Ticker'] == 'AAPL'].iloc[0]
+        aapl = df_pos[df_pos['Ticker'] == 'AAPL'].iloc[0]
         self.assertEqual(aapl['Qty'], 5)
         self.assertEqual(aapl['Entry'], 170.0)
         
         # Check MSFT: 10 shares @ 300
-        msft = positions[positions['Ticker'] == 'MSFT'].iloc[0]
+        msft = df_pos[df_pos['Ticker'] == 'MSFT'].iloc[0]
         self.assertEqual(msft['Qty'], 10)
         self.assertEqual(msft['Entry'], 300.0)
 
@@ -94,10 +102,11 @@ MSFT,BUY,{current_year}0201,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
             # Use side_effect to return different values
             def yf_side_effect(ticker):
                 m = MagicMock()
-                if "AAPL" in ticker:
-                    m.fast_info = {'last_price': 200.0}
-                else:
-                    m.fast_info = {'last_price': 350.0}
+                # fast_info is a dict or a mock
+                m.fast_info = {'last_price': 200.0 if "AAPL" in ticker else 350.0}
+                # history for MaxSinceEntry
+                hist = pd.DataFrame({'High': [210.0]}, index=[pd.Timestamp.now()])
+                m.history.return_value = hist
                 return m
             
             mock_yf.side_effect = yf_side_effect

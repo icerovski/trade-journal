@@ -113,12 +113,12 @@ def handle_atr_calculator():
     print("2. ATR for a NEW Position (Manual Input)")
     choice = input("Choice: ").strip()
 
+    manager = PortfolioManager()
     if choice == '1':
         ticker_input = input("Enter Ticker: ").strip().upper()
         if not ticker_input: return
         
-        manager = PortfolioManager()
-        open_positions = manager.identify_open_positions()
+        open_positions = manager.get_open_positions_hybrid()
         
         # Find matching ticker
         pos = next((p for p in open_positions if p['Ticker'].upper() == ticker_input), None)

@@ -13,15 +13,12 @@ def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_led
     Substep 1: Make all calculations.
     Returns (DataFrame, total_nav, report_date)
     """
-    # 1. Fetch NAV from LOCAL file only (force_download=False)
+    # 1. Fetch NAV from LOCAL file only
     nav_res = portfolio_manager.fetch_nav_data(force_download=False)
-    if nav_res:
-        real_nav, _, report_date = nav_res
-    else:
-        real_nav, report_date = None, "Unknown"
+    real_nav, report_date = (nav_res[0], nav_res[2]) if nav_res else (None, "Unknown")
     
-    # 2. Get Data (Passing NAV for % calc)
-    df = portfolio_manager.get_dashboard(asset_class_filter=asset_class_filter, total_nav=real_nav, use_ledger=use_ledger)
+    # 2. Get Data using the new enriched method
+    df = portfolio_manager.get_dashboard_df(asset_class_filter=asset_class_filter, total_nav=real_nav, use_ledger=use_ledger)
     return df, real_nav, report_date
 
 def generate_portfolio_table(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
@@ -148,7 +145,7 @@ def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown", sor
     table = generate_portfolio_table(df, total_nav_override, report_date, sort_by=sort_by)
     console.print(table)
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30, sort_by="Ticker"):
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30, sort_by="Ticker", use_ledger=False):
     """
     Continuous refresh loop for the dashboard.
     """
@@ -161,7 +158,7 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
                 # 1. Recalculate
                 from portfolio_manager import PortfolioManager
                 pm = PortfolioManager() # Refresh data from DB each time
-                df, real_nav, report_date = calculate_dashboard_data(pm, asset_class_filter)
+                df, real_nav, report_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger=use_ledger)
                 
                 # 2. Update Display
                 table = generate_portfolio_table(df, real_nav, report_date, sort_by=sort_by)
