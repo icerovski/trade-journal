@@ -221,14 +221,17 @@ def main():
             print("1. Hybrid (Verified by IBKR Snapshot)")
             print("2. Ledger (Pure Database Replay)")
             use_ledger = (input("Choice (default 1): ").strip() == '2')
-            print("\n1. Static View\n2. Live View (30s refresh)")
-            view_type = input("Choice: ").strip()
+            
+            print("\n1. Static View (Interactive)")
+            print("2. Live View (30s refresh)")
+            view_type = input("Choice (default 1): ").strip()
+            
             manager = PortfolioManager()
             if view_type == '2':
-                run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger)
+                run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=30)
             else:
-                df, real_nav, report_date = calculate_dashboard_data(manager, asset_class_filter=filter_val, use_ledger=use_ledger)
-                print_rich_portfolio(df, total_nav_override=real_nav, report_date=report_date, sort_by=sort_val)
+                # Static view is now also interactive but without auto-refresh
+                run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=None)
         elif choice == '9':
             sync_config.backup()
         elif choice == '0':

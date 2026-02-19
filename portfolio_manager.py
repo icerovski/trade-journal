@@ -137,9 +137,25 @@ class PortfolioManager:
         matched_conids = set()
 
         # 1. Start with Broker Verified
+        ledger_positions = {p.conid: p for p in self.calculate_positions(all_trades)}
+
         for conid, v in broker_verified.items():
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
             
+            # Smart Fallback: 
+            # Prefer Ledger for both Entry Price and Entry Date if available, 
+            # as the Ledger contains the complete historical record.
+            if conid in ledger_positions:
+                lp = ledger_positions[conid]
+                # Fallback entry price if broker returns 0
+                if not entry or entry == 0:
+                    entry = lp.entry_price
+                    logger.info(f"Using Ledger fallback for {ticker} cost basis: {entry:,.2f}")
+                
+                # ALWAYS prefer Ledger for Entry Date to avoid "Report Date" (today) from snapshot
+                first_date = lp.date_entry
+                logger.debug(f"Using Ledger entry date for {ticker}: {first_date}")
+
             # Apply any pending manual adjustments
             adjustments = pending_manual[pending_manual['Conid'] == conid]
             for _, row in adjustments.iterrows():
@@ -166,6 +182,9 @@ class PortfolioManager:
         remaining_manual = pending_manual[~pending_manual['Conid'].astype(str).isin(matched_conids)]
         if not remaining_manual.empty:
             open_list.extend(self.calculate_positions(remaining_manual))
+
+        if not open_list:
+            logger.warning("No open positions found in Hybrid mode.")
 
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
@@ -206,10 +225,14 @@ class PortfolioManager:
         # Calculate Metrics for each position
         today = pd.Timestamp.now()
         for p in enriched_positions:
-            # Basic financial math
+            # Basic financial math (Since Inception)
             p.market_value = p.current_price * p.qty
             p.unrealized_pl = (p.current_price - p.entry_price) * p.qty
             p.pl_pct = ((p.current_price - p.entry_price) / p.entry_price * 100) if p.entry_price > 0 else 0
+            
+            # Daily performance (Compared to last close / mark_price from DB)
+            p.daily_pl = (p.current_price - p.mark_price) * p.qty if p.mark_price > 0 else 0
+            p.daily_pl_pct = ((p.current_price - p.mark_price) / p.mark_price * 100) if p.mark_price > 0 else 0
             
             # Age & Growth
             p.age_days = (today - p.date_entry).days

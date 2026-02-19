@@ -58,6 +58,7 @@ class DataLoader:
             df['Conid'] = df['Conid'].fillna(df['Symbol']).astype(str)
             
         df = df.dropna(subset=['TradeDate', 'Quantity', 'Price'])
+        df['Buy/Sell'] = df['Buy/Sell'].str.strip().str.upper()
         df = df[df['Buy/Sell'].isin(['BUY', 'SELL'])]
         return df.sort_values('TradeDate')
 
@@ -69,45 +70,69 @@ class DataLoader:
             return {}, None
             
         try:
-            df = pd.read_csv(path, on_bad_lines='skip')
+            # IBKR Flex CSVs often have garbage headers or duplicate headers.
+            # We skip the first row (MSG) and then filter for the real header row.
+            df = pd.read_csv(path, skiprows=1, on_bad_lines='skip', low_memory=False)
+            
+            # Remove any rows that are just repeats of the header
+            df = df[df['Symbol'] != 'Symbol']
+            
+            # Standardize numeric columns
             df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
             df['CostBasisPrice'] = pd.to_numeric(df['CostBasisPrice'], errors='coerce')
             df['MarkPrice'] = pd.to_numeric(df['MarkPrice'], errors='coerce')
             df['PercentOfNAV'] = pd.to_numeric(df['PercentOfNAV'], errors='coerce')
-            df = df.dropna(subset=['Quantity', 'CostBasisPrice', 'Conid'])
-            
-            # Extract earliest dates from LOT records
-            lots = df[df['LevelOfDetail'] == 'LOT'].copy()
-            lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].str.split(';').str[0], errors='coerce')
-            earliest_dates = lots.groupby('Conid')['OpenDateClean'].min().to_dict()
             
             # Process summaries
             summaries = df[df['LevelOfDetail'] == 'SUMMARY'].copy()
             if summaries.empty:
+                logger.warning("No 'SUMMARY' rows found in open_positions.csv")
                 return {}, None
                 
-            report_date = pd.to_datetime(summaries['ReportDate'].iloc[0], errors='coerce')
+            summaries = summaries.dropna(subset=['Quantity', 'Conid'])
+            
+            # Extract earliest dates from LOT records if available
+            lots = df[df['LevelOfDetail'] == 'LOT'].copy()
+            earliest_dates = {}
+            if not lots.empty:
+                lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].str.split(';').str[0], errors='coerce')
+                earliest_dates = lots.groupby('Conid')['OpenDateClean'].min().to_dict()
+            
+            report_date_raw = summaries['ReportDate'].iloc[0]
+            report_date = pd.to_datetime(report_date_raw, errors='coerce')
             broker_data = {}
             
-            for conid, group in summaries.groupby('Conid'):
-                conid_str = str(int(float(conid))) if str(conid).replace('.','').isdigit() else str(conid)
+            for conid_val, group in summaries.groupby('Conid'):
+                try:
+                    # Satisfy Pylance by converting to str before float/int cast
+                    conid_str = str(int(float(str(conid_val))))
+                except (ValueError, TypeError):
+                    conid_str = str(conid_val)
+                    
                 qty = group['Quantity'].sum()
-                total_cost_money = (group['CostBasisPrice'] * group['Quantity']).sum()
+                if abs(qty) < 0.0001: continue
+                
+                # Use CostBasisPrice if available, otherwise 0 (will be fixed by Smart Fallback in PM)
+                entry = group['CostBasisPrice'].iloc[0] if 'CostBasisPrice' in group.columns else 0
+                
+                # Check for ISIN existence safely
+                isin_val = group['ISIN'].iloc[0] if 'ISIN' in group.columns else np.nan
                 
                 broker_data[conid_str] = {
                     'Qty': qty, 
-                    'Entry': total_cost_money / qty if abs(qty) > 0 else 0,
-                    'Date': earliest_dates.get(conid) or report_date,
+                    'Entry': entry,
+                    'Date': earliest_dates.get(conid_val) or report_date,
                     'Description': group['Description'].iloc[0], 
                     'Symbol': group['Symbol'].iloc[0],
                     'AssetClass': group['AssetClass'].iloc[0], 
                     'Currency': group['CurrencyPrimary'].iloc[0],
                     'ListingExchange': group['ListingExchange'].iloc[0], 
                     'UnderlyingSymbol': group['UnderlyingSymbol'].iloc[0],
-                    'ISIN': group.get('ISIN', [np.nan]).iloc[0], 
+                    'ISIN': isin_val, 
                     'MarkPrice': group['MarkPrice'].iloc[0],
                     'NavPct': group['PercentOfNAV'].sum()
                 }
             return broker_data, report_date
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error parsing open_positions.csv: {e}")
             return {}, None

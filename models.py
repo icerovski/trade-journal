@@ -45,6 +45,8 @@ class Position:
     market_value: float = 0.0
     unrealized_pl: float = 0.0
     pl_pct: float = 0.0
+    daily_pl: float = 0.0
+    daily_pl_pct: float = 0.0
     aagr: float = 0.0
     nav_pct: float = 0.0
     age_days: int = 0
@@ -68,11 +70,13 @@ class Position:
             'Entry': self.entry_price,
             'Price': self.current_price or self.mark_price,
             'MarketValue': self.market_value,
-            'P/L': self.unrealized_pl,
-            'CCY': self.ccy,
-            'Pct': self.pl_pct,
+            'PL_Inc': self.unrealized_pl,
+            'PL_Inc_Pct': self.pl_pct,
+            'PL_Daily': self.daily_pl,
+            'PL_Daily_Pct': self.daily_pl_pct,
             'AAGR': self.aagr,
-            'NavPct': self.nav_pct,
+            'Age_Days': self.age_days,
+            'CCY': self.ccy,
             'AssetClass': self.asset_class,
             'ATR_Disp': self.atr_display,
             'SL_Price': self.sl_price,
@@ -81,5 +85,9 @@ class Position:
             'Up_Pct': self.up_pct,
             'Risk_Val': self.risk_val,
             'RR_Ratio': self.rr_ratio,
-            'MaxSinceEntry': self.max_since_entry
+            'MaxSinceEntry': self.max_since_entry,
+            'NavPct': self.nav_pct,
+            'ListingExchange': self.listing_exchange,
+            'UnderlyingSymbol': self.underlying_symbol,
+            'ISIN': self.isin
         }

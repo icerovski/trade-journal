@@ -67,10 +67,8 @@ def get_footer_panel():
         title="[bold]Controls[/bold]", title_align="left", border_style="dim"
     )
 
-def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
-    if state.df.empty:
-        return Panel("[yellow]No active positions found.[/yellow]", title="Holdings")
-
+def _generate_static_table(df, sort_by="Ticker"):
+    """Helper to generate a rich Table for both static and cockpit views."""
     table = Table(expand=True, box=box.SIMPLE, header_style="bold cyan", pad_edge=False)
     table.add_column("TICKER", style="bold")
     table.add_column("DATE", justify="right")
@@ -78,27 +76,22 @@ def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
     table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
     table.add_column("MKT VAL", justify="right")
-    table.add_column("P/L %", justify="right")
-    table.add_column("NAV %", justify="right", style="blue")
+    table.add_column("D-P/L", justify="right")
+    table.add_column("D-%", justify="right")
+    table.add_column("P/L-INC", justify="right")
+    table.add_column("INC-%", justify="right")
 
-    # Group by Asset Class for the table view
-    df_view = state.df.copy()
+    df_view = df.copy()
     if sort_by == "MarketValue":
         df_view = df_view.sort_values('MarketValue', ascending=False)
     elif sort_by == "Pct":
-        df_view = df_view.sort_values('Pct', ascending=False)
+        df_view = df_view.sort_values('PL_Inc_Pct', ascending=False)
     else:
         df_view = df_view.sort_values(['AssetClass', 'Ticker'], ascending=True)
 
-    state.max_index = len(df_view) - 1
-    
-    for idx, (_, row) in enumerate(df_view.iterrows()):
-        is_selected = (idx == state.selected_index)
-        pl_color = "green" if row['P/L'] >= 0 else "red"
-        
-        # Style logic for selected row
-        style = "reverse" if is_selected else ""
-        
+    for _, row in df_view.iterrows():
+        daily_color = "green" if row['PL_Daily'] >= 0 else "red"
+        inc_color = "green" if row['PL_Inc'] >= 0 else "red"
         date_str = row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "-"
         
         table.add_row(
@@ -108,8 +101,58 @@ def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
             f"{row['Entry']:,.2f}",
             f"{row['Price']:,.2f}",
             f"{row['MarketValue']:,.0f}",
-            f"[{pl_color}]{row['Pct']:.1f}%[/{pl_color}]",
-            f"{row['NavPct']:.1f}%",
+            f"[{daily_color}]{row['PL_Daily']:,.0f}[/{daily_color}]",
+            f"[{daily_color}]{row['PL_Daily_Pct']:.1f}%[/{daily_color}]",
+            f"[{inc_color}]{row['PL_Inc']:,.0f}[/{inc_color}]",
+            f"[{inc_color}]{row['PL_Inc_Pct']:.1f}%[/{inc_color}]"
+        )
+    return table
+
+def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
+    if state.df.empty:
+        return Panel("[yellow]No active positions found.[/yellow]", title="Holdings")
+
+    # Reuse the static table logic but with selection highlighting
+    table = Table(expand=True, box=box.SIMPLE, header_style="bold cyan", pad_edge=False)
+    table.add_column("TICKER", style="bold")
+    table.add_column("DATE", justify="right")
+    table.add_column("QTY", justify="right")
+    table.add_column("ENTRY", justify="right")
+    table.add_column("PRICE", justify="right")
+    table.add_column("MKT VAL", justify="right")
+    table.add_column("D-P/L", justify="right")
+    table.add_column("D-%", justify="right")
+    table.add_column("P/L-INC", justify="right")
+    table.add_column("INC-%", justify="right")
+
+    df_view = state.df.copy()
+    if sort_by == "MarketValue":
+        df_view = df_view.sort_values('MarketValue', ascending=False)
+    elif sort_by == "Pct":
+        df_view = df_view.sort_values('PL_Inc_Pct', ascending=False)
+    else:
+        df_view = df_view.sort_values(['AssetClass', 'Ticker'], ascending=True)
+
+    state.max_index = len(df_view) - 1
+    
+    for idx, (_, row) in enumerate(df_view.iterrows()):
+        is_selected = (idx == state.selected_index)
+        daily_color = "green" if row['PL_Daily'] >= 0 else "red"
+        inc_color = "green" if row['PL_Inc'] >= 0 else "red"
+        style = "reverse" if is_selected else ""
+        date_str = row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "-"
+        
+        table.add_row(
+            str(row['Ticker']),
+            date_str,
+            f"{row['Qty']:,.0f}",
+            f"{row['Entry']:,.2f}",
+            f"{row['Price']:,.2f}",
+            f"{row['MarketValue']:,.0f}",
+            f"[{daily_color}]{row['PL_Daily']:,.0f}[/{daily_color}]",
+            f"[{daily_color}]{row['PL_Daily_Pct']:.1f}%[/{daily_color}]",
+            f"[{inc_color}]{row['PL_Inc']:,.0f}[/{inc_color}]",
+            f"[{inc_color}]{row['PL_Inc_Pct']:.1f}%[/{inc_color}]",
             style=style
         )
 
@@ -120,43 +163,58 @@ def get_details_panel(state: CockpitState):
     if state.df.empty:
         return Panel("", title="Position Details")
 
-    # Get the selected row
-    # (Note: We need to handle the sorting consistent with get_holdings_panel)
-    df_sorted = state.df.sort_values(['AssetClass', 'Ticker'], ascending=True) # Default
+    # Handle sorting consistent with get_holdings_panel (default is AssetClass/Ticker)
+    df_sorted = state.df.sort_values(['AssetClass', 'Ticker'], ascending=True)
     if state.selected_index >= len(df_sorted):
         state.selected_index = 0
         
     row = df_sorted.iloc[state.selected_index]
     
     details = Table.grid(expand=True)
-    details.add_row(f"[bold]{row['Name']}[/bold]", "")
-    details.add_row("-" * 20, "")
-    details.add_row("[bold]Asset Class:[/bold]", str(row['AssetClass']))
-    details.add_row("[bold]Currency:[/bold]", str(row['CCY']))
-    details.add_row("[bold]High Since Entry:[/bold]", f"{row['MaxSinceEntry']:,.2f}")
+    details.add_row(f"[bold yellow]{row['Name']}[/bold yellow]", "")
+    details.add_row("-" * 25, "")
+    
+    # Block 1: Structural Context
+    details.add_row("[bold cyan]STRUCTURE[/bold cyan]", "")
+    details.add_row("ISIN:", str(row.get('ISIN', '---')))
+    details.add_row("Exchange:", str(row.get('ListingExchange', '---')))
+    details.add_row("Underlying:", str(row.get('UnderlyingSymbol', '---')))
+    details.add_row("Asset Class:", str(row.get('AssetClass', '---')))
+    details.add_row("Currency:", str(row.get('CCY', '---')))
     details.add_row("", "")
     
+    # Block 2: Portfolio Impact (The "R" Constraint)
+    details.add_row("[bold yellow]PORTFOLIO IMPACT[/bold yellow]", "")
+    details.add_row("NAV Weight:", f"[bold yellow]{row['NavPct']:.1f}%[/bold yellow]")
+    
+    # Calculate R-Ratio (Risk Value / NAV Value)
+    # We assume total_nav is known in state
+    r_ratio = (row['Risk_Val'] / state.total_nav) if state.total_nav and state.total_nav > 0 else 0
+    r_color = "green" if r_ratio <= 1.0 else "red"
+    details.add_row("R (Risk Ratio):", f"[{r_color}]{r_ratio:.2f}[/{r_color}]")
+    details.add_row("Cash at Risk:", f"{row['CCY']} {row['Risk_Val']:,.0f}")
+    details.add_row("", "")
+    
+    # Block 3: Risk Engine
     details.add_row("[bold cyan]RISK ENGINE[/bold cyan]", "")
-    details.add_row("[bold]ATR / Type:[/bold]", str(row['ATR_Disp']))
-    details.add_row("[bold]Stop Price:[/bold]", f"[red]{row['SL_Price']:,.2f}[/red]" if pd.notnull(row['SL_Price']) else "---")
-    details.add_row("[bold]Buffer to SL:[/bold]", f"[red]{row['Down_Pct']:.1f}%[/red]")
+    details.add_row("ATR / Type:", str(row['ATR_Disp']))
+    details.add_row("Stop Price:", f"[red]{row['SL_Price']:,.2f}[/red]" if pd.notnull(row['SL_Price']) else "---")
+    details.add_row("Buffer to SL:", f"[red]{row['Down_Pct']:.1f}%[/red]")
+    details.add_row("Target Price:", f"[green]{row['TP_Price']:,.2f}[/green]" if pd.notnull(row['TP_Price']) else "---")
+    details.add_row("R/R Ratio:", f"{row['RR_Ratio']:.1f}")
     details.add_row("", "")
     
-    details.add_row("[bold green]TARGETS[/bold green]", "")
-    details.add_row("[bold]Profit Price:[/bold]", f"[green]{row['TP_Price']:,.2f}[/green]" if pd.notnull(row['TP_Price']) else "---")
-    details.add_row("[bold]Buffer to TP:[/bold]", f"[green]{row['Up_Pct']:.1f}%[/green]")
-    details.add_row("[bold]R/R Ratio:[/bold]", f"{row['RR_Ratio']:.1f}")
-    details.add_row("", "")
-    
+    # Block 4: Performance
     details.add_row("[bold magenta]PERFORMANCE[/bold magenta]", "")
-    details.add_row("[bold]AAGR:[/bold]", f"{row['AAGR']:.1f}%")
-    details.add_row("[bold]Total P/L:[/bold]", f"{row['P/L']:,.0f}")
+    details.add_row("High Since Entry:", f"{row['MaxSinceEntry']:,.2f}")
+    details.add_row("AAGR:", f"{row['AAGR']:.1f}%")
+    details.add_row("Days Since Entry:", f"{row['Age_Days']:.0f} days")
 
-    return Panel(details, title=f"[bold yellow]{row['Ticker']} Analysis[/bold yellow]", border_style="magenta")
+    return Panel(details, title=f"[bold]{row['Ticker']} Analysis[/bold]", border_style="magenta")
 
 def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30, sort_by="Ticker", use_ledger=False):
     """
-    Interactive Cockpit Loop.
+    Interactive Cockpit Loop. If refresh_interval is None, it acts as a static interactive view.
     """
     state = CockpitState()
     layout = make_cockpit_layout()
@@ -165,13 +223,17 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
     keyboard.on_press_key("up", state.move_up)
     keyboard.on_press_key("down", state.move_down)
 
+    # Initial Data Load
+    from portfolio_manager import PortfolioManager
+    pm = PortfolioManager()
+    state.df, state.total_nav, state.report_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
+    state.last_update = datetime.now()
+
     try:
         with Live(layout, refresh_per_second=10, screen=True) as live:
             while True:
-                # 1. Periodically Refresh Data (or if empty)
-                if state.df.empty or (datetime.now() - state.last_update).total_seconds() > refresh_interval:
-                    from portfolio_manager import PortfolioManager
-                    pm = PortfolioManager()
+                # 1. Periodically Refresh Data (only if refresh_interval is set)
+                if refresh_interval and (datetime.now() - state.last_update).total_seconds() > refresh_interval:
                     state.df, state.total_nav, state.report_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
                     state.last_update = datetime.now()
 
@@ -179,11 +241,14 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
                     break
 
                 # 2. Update Layout Components
-                ccy = state.df.iloc[0]['CCY'] if not state.df.empty else "EUR"
-                layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy))
-                layout["body"].update(get_holdings_panel(state, sort_by))
-                layout["sidebar"].update(get_details_panel(state))
-                layout["footer"].update(get_footer_panel())
+                if not state.df.empty:
+                    ccy = state.df.iloc[0]['CCY'] if 'CCY' in state.df.columns else "EUR"
+                    layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy))
+                    layout["body"].update(get_holdings_panel(state, sort_by))
+                    layout["sidebar"].update(get_details_panel(state))
+                    layout["footer"].update(get_footer_panel())
+                else:
+                    layout["body"].update(Panel("[yellow]No data to display.[/yellow]"))
                 
                 time.sleep(0.1) # Loop speed for UI responsiveness
     except KeyboardInterrupt:
@@ -193,10 +258,14 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
         console.clear()
 
 def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
-    """Still support the static view if needed."""
-    from dashboard_static import generate_portfolio_table # Separate file or logic
-    # For now, let's just use the existing logic for static if called
-    pass
+    """
+    Legacy static view. Now redirects to the interactive non-refreshing cockpit
+    for full feature parity (navigation, details, etc).
+    """
+    # Note: We need the portfolio manager to handle the data if redirected.
+    # For a pure 'print', we could just show the table, but user requested parity.
+    from portfolio_manager import PortfolioManager
+    run_live_dashboard(PortfolioManager(), sort_by=sort_by, refresh_interval=None)
 
 def print_nav_table(portfolio_manager, force_download=False):
     """Displays NAV account balances."""
