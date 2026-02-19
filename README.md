@@ -14,28 +14,28 @@ A professional-grade portfolio management and risk analysis tool designed for Pr
 
 ## 🏗 Project Architecture
 
-The application is built with a strictly modular "CEO Approach" to separation of concerns:
+The application is built with a strictly modular "CEO Approach" to separation of concerns, utilizing a three-tier storage structure:
+
+1.  **Code Repository (Local/GitHub)**: `C:\repos\trade-journal`
+    *   Pure logic and documentation. No secrets or personal data.
+2.  **Configuration Vault (OneDrive Metadata)**: `...\Documents\Logos\.repos\trade-journal`
+    *   **`.env`**: Private API keys and IBKR tokens.
+    *   **`GEMINI.md`**: Project-specific rules and persistent context.
+3.  **Storage Hub (OneDrive Data)**: `...\Accounts\HTC_EOOD\TradeJournalData`
+    *   **`trade_journal.db`**: SQLite database for manual trades and risk settings.
+    *   **`trade_journal.log`**: Audit trail of all system operations.
 
 ```mermaid
 graph TD
     IBKR[IBKR API] --> ibkr.py[Networking]
     ibkr.py --> ibkr_parser.py[Parsing]
-    ibkr_parser.py --> DB[(SQLite DB)]
+    ibkr_parser.py --> DB[(OneDrive SQLite)]
     DB --> data_loader.py[Standardization]
     data_loader.py --> pm[PortfolioManager]
     pm --> tm[TickerMapper]
     tm --> YF[Yahoo Finance]
     pm --> dashboard.py[Interactive UI]
 ```
-
-### Core Modules:
-*   **`main.py`**: CLI Controller and entry point.
-*   **`portfolio_manager.py`**: The central logic engine for position and risk calculation.
-*   **`data_loader.py`**: Handles consistent data retrieval from DB and IBKR snapshots.
-*   **`ibkr_parser.py`**: Interprets complex CSV/XML formats from brokers.
-*   **`ticker_mapper.py`**: Reconciles IBKR symbols with Yahoo Finance (ISIN support).
-*   **`models.py`**: Defines type-safe `Trade` and `Position` data structures.
-*   **`logger.py`**: Manages system-wide logging and audit trails.
 
 ## 🛠 Setup & Installation
 
@@ -53,15 +53,10 @@ cd trade-journal
 uv sync
 ```
 
-### Configuration:
-Create a `.env` file in the root directory:
-```env
-IBKR_TOKEN="YOUR_TOKEN"
-IBKR_QUERY_ID_TRADES="TRADES_QUERY_ID"
-IBKR_QUERY_ID_NAV="NAV_QUERY_ID"
-IBKR_QUERY_ID_OPEN_POSITIONS="POSITIONS_QUERY_ID"
-DATA_PATH="C:\Path\To\Your\OneDrive\TradeData"
-```
+### Secure Configuration:
+Secrets are managed in the **Configuration Vault** on OneDrive to prevent leaks to GitHub.
+The system automatically loads credentials from:
+`C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal\.env`
 
 ## 📈 Usage
 

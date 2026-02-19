@@ -7,25 +7,29 @@ from dotenv import load_dotenv
 # We use override=True so that .env values take precedence over system env vars
 load_dotenv(override=True)
 
-# 2. Define Data Directory
-# We look for 'DATA_PATH' in the .env file. 
-# If not found, we default to a local "data" folder in the project directory.
-env_data_path = os.environ.get("DATA_PATH")
+# 2. Define Data Directory & Configuration Vault
+# Storage Hub (Database/Logs)
+DATA_DIR = Path(r"C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData")
 
-if env_data_path:
-    DATA_DIR = Path(env_data_path)
+# Configuration Vault (Secrets/Metadata)
+CONFIG_VAULT = Path(r"C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal")
+
+# Load .env from the Configuration Vault
+onedrive_env = CONFIG_VAULT / ".env"
+if onedrive_env.exists():
+    load_dotenv(onedrive_env, override=True)
 else:
-    BASE_DIR = Path(__file__).resolve().parent
-    DATA_DIR = BASE_DIR / "data"
+    # Fallback to local .env if vault is missing
+    load_dotenv(override=True)
 
-# Ensure the directory exists (create it if missing)
+# Ensure the data directory exists
 try:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 except Exception as e:
     print(f"⚠️ Warning: Could not create data directory at {DATA_DIR}: {e}")
 
 # 3. Database Path
-DB_PATH = DATA_DIR / "simple_journal.db"
+DB_PATH = DATA_DIR / "trade_journal.db"
 
 # 4. IBKR Configuration
 IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "")

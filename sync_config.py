@@ -2,47 +2,50 @@ import shutil
 from pathlib import Path
 import os
 
-# Paths
-ONEDRIVE_VAULT = Path(r'C:\Users\User\OneDrive\Documents\Logos\.repos')
-REPO_DIR = Path.cwd()
-GLOBAL_GEMINI_DIR = Path(os.path.expanduser('~')) / '.gemini'
+# 1. Define Vault Paths
+# Metadata Vault (Secrets and project-specific instructions)
+METADATA_VAULT = Path(r'C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal')
 
-# Mapping: (Local Source Path, Remote Filename in Vault)
+# Global Context Vault
+GLOBAL_VAULT = Path(r'C:\Users\User\OneDrive\Documents\Logos\.repos')
+
+# Local paths
+REPO_DIR = Path.cwd()
+LOCAL_GEMINI_DIR = Path(os.path.expanduser('~')) / '.gemini'
+
+# Mapping: (Local Source Path, Remote Destination Path)
 FILES_TO_SYNC = [
-    (REPO_DIR / '.env', 'trade-journal.env'),
-    (REPO_DIR / 'GEMINI.md', 'trade-journal_GEMINI.md'),
-    (GLOBAL_GEMINI_DIR / 'GEMINI.md', 'global_GEMINI.md'),
+    (REPO_DIR / 'GEMINI.md', METADATA_VAULT / 'GEMINI.md'),
+    (LOCAL_GEMINI_DIR / 'GEMINI.md', GLOBAL_VAULT / 'global_GEMINI.md'),
 ]
 
 def backup():
     """Copies local files TO OneDrive."""
-    if not ONEDRIVE_VAULT.exists():
-        print(f"Error: OneDrive vault not found at {ONEDRIVE_VAULT}")
-        return
-
-    for local_path, remote_name in FILES_TO_SYNC:
+    print("🚀 Starting Metadata Backup...")
+    
+    for local_path, remote_path in FILES_TO_SYNC:
         if local_path.exists():
-            dst = ONEDRIVE_VAULT / remote_name
-            shutil.copy2(local_path, dst)
-            print(f"-> Backed up {local_path.name} to {remote_name}")
+            # Ensure the destination directory exists
+            remote_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            shutil.copy2(local_path, remote_path)
+            print(f"  -> Backed up {local_path.name} to {remote_path}")
         else:
-            print(f"Warning: Local file {local_path} not found. Skipping.")
+            print(f"  ⚠️ Warning: Local file {local_path} not found. Skipping.")
 
 def restore():
     """Copies OneDrive files BACK TO local locations."""
-    if not ONEDRIVE_VAULT.exists():
-        print(f"Error: OneDrive vault not found at {ONEDRIVE_VAULT}")
-        return
-
-    for local_path, remote_name in FILES_TO_SYNC:
-        src = ONEDRIVE_VAULT / remote_name
-        if src.exists():
-            # Ensure parent directory exists (especially for .gemini)
+    print("📥 Restoring Metadata from OneDrive...")
+    
+    for local_path, remote_path in FILES_TO_SYNC:
+        if remote_path.exists():
+            # Ensure local parent directory exists
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, local_path)
-            print(f"-> Restored {local_path.name} from {remote_name}")
+            
+            shutil.copy2(remote_path, local_path)
+            print(f"  -> Restored {local_path.name} from {remote_path}")
         else:
-            print(f"Warning: Remote file {remote_name} not found in vault. Skipping.")
+            print(f"  ⚠️ Warning: Remote file {remote_path} not found. Skipping.")
 
 if __name__ == "__main__":
     import sys
