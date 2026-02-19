@@ -2,9 +2,16 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from data_loader import DataLoader
 from ticker_mapper import TickerMapper
 from db import get_all_risk_settings
+from models import Position
+from logger import logger, log_system_milestone
+
+# Log the recent improvements
+log_system_milestone("Implemented parallel market data fetching via ThreadPoolExecutor")
+log_system_milestone("Formalized 'Position' and 'Trade' models using Dataclasses")
 
 class PortfolioManager:
     """
@@ -23,10 +30,46 @@ class PortfolioManager:
     def mapper(self):
         return self._mapper or TickerMapper()
 
-    def calculate_positions(self, trades_df):
+    def _fetch_single_market_data(self, position: Position):
+        """Helper to fetch price and max high for a single position object."""
+        yf_ticker = self.mapper.resolve_yf_ticker(position.ticker, position.isin)
+        
+        if yf_ticker:
+            try:
+                data = yf.Ticker(yf_ticker)
+                # fast_info is very quick but sometimes missing
+                price = data.fast_info.get('last_price', np.nan)
+                
+                if np.isnan(price):
+                    hist = data.history(period="1d")
+                    if not hist.empty:
+                        price = hist['Close'].iloc[-1]
+                
+                # Fetch history for trailing stop (Max High)
+                full_hist = data.history(start=position.date_entry)
+                if not full_hist.empty:
+                    max_p = full_hist['High'].max()
+                else:
+                    max_p = price
+                
+                position.current_price = price
+                position.max_since_entry = max_p
+            except Exception as e:
+                logger.warning(f"Failed to fetch market data for {yf_ticker}: {e}")
+        
+        # Fallbacks if YF fails
+        if not position.current_price or np.isnan(position.current_price):
+            position.current_price = position.mark_price
+        if not position.max_since_entry or np.isnan(position.max_since_entry):
+            position.max_since_entry = position.current_price
+            
+        return position
+
+    def calculate_positions(self, trades_df) -> list[Position]:
         """
         Unified engine for "Reset-on-Zero" ledger replay.
         Expects a cleaned DataFrame of trades.
+        Returns a list of Position objects.
         """
         if trades_df.empty:
             return []
@@ -61,23 +104,23 @@ class PortfolioManager:
             
             if qty > 0.0001:
                 latest = group.iloc[-1]
-                open_positions.append({
-                    'Name': latest.get('Description', latest['Symbol']),
-                    'Ticker': latest['Symbol'],
-                    'Conid': conid,
-                    'ListingExchange': latest.get('ListingExchange'),
-                    'AssetClass': latest.get('AssetClass', 'STK'),
-                    'UnderlyingSymbol': latest.get('UnderlyingSymbol'),
-                    'CCY': latest.get('CurrencyPrimary', 'USD'),
-                    'Date': first_date,
-                    'Qty': qty,
-                    'Entry': total_cost / qty,
-                    'ISIN': latest.get('ISIN', np.nan),
-                    'MarkPrice': latest.get('Price', np.nan)
-                })
+                open_positions.append(Position(
+                    name=latest.get('Description', latest['Symbol']),
+                    ticker=latest['Symbol'],
+                    conid=str(conid),
+                    asset_class=latest.get('AssetClass', 'STK'),
+                    ccy=latest.get('CurrencyPrimary', 'USD'),
+                    date_entry=pd.to_datetime(first_date),
+                    qty=qty,
+                    entry_price=total_cost / qty,
+                    mark_price=latest.get('Price', 0.0),
+                    isin=str(latest.get('ISIN', '')),
+                    listing_exchange=latest.get('ListingExchange', ''),
+                    underlying_symbol=latest.get('UnderlyingSymbol', '')
+                ))
         return open_positions
 
-    def get_open_positions_hybrid(self, asset_class_filter=None):
+    def get_open_positions_hybrid(self, asset_class_filter=None) -> list[Position]:
         """
         Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades.
         """
@@ -111,26 +154,26 @@ class PortfolioManager:
                     if qty <= 0: qty, entry, first_date = 0, 0, None
 
             if qty > 0.0001:
-                open_list.append({
-                    'Name': v['Description'], 'Ticker': ticker, 'Conid': conid,
-                    'ListingExchange': v['ListingExchange'], 'AssetClass': v['AssetClass'],
-                    'UnderlyingSymbol': v['UnderlyingSymbol'], 'CCY': v['Currency'], 'ISIN': v['ISIN'],
-                    'Date': first_date, 'Qty': qty, 'Entry': entry, 'MarkPrice': v['MarkPrice']
-                })
-            matched_conids.add(conid)
+                open_list.append(Position(
+                    name=v['Description'], ticker=ticker, conid=str(conid),
+                    listing_exchange=v['ListingExchange'], asset_class=v['AssetClass'],
+                    underlying_symbol=v['UnderlyingSymbol'], ccy=v['Currency'], isin=str(v.get('ISIN', '')),
+                    date_entry=pd.to_datetime(first_date), qty=qty, entry_price=entry, mark_price=v['MarkPrice']
+                ))
+            matched_conids.add(str(conid))
 
         # 2. Add manual trades for assets NOT in IBKR snapshot
-        remaining_manual = pending_manual[~pending_manual['Conid'].isin(matched_conids)]
+        remaining_manual = pending_manual[~pending_manual['Conid'].astype(str).isin(matched_conids)]
         if not remaining_manual.empty:
             open_list.extend(self.calculate_positions(remaining_manual))
 
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
-            open_list = [p for p in open_list if p['AssetClass'].upper() in filters]
+            open_list = [p for p in open_list if p.asset_class.upper() in filters]
             
         return open_list
 
-    def get_open_positions_ledger(self, asset_class_filter=None):
+    def get_open_positions_ledger(self, asset_class_filter=None) -> list[Position]:
         """
         Ledger Mode: Full database replay.
         """
@@ -144,114 +187,63 @@ class PortfolioManager:
     def get_dashboard_df(self, asset_class_filter=None, total_nav=None, use_ledger=False):
         """
         Enriches open positions with market data and risk metrics.
+        Uses parallel fetching for price updates.
         """
         risk_settings = get_all_risk_settings()
         
         if use_ledger:
-            open_list = self.get_open_positions_ledger(asset_class_filter)
+            positions = self.get_open_positions_ledger(asset_class_filter)
         else:
-            open_list = self.get_open_positions_hybrid(asset_class_filter)
+            positions = self.get_open_positions_hybrid(asset_class_filter)
             
-        df = pd.DataFrame(open_list)
-        if df.empty: return pd.DataFrame()
+        if not positions: return pd.DataFrame()
         
-        # Market Data Enrichment
-        prices, max_prices = [], []
-        for _, row in df.iterrows():
-            yf_ticker = self.mapper.resolve_yf_ticker(row['Ticker'], row.get('ISIN'))
-            price, max_p = np.nan, np.nan
-            if yf_ticker:
-                try:
-                    data = yf.Ticker(yf_ticker)
-                    price = data.fast_info.get('last_price', np.nan)
-                    if np.isnan(price):
-                        hist = data.history(period="1d")
-                        if not hist.empty: price = hist['Close'].iloc[-1]
-                    
-                    entry_date = pd.to_datetime(row['Date'])
-                    full_hist = data.history(start=entry_date)
-                    if not full_hist.empty:
-                        max_p = full_hist['High'].max()
-                except Exception: pass
+        # Parallel Market Data Enrichment
+        logger.info(f"Fetching market data for {len(positions)} positions in parallel...")
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            enriched_positions = list(executor.map(self._fetch_single_market_data, positions))
             
-            if np.isnan(price): price = row.get('MarkPrice', np.nan)
-            if np.isnan(max_p): max_p = price
-            prices.append(price); max_prices.append(max_p)
-            
-        df['Price'], df['MaxSinceEntry'] = prices, max_prices
-        df['MarketValue'] = df['Price'] * df['Qty']
-        df['P/L'] = (df['Price'] - df['Entry']) * df['Qty']
-        df['Pct'] = ((df['Price'] - df['Entry']) / df['Entry']) * 100
-        
-        # Apply Risk Metrics
-        df = self._apply_risk_metrics(df, risk_settings)
-
-        # Performance Metrics
+        # Calculate Metrics for each position
         today = pd.Timestamp.now()
-        df['Years'] = (today - pd.to_datetime(df['Date'])).dt.days / 365.25
-        df['AAGR'] = df.apply(self._calc_aagr, axis=1) * 100
-        
-        denominator = total_nav if (total_nav and total_nav > 0) else df['MarketValue'].sum()
-        df['NavPct'] = (df['MarketValue'] / denominator) * 100
-        
-        return df[['Name', 'Ticker', 'Date', 'Qty', 'Entry', 'Price', 'MarketValue', 'P/L', 'CCY', 'Pct', 
-                   'AAGR', 'NavPct', 'AssetClass', 'ATR_Disp', 'SL_Price', 'TP_Price', 
-                   'Down_Pct', 'Up_Pct', 'Risk_Val', 'RR_Ratio', 'MaxSinceEntry']]
-
-    def _apply_risk_metrics(self, df, risk_settings):
-        def _row_risk(row):
-            ticker = row['Ticker']
-            price = row['Price']
-            if ticker in risk_settings:
-                atr, s_type = risk_settings[ticker]
-                sl = (row['MaxSinceEntry'] if s_type == 'TRAILING' else row['Entry']) - atr
-                tp = sl + (3 * atr)
+        for p in enriched_positions:
+            # Basic financial math
+            p.market_value = p.current_price * p.qty
+            p.unrealized_pl = (p.current_price - p.entry_price) * p.qty
+            p.pl_pct = ((p.current_price - p.entry_price) / p.entry_price * 100) if p.entry_price > 0 else 0
+            
+            # Age & Growth
+            p.age_days = (today - p.date_entry).days
+            years = max(p.age_days / 365.25, 0.04)
+            p.aagr = (((p.current_price / p.entry_price) ** (1 / years)) - 1) * 100 if p.entry_price > 0 else 0
+            
+            # Risk
+            if p.ticker in risk_settings:
+                atr, s_type = risk_settings[p.ticker]
+                p.sl_price = (p.max_since_entry if s_type == 'TRAILING' else p.entry_price) - atr
+                p.tp_price = p.sl_price + (3 * atr)
                 
-                down_pct = ((price - sl) / price * 100) if price > 0 else 0
-                up_pct = ((tp - price) / price * 100) if price > 0 else 0
-                risk_amt = (price - sl) * row['Qty']
-                rr = (tp - price) / (price - sl) if (price - sl) != 0 else 0
-                
-                return f"{atr:.2f} ({s_type[0]})", sl, tp, down_pct, up_pct, risk_amt, rr
-            return "---", np.nan, np.nan, 0, 0, 0, 0
+                p.down_pct = ((p.current_price - p.sl_price) / p.current_price * 100) if p.current_price > 0 else 0
+                p.up_pct = ((p.tp_price - p.current_price) / p.current_price * 100) if p.current_price > 0 else 0
+                p.risk_val = (p.current_price - p.sl_price) * p.qty
+                p.rr_ratio = (p.tp_price - p.current_price) / (p.current_price - p.sl_price) if (p.current_price - p.sl_price) != 0 else 0
+                p.atr_display = f"{atr:.2f} ({s_type[0]})"
 
-        risk_res = df.apply(_row_risk, axis=1)
-        df['ATR_Disp'] = [r[0] for r in risk_res]
-        df['SL_Price'] = [r[1] for r in risk_res]
-        df['TP_Price'] = [r[2] for r in risk_res]
-        df['Down_Pct'] = [r[3] for r in risk_res]
-        df['Up_Pct'] = [r[4] for r in risk_res]
-        df['Risk_Val'] = [r[5] for r in risk_res]
-        df['RR_Ratio'] = [r[6] for r in risk_res]
-        return df
+        # Final pass for NAV %
+        total_mv = sum(p.market_value for p in enriched_positions)
+        denominator = total_nav if (total_nav and total_nav > 0) else total_mv
+        for p in enriched_positions:
+            p.nav_pct = (p.market_value / denominator) * 100
 
-    def _calc_aagr(self, row):
-        if pd.isna(row['Price']) or row['Entry'] <= 0: return 0.0
-        years = max(row['Years'], 0.04) 
-        try: return ((row['Price'] / row['Entry']) ** (1 / years)) - 1
-        except: return 0.0
+        # Convert list of objects back to DataFrame for the View layer
+        return pd.DataFrame([p.to_dict() for p in enriched_positions])
 
     # --- Account / NAV Methods ---
     def fetch_nav_data(self, force_download=False):
         from config import IBKR_QUERY_ID_NAV, IBKR_NAV_XML
         from ibkr import download_flex_report
+        from ibkr_parser import IBKRParser
+        
         file_path = download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_XML, force_download=force_download)
         if not file_path: return None
-        try:
-            tree = ET.parse(file_path)
-            return self.parse_nav_report(tree.getroot())
-        except Exception as e:
-            print(f"❌ Error parsing NAV XML: {e}")
-            return None
-
-    def parse_nav_report(self, root):
-        accounts, total_nav, report_date = [], 0.0, "Unknown"
-        if root is None: return 0.0, [], report_date
-        rows = root.findall(".//EquitySummaryByReportDateInBase")
-        for row in rows:
-            if report_date == "Unknown": report_date = row.get("reportDate", "Unknown")
-            alias = row.get("acctAlias") or row.get("accountId") or "Unknown"
-            nav_val = float(row.get("total", 0)) 
-            accounts.append({'alias': alias, 'nav': nav_val})
-            total_nav += nav_val
-        return total_nav, accounts, report_date
+        
+        return IBKRParser.parse_nav_xml(file_path)

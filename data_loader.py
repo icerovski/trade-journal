@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 from config import DATA_DIR
 import db
+from logger import logger, log_system_milestone
+
+# Log the recent improvement
+log_system_milestone("Implemented centralized DataLoader for DB and CSV snapshots")
 
 class DataLoader:
     """
