@@ -79,22 +79,24 @@ class PortfolioManager:
             # Copy to avoid SettingWithCopyWarning
             group = group.copy().sort_values('TradeDate')
             
-            qty, total_cost, first_date = 0.0, 0.0, None
+            qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
             
             for _, row in group.iterrows():
                 side = str(row['Buy/Sell']).strip().upper()
                 q = abs(row['Quantity'])
                 p = row['Price']
+                m = float(row.get('Multiplier', 1.0))
                 
                 # Special handling for opening balance reset
                 if 'OPENING_BALANCE' in str(row.get('source', '')).upper():
-                    qty, total_cost, first_date = q, q * p, row['TradeDate']
+                    qty, total_cost, first_date, multiplier = q, q * p * m, row['TradeDate'], m
                     continue
                 
                 if side == 'BUY':
                     if qty <= 0.0001:
                         first_date = row['TradeDate']
-                    total_cost += q * p
+                        multiplier = m # Set multiplier on first buy
+                    total_cost += q * p * m
                     qty += q
                 elif side == 'SELL' and qty > 0:
                     # Cost basis reduction (FIFO/WAC style)
@@ -103,7 +105,7 @@ class PortfolioManager:
                     
                     # RESET ON ZERO logic
                     if qty <= 0.0001:
-                        qty, total_cost, first_date = 0.0, 0.0, None
+                        qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
             
             if qty > 0.0001:
                 latest = group.iloc[-1]
@@ -115,7 +117,8 @@ class PortfolioManager:
                     ccy=latest.get('CurrencyPrimary', 'USD'),
                     date_entry=pd.to_datetime(first_date),
                     qty=qty,
-                    entry_price=total_cost / qty,
+                    multiplier=multiplier,
+                    entry_price=total_cost / (qty * multiplier) if (qty * multiplier) != 0 else 0,
                     mark_price=latest.get('Price', 0.0),
                     isin=str(latest.get('ISIN', '')),
                     listing_exchange=latest.get('ListingExchange', ''),
@@ -144,6 +147,7 @@ class PortfolioManager:
 
         for conid, v in broker_verified.items():
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
+            multiplier = v.get('Multiplier', 1.0)
             
             # Smart Fallback: 
             # Prefer Ledger for both Entry Price and Entry Date if available, 
@@ -157,16 +161,20 @@ class PortfolioManager:
                 
                 # ALWAYS prefer Ledger for Entry Date to avoid "Report Date" (today) from snapshot
                 first_date = lp.date_entry
+                multiplier = lp.multiplier # Prefer ledger multiplier
                 logger.debug(f"Using Ledger entry date for {ticker}: {first_date}")
 
             # Apply any pending manual adjustments
             adjustments = pending_manual[pending_manual['Conid'] == conid]
             for _, row in adjustments.iterrows():
-                side, q, p = row['Buy/Sell'], row['Quantity'], row['Price']
+                side, q, p, m = row['Buy/Sell'], row['Quantity'], row['Price'], row.get('Multiplier', 1.0)
                 if side == 'BUY':
                     new_qty = qty + q
-                    entry = ((qty * entry) + (q * p)) / new_qty if new_qty != 0 else 0
+                    # entry_price = total_cost / (qty * multiplier)
+                    # new_total_cost = (qty * entry * multiplier) + (q * p * m)
+                    entry = ((qty * entry * multiplier) + (q * p * m)) / (new_qty * m) if (new_qty * m) != 0 else 0
                     qty = new_qty
+                    multiplier = m
                     if not first_date: first_date = row['TradeDate']
                 else:
                     qty = max(0, qty - q)
@@ -177,7 +185,8 @@ class PortfolioManager:
                     name=v['Description'], ticker=ticker, conid=str(conid),
                     listing_exchange=v['ListingExchange'], asset_class=v['AssetClass'],
                     underlying_symbol=v['UnderlyingSymbol'], ccy=v['Currency'], isin=str(v.get('ISIN', '')),
-                    date_entry=pd.to_datetime(first_date), qty=qty, entry_price=entry, mark_price=v['MarkPrice']
+                    date_entry=pd.to_datetime(first_date), qty=qty, entry_price=entry, 
+                    multiplier=multiplier, mark_price=v['MarkPrice']
                 ))
             matched_conids.add(str(conid))
 
@@ -219,6 +228,14 @@ class PortfolioManager:
             positions = self.get_open_positions_hybrid(asset_class_filter)
             
         if not positions: return pd.DataFrame()
+
+        # Fix Multipliers for Bonds before calculations
+        for p in positions:
+            # HEURISTIC: IBKR often reports multiplier 1 for Bonds, but they are priced 
+            # in % of par (usually $1000). So multiplier should be 10.
+            if p.asset_class == 'BOND' and p.multiplier == 1.0:
+                p.multiplier = 10.0
+                logger.info(f"Applied Bond Multiplier Correction (1.0 -> 10.0) for {p.ticker}")
         
         # Parallel Market Data Enrichment
         logger.info(f"Fetching market data for {len(positions)} positions in parallel...")
@@ -229,12 +246,12 @@ class PortfolioManager:
         today = pd.Timestamp.now()
         for p in enriched_positions:
             # Basic financial math (Since Inception)
-            p.market_value = p.current_price * p.qty
-            p.unrealized_pl = (p.current_price - p.entry_price) * p.qty
+            p.market_value = p.current_price * p.qty * p.multiplier
+            p.unrealized_pl = (p.current_price - p.entry_price) * p.qty * p.multiplier
             p.pl_pct = ((p.current_price - p.entry_price) / p.entry_price * 100) if p.entry_price > 0 else 0
             
             # Daily performance (Compared to last close / mark_price from DB)
-            p.daily_pl = (p.current_price - p.mark_price) * p.qty if p.mark_price > 0 else 0
+            p.daily_pl = (p.current_price - p.mark_price) * p.qty * p.multiplier if p.mark_price > 0 else 0
             p.daily_pl_pct = ((p.current_price - p.mark_price) / p.mark_price * 100) if p.mark_price > 0 else 0
             
             # Age & Growth
@@ -250,7 +267,7 @@ class PortfolioManager:
                 
                 p.down_pct = ((p.current_price - p.sl_price) / p.current_price * 100) if p.current_price > 0 else 0
                 p.up_pct = ((p.tp_price - p.current_price) / p.current_price * 100) if p.current_price > 0 else 0
-                p.risk_val = (p.current_price - p.sl_price) * p.qty
+                p.risk_val = (p.current_price - p.sl_price) * p.qty * p.multiplier
                 p.rr_ratio = (p.tp_price - p.current_price) / (p.current_price - p.sl_price) if (p.current_price - p.sl_price) != 0 else 0
                 p.atr_display = f"{atr:.2f} ({s_type[0]})"
 

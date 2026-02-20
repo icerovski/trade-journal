@@ -29,8 +29,9 @@ class DataLoader:
         
         rename_map = {
             'date': 'TradeDate', 'ticker': 'Symbol', 'side': 'Buy/Sell',
-            'quantity': 'Quantity', 'price': 'Price', 'asset_category': 'AssetClass',
-            'description': 'Description', 'conid': 'Conid', 'listing_exchange': 'ListingExchange',
+            'quantity': 'Quantity', 'price': 'Price', 'multiplier': 'Multiplier',
+            'asset_category': 'AssetClass', 'description': 'Description', 
+            'conid': 'Conid', 'listing_exchange': 'ListingExchange',
             'currency': 'CurrencyPrimary', 'underlying_symbol': 'UnderlyingSymbol'
         }
         df = df.rename(columns=rename_map)
@@ -47,6 +48,8 @@ class DataLoader:
         df['TradeDate'] = pd.to_datetime(df['TradeDate'], errors='coerce')
         df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
         df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
+        df['Multiplier'] = pd.to_numeric(df.get('Multiplier', 1.0), errors='coerce')
+        df['Multiplier'] = df['Multiplier'].replace(0, np.nan).fillna(1.0)
         
         # Ensure critical columns exist
         for col in ['Conid', 'ListingExchange', 'CurrencyPrimary', 'UnderlyingSymbol']:
@@ -92,6 +95,8 @@ class DataLoader:
             df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
             df['CostBasisPrice'] = pd.to_numeric(df['CostBasisPrice'], errors='coerce')
             df['MarkPrice'] = pd.to_numeric(df['MarkPrice'], errors='coerce')
+            df['Multiplier'] = pd.to_numeric(df.get('Multiplier', 1.0), errors='coerce')
+            df['Multiplier'] = df['Multiplier'].replace(0, np.nan).fillna(1.0)
             df['PercentOfNAV'] = pd.to_numeric(df['PercentOfNAV'], errors='coerce')
             
             # Process summaries
@@ -132,6 +137,7 @@ class DataLoader:
                 broker_data[conid_str] = {
                     'Qty': qty, 
                     'Entry': entry,
+                    'Multiplier': group['Multiplier'].iloc[0],
                     'Date': earliest_dates.get(conid_val) or report_date,
                     'Description': group['Description'].iloc[0], 
                     'Symbol': group['Symbol'].iloc[0],

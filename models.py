@@ -12,6 +12,7 @@ class Trade:
     quantity: float
     price: float
     conid: str
+    multiplier: float = 1.0
     description: str = ""
     asset_category: str = "STK"
     listing_exchange: str = ""
@@ -32,6 +33,7 @@ class Position:
     date_entry: datetime
     qty: float
     entry_price: float
+    multiplier: float = 1.0
     mark_price: float = 0.0
     isin: str = ""
     listing_exchange: str = ""
@@ -67,10 +69,11 @@ class Position:
             'Ticker': self.ticker,
             'Date': self.date_entry,
             'Qty': self.qty,
+            'Multiplier': self.multiplier,
             'Entry': self.entry_price,
             'Price': self.current_price or self.mark_price,
             'MarketValue': self.market_value,
-            'CostBasis': self.entry_price * self.qty,
+            'CostBasis': self.entry_price * self.qty * self.multiplier,
             'PL_Inc': self.unrealized_pl,
             'PL_Inc_Pct': self.pl_pct,
             'PL_Daily': self.daily_pl,

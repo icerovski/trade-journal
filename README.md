@@ -18,10 +18,10 @@ The application is built with a strictly modular "CEO Approach" to separation of
 
 1.  **Code Repository (Local/GitHub)**: `C:\repos\trade-journal`
     *   Pure logic and documentation. No secrets or personal data.
-2.  **Configuration Vault (OneDrive Metadata)**: `...\Documents\Logos\.repos\trade-journal`
+2.  **Configuration Vault (OneDrive Metadata)**: Managed via `CONFIG_VAULT` in `.env`.
     *   **`.env`**: Private API keys and IBKR tokens.
     *   **`GEMINI.md`**: Project-specific rules and persistent context.
-3.  **Storage Hub (OneDrive Data)**: `...\Accounts\HTC_EOOD\TradeJournalData`
+3.  **Storage Hub (OneDrive Data)**: Managed via `DATA_PATH` in `.env`.
     *   **`trade_journal.db`**: SQLite database for manual trades and risk settings.
     *   **`trade_journal.log`**: Audit trail of all system operations.
 
@@ -89,7 +89,7 @@ Private Equity proprietary tool. All rights reserved.
    - corporate_actions.csv
 2. [x] Probably keep .env and gemini.md in the standard folder. However, everytime I exit the the application make a back up in the onedrive, just as the logger function runs upon start of the application. Maybe that's the cleanest way. What do you think?
 3. Stock split capability of .db. Maybe add a new table in the DB which holds historical instrument information that should be pulled from other queries. Although I can't think of anything else, other than - date and ratio of stock split. 
-4. Naming convention of query. [name]_[period].csv
+4. [x] Naming convention of query. [name]_[period].csv
    - year - 2024, 2025, etc.
    - ytd - current year to date
    - lbd - last business day

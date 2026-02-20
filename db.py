@@ -21,6 +21,7 @@ def init_db():
             side TEXT NOT NULL,
             quantity REAL NOT NULL,
             price REAL NOT NULL,
+            multiplier REAL DEFAULT 1.0,
             asset_category TEXT DEFAULT 'STK',
             expiry TEXT,
             notes TEXT,
@@ -51,7 +52,8 @@ def init_db():
         ('conid', 'TEXT'),
         ('listing_exchange', 'TEXT'),
         ('currency', 'TEXT'),
-        ('underlying_symbol', 'TEXT')
+        ('underlying_symbol', 'TEXT'),
+        ('multiplier', 'REAL')
     ]
     
     for col_name, col_type in migrations:
@@ -91,18 +93,18 @@ def trade_exists(external_id):
     return exists
 
 def add_trade(date, ticker, side, quantity, price, asset_category="STK", 
-              expiry=None, notes="", source="MANUAL", external_id=None, 
-              description=None, conid=None, listing_exchange=None, 
-              currency=None, underlying_symbol=None):
+              multiplier=1.0, expiry=None, notes="", source="MANUAL", 
+              external_id=None, description=None, conid=None, 
+              listing_exchange=None, currency=None, underlying_symbol=None):
     conn = get_conn()
     try:
         conn.execute(
             """INSERT INTO trades 
-               (date, ticker, side, quantity, price, asset_category, expiry, notes, 
+               (date, ticker, side, quantity, price, multiplier, asset_category, expiry, notes, 
                 source, external_id, description, conid, listing_exchange, currency, underlying_symbol) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, ticker.upper(), side.upper(), float(quantity), float(price), 
-             asset_category, expiry, notes, source, external_id, description,
+             float(multiplier), asset_category, expiry, notes, source, external_id, description,
              conid, listing_exchange, currency, underlying_symbol)
         )
         conn.commit()

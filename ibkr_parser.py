@@ -39,6 +39,7 @@ class IBKRParser:
                     date_str = pd.to_datetime(date_raw).strftime("%Y-%m-%d")
                     qty = abs(float(row.get('Quantity', 0)))
                     price = float(row.get('TradePrice', 0))
+                    multiplier = float(row.get('Multiplier', 1.0))
                     
                     ib_id = row.get('IBOrderID') or row.get('TradeID')
                     ext_id = str(ib_id) if ib_id else f"MAN-{date_str}-{ticker}-{price}-{qty}"
@@ -48,7 +49,8 @@ class IBKRParser:
 
                     add_trade(
                         date=date_str, ticker=ticker, side=side, 
-                        quantity=qty, price=price, asset_category=row.get('AssetClass', 'STK'), 
+                        quantity=qty, price=price, multiplier=multiplier,
+                        asset_category=row.get('AssetClass', 'STK'), 
                         notes=f"IBKR CSV Import {datetime.now().date()}",
                         source="IBKR_CSV", external_id=ext_id,
                         description=row.get('Description', ''),

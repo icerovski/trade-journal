@@ -3,15 +3,13 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 1. Define Paths & Vaults
-# Storage Hub (Database/Logs/Market Data)
-DATA_DIR = Path(r"C:\Users\User\OneDrive\Accounts\HTC_EOOD\TradeJournalData")
-
-# Configuration Vault (Secrets/Metadata)
-CONFIG_VAULT = Path(r"C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal")
+# 1. Define Configuration Vault (Bootstrap)
+# Priority: System Environment Variable > Local Fallback
+# This path is used to find the backup .env if the local one is missing.
+CONFIG_VAULT = Path(os.environ.get("CONFIG_VAULT", r"C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal"))
 
 # 2. Load Environment Variables (Single Source of Truth)
-# Prioritize the local repo .env, fallback to OneDrive vault
+# We look for .env in the repo root first, then the Vault.
 local_env = Path(".env")
 onedrive_env = CONFIG_VAULT / ".env"
 
@@ -19,6 +17,10 @@ if local_env.exists():
     load_dotenv(local_env, override=True)
 elif onedrive_env.exists():
     load_dotenv(onedrive_env, override=True)
+
+# 3. Define Storage Hub (Database/Logs/Market Data)
+# Priority: .env DATA_PATH > Local "data" folder
+DATA_DIR = Path(os.environ.get("DATA_PATH", "data"))
 
 # Ensure the data directory exists
 DATA_DIR.mkdir(parents=True, exist_ok=True)
