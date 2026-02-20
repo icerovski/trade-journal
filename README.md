@@ -87,10 +87,10 @@ Private Equity proprietary tool. All rights reserved.
    - open_positions.csv
    - nav.csv
    - corporate_actions.csv
-2. Probably keep .env and gemini.md in the standard folder. However, everytime I run the application make a back up in the onedrive. Maybe that's the cleanest way.
+2. [x] Probably keep .env and gemini.md in the standard folder. However, everytime I exit the the application make a back up in the onedrive, just as the logger function runs upon start of the application. Maybe that's the cleanest way. What do you think?
 3. Stock split capability of .db. Maybe add a new table in the DB which holds historical instrument information that should be pulled from other queries. Although I can't think of anything else, other than - date and ratio of stock split. 
 4. Naming convention of query. [name]_[period].csv
    - year - 2024, 2025, etc.
    - ytd - current year to date
    - lbd - last business day
-5. 
+5. Bonds and Options are shown with the wrong multiplier. You probably need to include it in the calculation for the dashboard.

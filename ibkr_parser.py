@@ -66,28 +66,54 @@ class IBKRParser:
             return 0
 
     @staticmethod
-    def parse_nav_xml(file_path):
-        """Parses an IBKR Equity Summary XML and returns (total_nav, account_list, report_date)."""
+    def parse_nav_csv(file_path):
+        """
+        Parses an IBKR Equity Summary CSV and returns (total_nav, account_list, report_date).
+        IBKR Flex CSVs for NAV usually have sections like 'Equity Summary By Report Date In Base'.
+        """
         if not file_path or not Path(file_path).exists():
             return 0.0, [], "Unknown"
 
         try:
-            tree = ET.parse(file_path)
-            root = tree.getroot()
+            # Load CSV - usually has many sections. 
+            # We look for rows where the first column indicates Equity Summary.
+            df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
             
-            accounts, total_nav, report_date = [], 0.0, "Unknown"
-            rows = root.findall(".//EquitySummaryByReportDateInBase")
+            # Clean columns
+            df.columns = df.columns.str.strip()
             
-            for row in rows:
-                if report_date == "Unknown": 
-                    report_date = row.get("reportDate", "Unknown")
-                
-                alias = row.get("acctAlias") or row.get("accountId") or "Unknown"
-                nav_val = float(row.get("total", 0)) 
-                accounts.append({'alias': alias, 'nav': nav_val})
-                total_nav += nav_val
-                
+            # Identify the correct section. 
+            # In Flex CSV, Section Name is usually in the first column or 'SectionName'
+            section_col = 'SectionName' if 'SectionName' in df.columns else df.columns[0]
+            
+            # Filter for Equity Summary rows
+            nav_rows = df[df[section_col].str.contains('EquitySummary', na=False, case=False)]
+            
+            if nav_rows.empty:
+                # Fallback: just look for 'Total' and 'ReportDate'
+                nav_rows = df.dropna(subset=['Total', 'ReportDate'], how='all') if 'Total' in df.columns else pd.DataFrame()
+
+            if nav_rows.empty:
+                return 0.0, [], "Unknown"
+
+            # Ensure numeric
+            if 'Total' in nav_rows.columns:
+                nav_rows['Total'] = pd.to_numeric(nav_rows['Total'], errors='coerce')
+            
+            total_nav = nav_rows['Total'].sum() if 'Total' in nav_rows.columns else 0.0
+            report_date = str(nav_rows['ReportDate'].iloc[0]) if 'ReportDate' in nav_rows.columns else "Unknown"
+            
+            accounts = []
+            # Map accounts if Alias or AccountId is present
+            acct_col = 'AccountId' if 'AccountId' in nav_rows.columns else ('Account Alias' if 'Account Alias' in nav_rows.columns else None)
+            if acct_col:
+                for _, row in nav_rows.iterrows():
+                    accounts.append({
+                        'alias': row[acct_col],
+                        'nav': float(row.get('Total', 0))
+                    })
+            
             return total_nav, accounts, report_date
         except Exception as e:
-            print(f"ERROR: IBKR NAV XML Parsing Error: {e}")
+            print(f"ERROR: IBKR NAV CSV Parsing Error: {e}")
             return 0.0, [], "Unknown"

@@ -265,11 +265,11 @@ class PortfolioManager:
 
     # --- Account / NAV Methods ---
     def fetch_nav_data(self, force_download=False):
-        from config import IBKR_QUERY_ID_NAV, IBKR_NAV_XML
+        from config import IBKR_QUERY_ID_NAV, IBKR_NAV_CSV
         from ibkr import download_flex_report
         from ibkr_parser import IBKRParser
         
-        file_path = download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_XML, force_download=force_download)
+        file_path = download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_CSV, force_download=force_download)
         if not file_path: return None
         
-        return IBKRParser.parse_nav_xml(file_path)
+        return IBKRParser.parse_nav_csv(file_path)

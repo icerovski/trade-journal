@@ -6,6 +6,8 @@ from datetime import datetime
 
 from config import (
     IBKR_TRADES_CSV,
+    IBKR_OPEN_POSITIONS_CSV,
+    IBKR_NAV_CSV,
     DATA_DIR
 )
 from ibkr_parser import IBKRParser
@@ -89,15 +91,20 @@ def fetch_trade_history():
     return download_flex_report(IBKR_QUERY_ID_TRADES, IBKR_TRADES_CSV, force_download=True)
 
 def fetch_open_positions():
-    from config import IBKR_QUERY_ID_OPEN_POSITIONS, IBKR_OPEN_POSITIONS_CSV
+    from config import IBKR_QUERY_ID_OPEN_POSITIONS
     return download_flex_report(IBKR_QUERY_ID_OPEN_POSITIONS, IBKR_OPEN_POSITIONS_CSV, force_download=True)
 
 def download_trade_report(year=None, is_ytd=True):
     from config import IBKR_QUERY_ID_TRADES
     now = datetime.now()
     year = year or now.year
-    suffix = "YTD" if is_ytd else "FY"
-    output_path = DATA_DIR / f"{year}_{suffix}.csv"
+    
+    if is_ytd and year == now.year:
+        output_path = IBKR_TRADES_CSV  # trades_ytd.csv
+    else:
+        suffix = "YTD" if is_ytd else "FY"
+        output_path = DATA_DIR / f"{year}_{suffix}.csv"
+        
     return download_flex_report(IBKR_QUERY_ID_TRADES, output_path, force_download=True)
 
 def process_local_csvs():

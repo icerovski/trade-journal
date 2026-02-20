@@ -64,8 +64,9 @@ class DataLoader:
 
     @staticmethod
     def get_broker_verified_snapshot():
-        """Reads open_positions.csv and returns aggregated summary using Conid."""
-        path = DATA_DIR / "open_positions.csv"
+        """Reads open_positions_lbd.csv and returns aggregated summary using Conid."""
+        from config import IBKR_OPEN_POSITIONS_CSV
+        path = IBKR_OPEN_POSITIONS_CSV
         if not path.exists():
             return {}, None
             
