@@ -71,11 +71,21 @@ class DataLoader:
             
         try:
             # IBKR Flex CSVs often have garbage headers or duplicate headers.
-            # We skip the first row (MSG) and then filter for the real header row.
+            # Read everything first and filter out header repeats
             df = pd.read_csv(path, skiprows=1, on_bad_lines='skip', low_memory=False)
             
-            # Remove any rows that are just repeats of the header
-            df = df[df['Symbol'] != 'Symbol']
+            # Robust filtering: Keep only rows where 'LevelOfDetail' is actually a known value
+            if 'LevelOfDetail' not in df.columns:
+                # If the CSV is really messed up, the columns might be shifted
+                # Try to re-read without skipping if LevelOfDetail is missing
+                df = pd.read_csv(path, on_bad_lines='skip', low_memory=False)
+            
+            if 'LevelOfDetail' not in df.columns:
+                logger.error("Could not find 'LevelOfDetail' column in open_positions.csv")
+                return {}, None
+
+            # Remove rows that are just header repetitions
+            df = df[df['LevelOfDetail'].isin(['SUMMARY', 'LOT'])]
             
             # Standardize numeric columns
             df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')

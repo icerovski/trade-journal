@@ -55,11 +55,26 @@ def download_flex_report(query_id, output_path, force_download=False):
             
             report_resp = requests.get(dl_url)
             if report_resp.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(report_resp.content)
-                return file_path
+                temp_path = file_path.with_suffix(".tmp")
+                try:
+                    with open(temp_path, "wb") as f:
+                        f.write(report_resp.content)
+                    
+                    # Atomic swap (as much as Windows/OneDrive allows)
+                    if file_path.exists():
+                        file_path.unlink()
+                    temp_path.rename(file_path)
+                    return file_path
+                except PermissionError:
+                    logger.error(f"Permission Denied: Could not write to {file_path.name}. Is it open in Excel?")
+                    if temp_path.exists():
+                        temp_path.unlink()
+                except Exception as e:
+                    logger.error(f"Failed to save report: {e}")
+                    if temp_path.exists():
+                        temp_path.unlink()
     except Exception as e:
-        logger.error(f"Connection Error: {e}")
+        logger.error(f"IBKR Download Error: {e}")
     return None
 
 # --- 2. WRAPPERS ---

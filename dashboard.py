@@ -71,15 +71,15 @@ def _generate_static_table(df, sort_by="Ticker"):
     """Helper to generate a rich Table for both static and cockpit views."""
     table = Table(expand=True, box=box.SIMPLE, header_style="bold cyan", pad_edge=False)
     table.add_column("TICKER", style="bold")
-    table.add_column("DATE", justify="right")
-    table.add_column("QTY", justify="right")
-    table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
+    table.add_column("QTY", justify="right")
+    table.add_column("P/L", justify="right")
+    table.add_column("P/L %", justify="right")
+    table.add_column("UNRLZD P&L", justify="right")
+    table.add_column("UNRLZD P&L %", justify="right")
+    table.add_column("COST BASIS", justify="right")
     table.add_column("MKT VAL", justify="right")
-    table.add_column("D-P/L", justify="right")
-    table.add_column("D-%", justify="right")
-    table.add_column("P/L-INC", justify="right")
-    table.add_column("INC-%", justify="right")
+    table.add_column("% NAV", justify="right")
 
     df_view = df.copy()
     if sort_by == "MarketValue":
@@ -92,19 +92,18 @@ def _generate_static_table(df, sort_by="Ticker"):
     for _, row in df_view.iterrows():
         daily_color = "green" if row['PL_Daily'] >= 0 else "red"
         inc_color = "green" if row['PL_Inc'] >= 0 else "red"
-        date_str = row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "-"
         
         table.add_row(
             str(row['Ticker']),
-            date_str,
-            f"{row['Qty']:,.0f}",
-            f"{row['Entry']:,.2f}",
             f"{row['Price']:,.2f}",
-            f"{row['MarketValue']:,.0f}",
+            f"{row['Qty']:,.0f}",
             f"[{daily_color}]{row['PL_Daily']:,.0f}[/{daily_color}]",
             f"[{daily_color}]{row['PL_Daily_Pct']:.1f}%[/{daily_color}]",
             f"[{inc_color}]{row['PL_Inc']:,.0f}[/{inc_color}]",
-            f"[{inc_color}]{row['PL_Inc_Pct']:.1f}%[/{inc_color}]"
+            f"[{inc_color}]{row['PL_Inc_Pct']:.1f}%[/{inc_color}]",
+            f"{row['CostBasis']:,.0f}",
+            f"{row['MarketValue']:,.0f}",
+            f"{row['NavPct']:.1f}%"
         )
     return table
 
@@ -115,15 +114,15 @@ def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
     # Reuse the static table logic but with selection highlighting
     table = Table(expand=True, box=box.SIMPLE, header_style="bold cyan", pad_edge=False)
     table.add_column("TICKER", style="bold")
-    table.add_column("DATE", justify="right")
-    table.add_column("QTY", justify="right")
-    table.add_column("ENTRY", justify="right")
     table.add_column("PRICE", justify="right")
+    table.add_column("QTY", justify="right")
+    table.add_column("P/L", justify="right")
+    table.add_column("P/L %", justify="right")
+    table.add_column("UNRLZD P&L", justify="right")
+    table.add_column("UNRLZD P&L %", justify="right")
+    table.add_column("COST BASIS", justify="right")
     table.add_column("MKT VAL", justify="right")
-    table.add_column("D-P/L", justify="right")
-    table.add_column("D-%", justify="right")
-    table.add_column("P/L-INC", justify="right")
-    table.add_column("INC-%", justify="right")
+    table.add_column("% NAV", justify="right")
 
     df_view = state.df.copy()
     if sort_by == "MarketValue":
@@ -140,19 +139,18 @@ def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
         daily_color = "green" if row['PL_Daily'] >= 0 else "red"
         inc_color = "green" if row['PL_Inc'] >= 0 else "red"
         style = "reverse" if is_selected else ""
-        date_str = row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "-"
         
         table.add_row(
             str(row['Ticker']),
-            date_str,
-            f"{row['Qty']:,.0f}",
-            f"{row['Entry']:,.2f}",
             f"{row['Price']:,.2f}",
-            f"{row['MarketValue']:,.0f}",
+            f"{row['Qty']:,.0f}",
             f"[{daily_color}]{row['PL_Daily']:,.0f}[/{daily_color}]",
             f"[{daily_color}]{row['PL_Daily_Pct']:.1f}%[/{daily_color}]",
             f"[{inc_color}]{row['PL_Inc']:,.0f}[/{inc_color}]",
             f"[{inc_color}]{row['PL_Inc_Pct']:.1f}%[/{inc_color}]",
+            f"{row['CostBasis']:,.0f}",
+            f"{row['MarketValue']:,.0f}",
+            f"{row['NavPct']:.1f}%",
             style=style
         )
 
@@ -206,6 +204,8 @@ def get_details_panel(state: CockpitState):
     
     # Block 4: Performance
     details.add_row("[bold magenta]PERFORMANCE[/bold magenta]", "")
+    details.add_row("Inception:", row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "---")
+    details.add_row("Avg Cost:", f"{row['Entry']:,.2f}")
     details.add_row("High Since Entry:", f"{row['MaxSinceEntry']:,.2f}")
     details.add_row("AAGR:", f"{row['AAGR']:.1f}%")
     details.add_row("Days Since Entry:", f"{row['Age_Days']:.0f} days")

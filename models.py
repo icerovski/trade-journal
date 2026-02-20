@@ -70,6 +70,7 @@ class Position:
             'Entry': self.entry_price,
             'Price': self.current_price or self.mark_price,
             'MarketValue': self.market_value,
+            'CostBasis': self.entry_price * self.qty,
             'PL_Inc': self.unrealized_pl,
             'PL_Inc_Pct': self.pl_pct,
             'PL_Daily': self.daily_pl,

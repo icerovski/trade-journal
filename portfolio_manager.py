@@ -76,6 +76,9 @@ class PortfolioManager:
             
         open_positions = []
         for conid, group in trades_df.groupby('Conid'):
+            # Copy to avoid SettingWithCopyWarning
+            group = group.copy().sort_values('TradeDate')
+            
             qty, total_cost, first_date = 0.0, 0.0, None
             
             for _, row in group.iterrows():

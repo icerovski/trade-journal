@@ -30,6 +30,8 @@ class TestFullFeatures(unittest.TestCase):
         self.patches = [
             patch("db.DB_PATH", self.test_db),
             patch("config.DB_PATH", self.test_db),
+            patch("config.DATA_DIR", self.test_dir),
+            patch("data_loader.DATA_DIR", self.test_dir),
             patch("ibkr.DATA_DIR", self.test_dir),
             patch("ibkr.IBKR_TRADES_CSV", self.test_dir / "trades.csv"),
             patch("data_loader.DataLoader.get_connection", lambda: sqlite3.connect(self.test_db)),
@@ -87,14 +89,14 @@ MSFT,BUY,{current_year}-02-01,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
         df_pos = pd.DataFrame(positions)
         
         # Check AAPL: Should be 5 shares @ 170 (The 10 @ 150 was reset by the sell)
-        aapl = df_pos[df_pos['Ticker'] == 'AAPL'].iloc[0]
-        self.assertEqual(aapl['Qty'], 5)
-        self.assertEqual(aapl['Entry'], 170.0)
+        aapl = df_pos[df_pos['ticker'] == 'AAPL'].iloc[0]
+        self.assertEqual(aapl['qty'], 5)
+        self.assertEqual(aapl['entry_price'], 170.0)
         
         # Check MSFT: 10 shares @ 300
-        msft = df_pos[df_pos['Ticker'] == 'MSFT'].iloc[0]
-        self.assertEqual(msft['Qty'], 10)
-        self.assertEqual(msft['Entry'], 300.0)
+        msft = df_pos[df_pos['ticker'] == 'MSFT'].iloc[0]
+        self.assertEqual(msft['qty'], 10)
+        self.assertEqual(msft['entry_price'], 300.0)
 
         # --- D. Test Dashboard Calculation ---
         # Mock yfinance to return fixed prices
@@ -113,14 +115,15 @@ MSFT,BUY,{current_year}-02-01,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
             
             # Mock NAV fetch
             with patch.object(portfolio_manager.PortfolioManager, 'fetch_nav_data', return_value=(5000.0, [], "2026-02-13")):
-                df, nav, report_date = dashboard.calculate_dashboard_data(pm)
+                # Use Ledger mode for test since we don't have open_positions.csv mock
+                df, nav, report_date = dashboard.calculate_dashboard_data(pm, use_ledger=True)
                 
                 # Assertions on Dashboard DataFrame
                 self.assertEqual(nav, 5000.0)
                 self.assertEqual(report_date, "2026-02-13")
                 
                 aapl_row = df[df['Ticker'] == 'AAPL'].iloc[0]
-                self.assertEqual(aapl_row['P/L'], (200 - 170) * 5) # 150
+                self.assertEqual(aapl_row['PL_Inc'], (200 - 170) * 5) # 150
                 self.assertEqual(aapl_row['NavPct'], (200 * 5) / 5000 * 100) # 20% exposure
 
         print("\n✅ Integration Test Passed: Sync -> DB -> Position Logic -> Dashboard")

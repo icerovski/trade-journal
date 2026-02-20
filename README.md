@@ -78,3 +78,19 @@ python -m unittest discover tests
 
 ## 📜 License
 Private Equity proprietary tool. All rights reserved.
+
+
+# Scratchpad
+
+1. When pulling from Interactive Brokers, I will pull a few different files:
+   - trades.csv
+   - open_positions.csv
+   - nav.csv
+   - corporate_actions.csv
+2. Probably keep .env and gemini.md in the standard folder. However, everytime I run the application make a back up in the onedrive. Maybe that's the cleanest way.
+3. Stock split capability of .db. Maybe add a new table in the DB which holds historical instrument information that should be pulled from other queries. Although I can't think of anything else, other than - date and ratio of stock split. 
+4. Naming convention of query. [name]_[period].csv
+   - year - 2024, 2025, etc.
+   - ytd - current year to date
+   - lbd - last business day
+5. 
