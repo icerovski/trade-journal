@@ -54,12 +54,15 @@ class Position:
     age_days: int = 0
     
     # Risk Metrics
+    atr: float = 0.0
+    stop_type: str = "FIXED"
     atr_display: str = "---"
     sl_price: Optional[float] = None
     tp_price: Optional[float] = None
     down_pct: float = 0.0
     up_pct: float = 0.0
     risk_val: float = 0.0
+    reward_val: float = 0.0
     rr_ratio: float = 0.0
 
     def to_dict(self):
@@ -82,12 +85,15 @@ class Position:
             'Age_Days': self.age_days,
             'CCY': self.ccy,
             'AssetClass': self.asset_class,
+            'ATR': self.atr,
+            'StopType': self.stop_type,
             'ATR_Disp': self.atr_display,
             'SL_Price': self.sl_price,
             'TP_Price': self.tp_price,
             'Down_Pct': self.down_pct,
             'Up_Pct': self.up_pct,
             'Risk_Val': self.risk_val,
+            'Reward_Val': self.reward_val,
             'RR_Ratio': self.rr_ratio,
             'MaxSinceEntry': self.max_since_entry,
             'NavPct': self.nav_pct,

@@ -129,28 +129,104 @@ def handle_manual_trades():
 
 def handle_atr_calculator():
     print("\n--- ATR CALCULATOR ---")
-    print("1. ATR for an EXISTING Position (Auto-fetch Date/Price)")
+    print("1. ATR for ALL EXISTING Stocks (Batch Mode)")
     print("2. ATR for a NEW Position (Manual Input)")
     choice = input("Choice: ").strip()
 
     manager = PortfolioManager()
+    from db import get_all_risk_settings
+    risk_settings = get_all_risk_settings()
+
+    # Ask for optional multiplier/buffer
+    multiplier_input = input("Noise Buffer Multiplier (e.g., 1.5, 2.0) [default 1.0]: ").strip()
+    try:
+        multiplier = float(multiplier_input) if multiplier_input else 1.0
+    except ValueError:
+        print("Invalid multiplier. Using 1.0.")
+        multiplier = 1.0
+
     if choice == '1':
-        ticker_input = input("Enter Ticker: ").strip().upper()
-        if not ticker_input: return
+        print("\n-> Fetching open stock positions...")
+        open_positions = manager.get_open_positions_hybrid(asset_class_filter='STK')
         
-        open_positions = manager.get_open_positions_hybrid()
-        
-        # Find matching ticker
-        pos = next((p for p in open_positions if p['Ticker'].upper() == ticker_input), None)
-        
-        if pos:
-            ticker = pos['Ticker']
-            date_val = pos['Date']
-            price = pos['Entry']
-            print(f"-> Found existing position: {ticker} (Entry: {price:,.2f}, Date: {date_val})")
-        else:
-            print(f"Error: Ticker {ticker_input} not found in open positions.")
+        if not open_positions:
+            print("No open stock positions found.")
             return
+
+        # Sort alphabetically by ticker
+        open_positions.sort(key=lambda x: x.ticker)
+
+        from rich.console import Console
+        console = Console()
+        
+        print(f"-> Found {len(open_positions)} stock positions. Calculating ATR metrics...")
+        
+        for pos in open_positions:
+            ticker = pos.ticker
+            date_val = pos.date_entry.strftime("%Y-%m-%d")
+            price = pos.entry_price
+            
+            # Show current setting if exists (Now includes highest_sl)
+            current = risk_settings.get(ticker)
+            if current:
+                atr_val, stop_type, h_sl = current
+                current_str = f"Current: {atr_val:.2f} ({stop_type}) | High-Water SL: {h_sl:,.2f}"
+            else:
+                current_str = "Current: NOT SET"
+                
+            console.print(f"\n[bold yellow]--- {ticker} ---[/bold yellow] ({current_str})")
+
+            with console.status(f"[bold green]Calculating ATR for {ticker}..."):
+                table, raw_atrs = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier)
+                console.print(table)
+            
+            # Interactive Choice
+            if raw_atrs:
+                print(f"\nUpdate ATR for {ticker}?")
+                print("Format: [Value] [f/t]  (e.g., '4.05 t' for 4.05 Trailing, '3.5 f' for 3.5 Fixed)")
+                print("Options from table (just enter the number or type custom value):")
+                options = list(raw_atrs.keys())
+                for i, label in enumerate(options, 1):
+                    print(f"{i}. {label}: {raw_atrs[label]:.2f}")
+                print("Press [Enter] to SKIP / No Change")
+                
+                user_input = input("Entry: ").strip().lower()
+                if not user_input:
+                    print(f"Skipping {ticker}.")
+                else:
+                    try:
+                        # Check if it's a simple index choice from the list
+                        if user_input.isdigit() and 1 <= int(user_input) <= len(options):
+                            idx = int(user_input) - 1
+                            selected_val = raw_atrs[options[idx]]
+                            # If they just gave a number, we still need stop type
+                            stop_choice = input("Stop Type (f)ixed or (t)railing? [default t]: ").strip().lower()
+                            stop_type = "FIXED" if stop_choice == 'f' else "TRAILING"
+                            set_position_risk(ticker, selected_val, stop_type)
+                            print(f"SUCCESS: {ticker} updated to {selected_val:.2f} ({stop_type})")
+                        
+                        # Check for 'Value [f/t]' format
+                        else:
+                            parts = user_input.split()
+                            if len(parts) >= 2:
+                                val = float(parts[0])
+                                stop_char = parts[1]
+                                stop_type = "FIXED" if stop_char == 'f' else "TRAILING"
+                                set_position_risk(ticker, val, stop_type)
+                                print(f"SUCCESS: {ticker} updated to {val:.2f} ({stop_type})")
+                            elif len(parts) == 1:
+                                # Just a value, ask for type
+                                val = float(parts[0])
+                                stop_choice = input("Stop Type (f)ixed or (t)railing? [default t]: ").strip().lower()
+                                stop_type = "FIXED" if stop_choice == 'f' else "TRAILING"
+                                set_position_risk(ticker, val, stop_type)
+                                print(f"SUCCESS: {ticker} updated to {val:.2f} ({stop_type})")
+                    except ValueError:
+                        print("Invalid format. Use 'Value f' or 'Value t'. Skipping.")
+            
+            console.print("-" * 40)
+                
+        return 
     elif choice == '2':
         print("\nEnter details as: Ticker, Date, Price")
         print("Example: AAPL, 24 jun 2025, 180.5")
@@ -158,6 +234,11 @@ def handle_atr_calculator():
         if not line: return
         try:
             ticker, date_val, price, _ = parse_input_line(line)
+            from rich.console import Console
+            console = Console()
+            with console.status("[bold green]Calculating ATR metrics..."):
+                table, _ = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier)
+                console.print(table)
         except Exception as e:
             print(f"Error: {e}")
             return
@@ -165,11 +246,6 @@ def handle_atr_calculator():
         print("Invalid choice.")
         return
 
-    from rich.console import Console
-    console = Console()
-    with console.status("[bold green]Calculating ATR metrics..."):
-        table = calculate_atr_metrics(ticker, date_val, price)
-        console.print(table)
 
 def handle_assign_risk():
     print("\n--- ASSIGN RISK/ATR TO POSITION ---")

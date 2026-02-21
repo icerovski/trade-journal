@@ -39,7 +39,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS position_risk (
             ticker TEXT PRIMARY KEY,
             atr_value REAL NOT NULL,
-            stop_type TEXT NOT NULL  -- 'FIXED' or 'TRAILING'
+            stop_type TEXT NOT NULL,  -- 'FIXED' or 'TRAILING'
+            highest_sl REAL DEFAULT 0.0
         )
     """)
     
@@ -60,29 +61,54 @@ def init_db():
         if col_name not in columns:
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
 
+    # Position Risk Migration
+    cursor.execute("PRAGMA table_info(position_risk)")
+    risk_cols = [info[1] for info in cursor.fetchall()]
+    if 'highest_sl' not in risk_cols:
+        cursor.execute("ALTER TABLE position_risk ADD COLUMN highest_sl REAL DEFAULT 0.0")
+
     conn.commit()
     conn.close()
 
-def set_position_risk(ticker, atr, stop_type):
+def set_position_risk(ticker, atr, stop_type, reset_sl=True):
     """Saves or updates ATR/Stop settings for a ticker."""
     conn = get_conn()
+    if reset_sl:
+        conn.execute("""
+            INSERT INTO position_risk (ticker, atr_value, stop_type, highest_sl) 
+            VALUES (?, ?, ?, 0.0)
+            ON CONFLICT(ticker) DO UPDATE SET 
+                atr_value = excluded.atr_value,
+                stop_type = excluded.stop_type,
+                highest_sl = 0.0
+        """, (ticker.upper(), float(atr), stop_type.upper()))
+    else:
+        conn.execute("""
+            INSERT INTO position_risk (ticker, atr_value, stop_type) 
+            VALUES (?, ?, ?)
+            ON CONFLICT(ticker) DO UPDATE SET 
+                atr_value = excluded.atr_value,
+                stop_type = excluded.stop_type
+        """, (ticker.upper(), float(atr), stop_type.upper()))
+    conn.commit()
+    conn.close()
+
+def update_high_water_mark(ticker, sl_price):
+    """Updates the highest stop loss price achieved."""
+    conn = get_conn()
     conn.execute("""
-        INSERT INTO position_risk (ticker, atr_value, stop_type) 
-        VALUES (?, ?, ?)
-        ON CONFLICT(ticker) DO UPDATE SET 
-            atr_value = excluded.atr_value,
-            stop_type = excluded.stop_type
-    """, (ticker.upper(), float(atr), stop_type.upper()))
+        UPDATE position_risk SET highest_sl = MAX(highest_sl, ?) WHERE ticker = ?
+    """, (float(sl_price), ticker.upper()))
     conn.commit()
     conn.close()
 
 def get_all_risk_settings():
-    """Returns all risk settings as a dict {ticker: (atr, type)}."""
+    """Returns all risk settings as a dict {ticker: (atr, type, highest_sl)}."""
     conn = get_conn()
-    cursor = conn.execute("SELECT ticker, atr_value, stop_type FROM position_risk")
+    cursor = conn.execute("SELECT ticker, atr_value, stop_type, highest_sl FROM position_risk")
     rows = cursor.fetchall()
     conn.close()
-    return {r['ticker']: (r['atr_value'], r['stop_type']) for r in rows}
+    return {r['ticker']: (r['atr_value'], r['stop_type'], r['highest_sl']) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False

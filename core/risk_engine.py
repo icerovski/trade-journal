@@ -4,6 +4,7 @@ import yfinance as yf
 from rich.table import Table
 from rich.console import Console
 from models import Position
+from db import update_high_water_mark
 
 console = Console()
 
@@ -16,41 +17,61 @@ class RiskEngine:
     def calculate_position_risk(position: Position, risk_settings: dict):
         """
         Enriches a Position object with risk metrics based on provided settings.
+        Implements the 'Ratchet' rule: Stop Loss only moves in the trader's favor.
         """
         if position.ticker in risk_settings:
-            atr, s_type = risk_settings[position.ticker]
+            atr, s_type, highest_sl = risk_settings[position.ticker]
             
-            # 1. Stop Loss Calculation (Trailing vs Fixed)
-            anchor_price = position.max_since_entry if s_type == 'TRAILING' else position.entry_price
-            position.sl_price = anchor_price - atr
+            # 1. Base Stop Loss Calculation
+            # Stop Base is Entry Price (Fixed) or Max Price Since Entry (Trailing)
+            stop_base = position.max_since_entry if s_type == 'TRAILING' else position.entry_price
+            calculated_sl = stop_base - atr
             
-            # 2. Take Profit (Standard 3x ATR from SL)
+            # Populate raw fields for easier dashboard access
+            position.atr = atr
+            position.stop_type = s_type
+            
+            # 2. Ratchet Rule (High-Water Mark)
+            final_sl = max(calculated_sl, highest_sl)
+            
+            # Update high-water mark in DB if we reached a new high
+            if final_sl > highest_sl:
+                update_high_water_mark(position.ticker, final_sl)
+            
+            position.sl_price = final_sl
+            
+            # 3. Take Profit (Standard 3x ATR from SL)
             position.tp_price = position.sl_price + (3 * atr)
             
-            # 3. Percentage Metrics
+            # 4. Percentage Metrics
             if position.current_price > 0:
                 position.down_pct = ((position.current_price - position.sl_price) / position.current_price * 100)
                 position.up_pct = ((position.tp_price - position.current_price) / position.current_price * 100)
             
-            # 4. Value at Risk & Reward/Risk Ratio
-            risk_per_unit = (position.current_price - position.sl_price)
-            reward_per_unit = (position.tp_price - position.current_price)
+            # 5. Outcome at Stop/Target (Total P/L relative to Entry)
+            position.risk_val = (position.sl_price - position.entry_price) * position.qty * position.multiplier
+            position.reward_val = (position.tp_price - position.entry_price) * position.qty * position.multiplier
             
-            position.risk_val = risk_per_unit * position.qty * position.multiplier
+            # 6. Current Efficiency (Remaining Reward / Current Risk)
+            dist_to_stop = (position.current_price - position.sl_price)
+            dist_to_target = (position.tp_price - position.current_price)
             
-            if risk_per_unit != 0:
-                position.rr_ratio = reward_per_unit / risk_per_unit
+            if dist_to_stop != 0:
+                position.rr_ratio = dist_to_target / dist_to_stop
             else:
                 position.rr_ratio = 0.0
-                
-            position.atr_display = f"{atr:.2f} ({s_type[0]})"
+            
+            # ATR as % of Stop Base
+            atr_base_pct = (atr / stop_base * 100) if stop_base > 0 else 0
+            position.atr_display = f"{s_type}|{atr:.2f}|{atr_base_pct:.1f}%"
         
         return position
 
-def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price):
+def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0):
     """
-    Legacy/Display helper: Calculates ATR across multiple timeframes for visual analysis.
-    Uses the TickerMapper logic via PortfolioManager to resolve symbols.
+    Calculates ATR across multiple timeframes for visual analysis.
+    Supports frequency scaling and optional multiplier for noise buffering.
+    Returns (Rich.Table, dict of {label: value})
     """
     from .portfolio_manager import PortfolioManager
     try:
@@ -62,51 +83,90 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price):
 
         # 2. Fetch History
         ticker_obj = yf.Ticker(yf_ticker)
-        df = ticker_obj.history(period="3y")
-        if df.empty:
-            return f"[red]Error: No data found for {yf_ticker}[/red]"
+        df_daily = ticker_obj.history(period="3y")
+        if df_daily.empty:
+            return f"[red]Error: No data found for {yf_ticker}[/red]", {}
 
-        # 3. Calculate True Range (TR)
-        df['PrevClose'] = df['Close'].shift(1)
-        df['TR'] = np.maximum(df['High'] - df['Low'], 
-                    np.maximum(abs(df['High'] - df['PrevClose']), 
-                               abs(df['Low'] - df['PrevClose'])))
-
-        # 4. Find Max Price since Entry Date
+        # 3. Handle Max Price since Entry Date
         entry_date = pd.to_datetime(entry_date_str)
-        mask = df.index >= entry_date.tz_localize(df.index.tz) if df.index.tz else df.index >= entry_date
-        df_since_entry = df.loc[mask]
-        max_price = df_since_entry['High'].max() if not df_since_entry.empty else entry_price
+        mask = df_daily.index >= entry_date.tz_localize(df_daily.index.tz) if df_daily.index.tz else df_daily.index >= entry_date
+        df_since_entry = df_daily.loc[mask]
+        
+        raw_max = df_since_entry['High'].max() if not df_since_entry.empty else entry_price
+        max_price = max(entry_price, raw_max)
+        current_price = df_daily['Close'].iloc[-1]
 
-        # 5. Define Timeframes
-        intervals = [("21d", 21), ("12w", 60), ("6m", 126), ("8q", 504)]
+        # 4. Define Timeframes and Frequencies
+        intervals = [
+            ("14d", 14, 'D'),
+            ("21d", 21, 'D'),
+            ("12w", 12, 'W'),
+            ("6m", 26, 'W'),
+            ("8q", 24, 'M')
+        ]
+        raw_values = {}
 
-        # 6. Build Table
-        table = Table(title=f"ATR gauge for {ticker_symbol} (Entry {entry_price:,.2f}, Max {max_price:,.2f})", 
-                      header_style="bold cyan", box=None)
+        # 5. Build Table
+        title = f"ATR Gauge for {ticker_symbol} (Entry {entry_price:,.2f}, Max {max_price:,.2f})"
+        if multiplier != 1.0:
+            title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
+            
+        table = Table(title=title, header_style="bold cyan", box=None)
         table.add_column("Label", style="bold")
-        table.add_column("ATR", justify="right")
+        table.add_column(f"ATR ({multiplier}x)", justify="right", style="yellow")
+        table.add_column("Base (F)", justify="right", style="dim")
         table.add_column("Fixed SL", justify="right", style="green")
-        table.add_column("Fixed %", justify="right", style="dim")
+        table.add_column("ATR/Base %", justify="right", style="dim")
+        table.add_column("Base (T)", justify="right", style="dim")
         table.add_column("Trail SL", justify="right", style="magenta")
-        table.add_column("Trail %", justify="right", style="dim")
+        table.add_column("ATR/Base %", justify="right", style="dim")
 
-        for label, window in intervals:
+        # 6. Process each frequency
+        for label, window, freq in intervals:
+            if freq == 'D':
+                df = df_daily.copy()
+            elif freq == 'W':
+                df = df_daily.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'})
+            elif freq == 'M':
+                df = df_daily.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'})
+            
             if len(df) < window: continue
-            atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
-            atr_ema = df['TR'].ewm(span=window, adjust=False).mean().iloc[-1]
 
-            for method, val in [("SMA", atr_sma), ("EMA", atr_ema)]:
+            df['PrevClose'] = df['Close'].shift(1)
+            df['TR'] = np.maximum(df['High'] - df['Low'], 
+                        np.maximum(abs(df['High'] - df['PrevClose']), 
+                                   abs(df['Low'] - df['PrevClose'])))
+
+            atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
+            atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
+
+            for method, val in [("SMA", atr_sma), ("Wilder", atr_wilder)]:
+                # Apply Multiplier
+                final_val = val * multiplier
+                
+                full_label = f"ATR_{label}_{freq}_{method}"
+                raw_values[full_label] = final_val
+                
+                # Calculations
+                fixed_sl = entry_price - final_val
+                trail_sl = max_price - final_val
+                
+                # Percentage of ATR relative to the specific Base
+                fixed_atr_pct = (final_val / entry_price * 100) if entry_price > 0 else 0
+                trail_atr_pct = (final_val / max_price * 100) if max_price > 0 else 0
+                
                 table.add_row(
-                    f"ATR_{label}_{method}",
-                    f"{val:.2f}",
-                    f"{entry_price - val:.2f}",
-                    f"{(val/entry_price)*100:.2f}%",
-                    f"{max_price - val:.2f}",
-                    f"{(val/max_price)*100:.2f}%"
+                    full_label,
+                    f"{final_val:.2f}",
+                    f"{entry_price:,.2f}",
+                    f"{fixed_sl:.2f}",
+                    f"{fixed_atr_pct:.1f}%",
+                    f"{max_price:,.2f}",
+                    f"{trail_sl:.2f}",
+                    f"{trail_atr_pct:.1f}%"
                 )
             
-        return table
+        return table, raw_values
 
     except Exception as e:
-        return f"[red]Error calculating ATR: {e}[/red]"
+        return f"[red]Error calculating ATR: {e}[/red]", {}

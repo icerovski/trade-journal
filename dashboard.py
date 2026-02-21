@@ -153,8 +153,15 @@ def get_holdings_panel(state: CockpitState):
         inc_color = "green" if row['PL_Inc'] >= 0 else "red"
         style = "reverse" if is_selected else ""
         
+        # Signal Stop/Target breaches
+        ticker_display = str(row['Ticker'])
+        if pd.notnull(row['SL_Price']) and row['Price'] <= row['SL_Price']:
+            ticker_display = f"[bold red]{ticker_display}[/bold red]"
+        elif pd.notnull(row['TP_Price']) and row['Price'] >= row['TP_Price']:
+            ticker_display = f"[bold green]{ticker_display}[/bold green]"
+        
         table.add_row(
-            str(row['Ticker']),
+            ticker_display,
             f"{row['Price']:,.2f}",
             f"{row['Qty']:,.0f}",
             f"[{daily_color}]{row['PL_Daily']:,.0f}[/{daily_color}]",
@@ -186,33 +193,37 @@ def get_details_panel(state: CockpitState):
     
     # Block 1: Structural Context
     details.add_row("[bold cyan]STRUCTURE[/bold cyan]", "")
-    details.add_row("ISIN:", str(row.get('ISIN', '---')))
     details.add_row("Exchange:", str(row.get('ListingExchange', '---')))
     details.add_row("Underlying:", str(row.get('UnderlyingSymbol', '---')))
     details.add_row("Asset Class:", str(row.get('AssetClass', '---')))
     details.add_row("Currency:", str(row.get('CCY', '---')))
     details.add_row("", "")
     
-    # Block 2: Portfolio Impact
-    details.add_row("[bold yellow]PORTFOLIO IMPACT[/bold yellow]", "")
-    details.add_row("NAV Weight:", f"[bold yellow]{row['NavPct']:.1f}%[/bold yellow]")
-    
-    r_ratio = (row['Risk_Val'] / state.total_nav) if state.total_nav and state.total_nav > 0 else 0
-    r_color = "green" if r_ratio <= 1.0 else "red"
-    details.add_row("R (Risk Ratio):", f"[{r_color}]{r_ratio:.2f}[/{r_color}]")
-    details.add_row("Cash at Risk:", f"{row['CCY']} {row['Risk_Val']:,.0f}")
-    details.add_row("", "")
-    
-    # Block 3: Risk Engine
-    details.add_row("[bold cyan]RISK ENGINE[/bold cyan]", "")
-    details.add_row("ATR / Type:", str(row['ATR_Disp']))
-    details.add_row("Stop Price:", f"[red]{row['SL_Price']:,.2f}[/red]" if pd.notnull(row['SL_Price']) else "---")
+    # Block 3: Risk Parameters
+    s_type = str(row.get('StopType', '---'))
+    atr_val = row.get('ATR', 0.0)
+    stop_base = row['MaxSinceEntry'] if s_type == 'TRAILING' else row['Entry']
+    sl_pct = (atr_val / stop_base * 100) if stop_base > 0 else 0
+    stop_pl_color = "green" if row['Risk_Val'] >= 0 else "red"
+
+    details.add_row("[bold cyan]RISK PARAMETERS[/bold cyan]", "")
+    details.add_row("ATR:", f"{atr_val:.2f}")
+    details.add_row("Stop Loss %:", f"{sl_pct:.1f}%")
+    details.add_row("Stop Type:", s_type)
+    details.add_row("Stop Price:", f"[bold red]{row['SL_Price']:,.2f}[/bold red]" if pd.notnull(row['SL_Price']) else "---")
+    details.add_row("P/L at Stop:", f"[{stop_pl_color}]{row['Risk_Val']:,.0f}[/{stop_pl_color}]")
     details.add_row("Buffer to SL:", f"[red]{row['Down_Pct']:.1f}%[/red]")
-    details.add_row("Target Price:", f"[green]{row['TP_Price']:,.2f}[/green]" if pd.notnull(row['TP_Price']) else "---")
-    details.add_row("R/R Ratio:", f"{row['RR_Ratio']:.1f}")
     details.add_row("", "")
     
-    # Block 4: Performance
+    # Block 4: Risk Engine - TARGET PROFIT
+    details.add_row("[bold green]TARGET PROFIT[/bold green]", "")
+    details.add_row("Target Type:", s_type)
+    details.add_row("Target Price:", f"[bold green]{row['TP_Price']:,.2f}[/bold green]" if pd.notnull(row['TP_Price']) else "---")
+    details.add_row("P/L at Target:", f"[green]{row['Reward_Val']:,.0f}[/green]")
+    details.add_row("Buffer to Target:", f"[green]{row['Up_Pct']:.1f}%[/green]")
+    details.add_row("", "")
+    
+    # Block 5: Performance
     details.add_row("[bold magenta]PERFORMANCE[/bold magenta]", "")
     details.add_row("Inception:", row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else "---")
     details.add_row("Avg Cost:", f"{row['Entry']:,.2f}")
