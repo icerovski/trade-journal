@@ -34,6 +34,13 @@ Synchronize the **Technical Architecture** section of `GEMINI.md` with the new r
 ### 4. Backup
 Trigger the project's backup mechanism (e.g., `uv run python sync_config.py` or the built-in CLI backup option) to ensure documentation is mirrored to OneDrive.
 
+### 5. Git Synchronization
+Proactively manage the session's source control:
+- Stage all changes with `git add .`.
+- Propose a concise, semantic commit message based on the session's objectives.
+- Ask the user for confirmation to commit and push to the current remote branch.
+- Execute `git commit -m "..."` and `git push` only after explicit confirmation.
+
 ## Tone & Style
 - **Professional & Direct:** Use clear, senior-engineer-level language.
 - **PE-Grade Auditability:** Focus on mathematical integrity and data provenance.

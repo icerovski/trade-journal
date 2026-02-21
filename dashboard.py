@@ -10,6 +10,7 @@ from rich.layout import Layout
 from rich.panel import Panel
 from datetime import datetime
 from logger import log_system_milestone
+from core.portfolio_manager import PortfolioManager
 
 # Log the recent improvement
 log_system_milestone("Fixed Dashboard scrolling by disabling wrapping and increasing layout padding")
@@ -112,7 +113,7 @@ def make_cockpit_layout() -> Layout:
 
 def get_header_panel(report_date, nav, ccy):
     return Panel(
-        f"[bold cyan]PRIVATE EQUITY TRADING COCKPIT[/bold cyan] | IBKR: {report_date} | [bold green]AUM: {ccy} {nav:,.0f}[/bold green] | [dim]{datetime.now().strftime('%H:%M:%S')}[/dim]",
+        f"[bold cyan]PRIVATE EQUITY TRADING COCKPIT[/bold cyan] | [bold green]BATCH-MD[/bold green] | IBKR: {report_date} | [bold green]AUM: {ccy} {nav:,.0f}[/bold green] | [dim]{datetime.now().strftime('%H:%M:%S')}[/dim]",
         box=box.HORIZONTALS, border_style="cyan"
     )
 
@@ -229,7 +230,6 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
     layout = make_cockpit_layout()
     
     # Initial Data Load
-    from portfolio_manager import PortfolioManager
     pm = PortfolioManager()
     df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
     state.update_data(df, nav, r_date, sort_by)
@@ -275,7 +275,6 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
 
 def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
     """Legacy entry point."""
-    from portfolio_manager import PortfolioManager
     run_live_dashboard(PortfolioManager(), sort_by=sort_by, refresh_interval=None)
 
 def print_nav_table(portfolio_manager, force_download=False):

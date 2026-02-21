@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
+from typing import List
 from config import DATA_DIR
 import db
+from models import Trade
 from logger import logger, log_system_milestone
 
 # Log the recent improvement
@@ -19,9 +21,9 @@ class DataLoader:
         return db.get_conn()
 
     @staticmethod
-    def load_trades_from_db():
+    def load_trades_from_db() -> pd.DataFrame:
         """
-        Loads all trades from the SQLite database for complete ledger accuracy.
+        Loads all trades from the SQLite database as a cleaned DataFrame.
         """
         conn = DataLoader.get_connection()
         df = pd.read_sql_query("SELECT * FROM trades", conn)
@@ -36,6 +38,33 @@ class DataLoader:
         }
         df = df.rename(columns=rename_map)
         return DataLoader.clean_trade_data(df)
+
+    @classmethod
+    def get_trades_as_models(cls) -> List[Trade]:
+        """
+        Loads trades from DB and returns them as a list of Trade dataclass objects.
+        """
+        df = cls.load_trades_from_db()
+        trades = []
+        for _, row in df.iterrows():
+            trades.append(Trade(
+                date=row['TradeDate'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['TradeDate']) else "",
+                ticker=row['Symbol'],
+                side=row['Buy/Sell'],
+                quantity=row['Quantity'],
+                price=row['Price'],
+                conid=str(row['Conid']),
+                multiplier=row.get('Multiplier', 1.0),
+                description=row.get('Description', ''),
+                asset_category=row.get('AssetClass', 'STK'),
+                listing_exchange=row.get('ListingExchange', ''),
+                currency=row.get('CurrencyPrimary', 'USD'),
+                underlying_symbol=row.get('UnderlyingSymbol', ''),
+                source=row.get('source', 'MANUAL'),
+                external_id=str(row.get('external_id', '')) if pd.notna(row.get('external_id')) else None,
+                notes=row.get('notes', '')
+            ))
+        return trades
 
     @staticmethod
     def clean_trade_data(df):
@@ -62,7 +91,6 @@ class DataLoader:
                 try:
                     if pd.isna(val) or str(val).strip() == '' or str(val).strip() == 'nan': 
                         return np.nan
-                    # Convert to float then int then string to remove .0
                     return str(int(float(str(val))))
                 except:
                     return str(val).strip()
@@ -90,24 +118,15 @@ class DataLoader:
             return {}, None
             
         try:
-            # IBKR Flex CSVs often have garbage headers or duplicate headers.
-            # Read everything first and filter out header repeats
             df = pd.read_csv(path, skiprows=1, on_bad_lines='skip', low_memory=False)
-            
-            # Robust filtering: Keep only rows where 'LevelOfDetail' is actually a known value
             if 'LevelOfDetail' not in df.columns:
-                # If the CSV is really messed up, the columns might be shifted
-                # Try to re-read without skipping if LevelOfDetail is missing
                 df = pd.read_csv(path, on_bad_lines='skip', low_memory=False)
             
             if 'LevelOfDetail' not in df.columns:
                 logger.error("Could not find 'LevelOfDetail' column in open_positions.csv")
                 return {}, None
 
-            # Remove rows that are just header repetitions
             df = df[df['LevelOfDetail'].isin(['SUMMARY', 'LOT'])]
-            
-            # Standardize numeric columns
             df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
             df['CostBasisPrice'] = pd.to_numeric(df['CostBasisPrice'], errors='coerce')
             df['MarkPrice'] = pd.to_numeric(df['MarkPrice'], errors='coerce')
@@ -115,15 +134,12 @@ class DataLoader:
             df['Multiplier'] = df['Multiplier'].replace(0, np.nan).fillna(1.0)
             df['PercentOfNAV'] = pd.to_numeric(df['PercentOfNAV'], errors='coerce')
             
-            # Process summaries
             summaries = df[df['LevelOfDetail'] == 'SUMMARY'].copy()
             if summaries.empty:
                 logger.warning("No 'SUMMARY' rows found in open_positions.csv")
                 return {}, None
                 
             summaries = summaries.dropna(subset=['Quantity', 'Conid'])
-            
-            # Extract earliest dates from LOT records if available
             lots = df[df['LevelOfDetail'] == 'LOT'].copy()
             earliest_dates = {}
             if not lots.empty:
@@ -136,7 +152,6 @@ class DataLoader:
             
             for conid_val, group in summaries.groupby('Conid'):
                 try:
-                    # Satisfy Pylance by converting to str before float/int cast
                     conid_str = str(int(float(str(conid_val))))
                 except (ValueError, TypeError):
                     conid_str = str(conid_val)
@@ -144,10 +159,7 @@ class DataLoader:
                 qty = group['Quantity'].sum()
                 if abs(qty) < 0.0001: continue
                 
-                # Use CostBasisPrice if available, otherwise 0 (will be fixed by Smart Fallback in PM)
                 entry = group['CostBasisPrice'].iloc[0] if 'CostBasisPrice' in group.columns else 0
-                
-                # Check for ISIN existence safely
                 isin_val = group['ISIN'].iloc[0] if 'ISIN' in group.columns else np.nan
                 
                 broker_data[conid_str] = {

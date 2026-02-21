@@ -5,10 +5,10 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", module="yfinance")
 
 from db import init_db, get_manual_trades, delete_trade, add_trade, set_position_risk
-from ibkr import download_trade_report, process_local_csvs, process_ytd_only, fetch_trade_history, fetch_open_positions
+from services.ibkr import download_trade_report, process_local_csvs, process_ytd_only, fetch_trade_history, fetch_open_positions
 from dashboard import print_nav_table, print_rich_portfolio, run_live_dashboard, calculate_dashboard_data
-from portfolio_manager import PortfolioManager
-from risk_engine import calculate_atr_metrics
+from core.portfolio_manager import PortfolioManager
+from core.risk_engine import calculate_atr_metrics
 import sync_config
 import pandas as pd
 import os

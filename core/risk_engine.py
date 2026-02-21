@@ -3,18 +3,60 @@ import numpy as np
 import yfinance as yf
 from rich.table import Table
 from rich.console import Console
-from portfolio_manager import PortfolioManager
+from models import Position
 
 console = Console()
 
+class RiskEngine:
+    """
+    Core engine for calculating risk metrics, Stop Losses, and Take Profits.
+    """
+
+    @staticmethod
+    def calculate_position_risk(position: Position, risk_settings: dict):
+        """
+        Enriches a Position object with risk metrics based on provided settings.
+        """
+        if position.ticker in risk_settings:
+            atr, s_type = risk_settings[position.ticker]
+            
+            # 1. Stop Loss Calculation (Trailing vs Fixed)
+            anchor_price = position.max_since_entry if s_type == 'TRAILING' else position.entry_price
+            position.sl_price = anchor_price - atr
+            
+            # 2. Take Profit (Standard 3x ATR from SL)
+            position.tp_price = position.sl_price + (3 * atr)
+            
+            # 3. Percentage Metrics
+            if position.current_price > 0:
+                position.down_pct = ((position.current_price - position.sl_price) / position.current_price * 100)
+                position.up_pct = ((position.tp_price - position.current_price) / position.current_price * 100)
+            
+            # 4. Value at Risk & Reward/Risk Ratio
+            risk_per_unit = (position.current_price - position.sl_price)
+            reward_per_unit = (position.tp_price - position.current_price)
+            
+            position.risk_val = risk_per_unit * position.qty * position.multiplier
+            
+            if risk_per_unit != 0:
+                position.rr_ratio = reward_per_unit / risk_per_unit
+            else:
+                position.rr_ratio = 0.0
+                
+            position.atr_display = f"{atr:.2f} ({s_type[0]})"
+        
+        return position
+
 def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price):
     """
-    Calculates ATR across multiple timeframes using ISIN resolution for Yahoo Finance.
+    Legacy/Display helper: Calculates ATR across multiple timeframes for visual analysis.
+    Uses the TickerMapper logic via PortfolioManager to resolve symbols.
     """
+    from .portfolio_manager import PortfolioManager
     try:
-        # 1. Resolve Ticker using ISIN from open_positions.csv
+        # 1. Resolve Ticker
         manager = PortfolioManager()
-        yf_ticker = manager.resolve_yf_ticker(ticker_symbol)
+        yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol)
         
         console.print(f"-> Resolved [bold]{ticker_symbol}[/bold] to Yahoo Ticker: [bold cyan]{yf_ticker}[/bold cyan]")
 

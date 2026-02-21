@@ -10,7 +10,7 @@ from config import (
     IBKR_NAV_CSV,
     DATA_DIR
 )
-from ibkr_parser import IBKRParser
+from .ibkr_parser import IBKRParser
 from logger import logger, log_system_milestone
 
 # Log the recent improvement
