@@ -1,6 +1,6 @@
 ---
 name: session-logger
-description: Automates the wrap-up of a development session by generating semantic logs and updating the project's technical architecture (GEMINI.md). Use when the user wants to "wrap up," "document the session," or "summarize work." Installation instructions: To use this skill in future sessions, simply run 'gemini skills install session-logger.skill --scope workspace' and 'then /skills reload'.
+description: Automates the wrap-up of a development session by generating semantic logs and updating the project's technical architecture (GEMINI.md). Use when the user wants to "wrap up," "document the session," or "summarize work." Installation instructions: To use this skill in future sessions, simply run 'gemini skills install session-logger.skill --scope workspace' and then '/skills reload'.
 ---
 
 # Session Logger Skill

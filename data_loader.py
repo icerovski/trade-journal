@@ -56,8 +56,18 @@ class DataLoader:
             if col not in df.columns:
                 df[col] = np.nan
         
-        # Priority: Conid is the unique identifier. Fallback to Symbol if missing.
+        # Priority: Conid is the unique identifier. Normalize to clean string integer.
         if 'Conid' in df.columns:
+            def normalize_conid(val):
+                try:
+                    if pd.isna(val) or str(val).strip() == '' or str(val).strip() == 'nan': 
+                        return np.nan
+                    # Convert to float then int then string to remove .0
+                    return str(int(float(str(val))))
+                except:
+                    return str(val).strip()
+            
+            df['Conid'] = df['Conid'].apply(normalize_conid)
             df['Conid'] = df['Conid'].fillna(df['Symbol']).astype(str)
             
         # For SPLITS, price is 0. For others, price must be valid.

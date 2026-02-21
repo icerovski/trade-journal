@@ -222,13 +222,13 @@ class PortfolioManager:
             
         if not positions: return pd.DataFrame()
 
-        # Fix Multipliers for Bonds before calculations
+        # Fix Multipliers for Bonds/Bills before calculations
         for p in positions:
-            # HEURISTIC: IBKR often reports multiplier 1 for Bonds, but they are priced 
-            # in % of par (usually $1000). So multiplier should be 10.
-            if p.asset_class == 'BOND' and p.multiplier == 1.0:
-                p.multiplier = 10.0
-                logger.info(f"Applied Bond Multiplier Correction (1.0 -> 10.0) for {p.ticker}")
+            # HEURISTIC: IBKR reports Bond/Bill prices in % of par (e.g. 98.5).
+            # Multiplier 0.01 correctly scales face value quantity to market value (Face * Price / 100).
+            if p.asset_class in ['BOND', 'BILL'] and p.multiplier == 1.0:
+                p.multiplier = 0.01
+                logger.info(f"Applied Bond/Bill Multiplier Correction (1.0 -> 0.01) for {p.ticker}")
         
         # Parallel Market Data Enrichment
         logger.info(f"Fetching market data for {len(positions)} positions in parallel...")

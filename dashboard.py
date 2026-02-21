@@ -12,7 +12,7 @@ from datetime import datetime
 from logger import log_system_milestone
 
 # Log the recent improvement
-log_system_milestone("Implemented Interactive Cockpit with arrow-key navigation and dynamic details panel")
+log_system_milestone("Fixed Dashboard scrolling by disabling wrapping and increasing layout padding")
 
 console = Console()
 
@@ -22,17 +22,72 @@ class CockpitState:
         self.selected_index = 0
         self.max_index = 0
         self.df = pd.DataFrame()
+        self.df_view = pd.DataFrame() # Sorted/Filtered view
         self.report_date = "Unknown"
         self.total_nav = 0.0
         self.last_update = datetime.now()
+        self.scroll_offset = 0
+        self.visible_rows = 10 # Default
+        self.last_key_time = 0
 
-    def move_up(self, e=None):
-        if self.selected_index > 0:
-            self.selected_index -= 1
+    def update_data(self, df, total_nav, report_date, sort_by="Ticker"):
+        self.df = df
+        self.total_nav = total_nav
+        self.report_date = report_date
+        
+        if df.empty:
+            self.df_view = df
+            self.max_index = 0
+            return
 
-    def move_down(self, e=None):
-        if self.selected_index < self.max_index:
-            self.selected_index += 1
+        if sort_by == "MarketValue":
+            self.df_view = df.sort_values('MarketValue', ascending=False)
+        elif sort_by == "Pct":
+            self.df_view = df.sort_values('PL_Inc_Pct', ascending=False)
+        else:
+            self.df_view = df.sort_values(['AssetClass', 'Ticker'], ascending=True)
+
+        self.max_index = len(self.df_view) - 1
+        if self.selected_index > self.max_index:
+            self.selected_index = max(0, self.max_index)
+
+    def handle_input(self):
+        """Polls for keyboard input with throttling."""
+        now = time.time()
+        if now - self.last_key_time < 0.1: # Throttle to ~10 commands/sec for stability
+            return
+
+        moved = False
+        if keyboard.is_pressed('up'):
+            if self.selected_index > 0:
+                self.selected_index -= 1
+                moved = True
+        elif keyboard.is_pressed('down'):
+            if self.selected_index < self.max_index:
+                self.selected_index += 1
+                moved = True
+        
+        if moved:
+            self.last_key_time = now
+            self._adjust_scroll()
+
+    def _adjust_scroll(self):
+        """Aggressive sticky scroll: Keep cursor centered where possible."""
+        # Calculate scroll window boundaries
+        # We want to keep the selected_index between [scroll_offset, scroll_offset + visible_rows]
+        
+        padding = 2 # Keep 2 rows visible at edges
+        
+        # Cursor moved above the top padding line
+        if self.selected_index < self.scroll_offset + padding:
+            self.scroll_offset = max(0, self.selected_index - padding)
+            
+        # Cursor moved below the bottom padding line
+        elif self.selected_index >= self.scroll_offset + self.visible_rows - padding:
+            self.scroll_offset = min(
+                max(0, self.max_index - self.visible_rows + 1),
+                self.selected_index - self.visible_rows + padding + 1
+            )
 
 def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_ledger=False):
     """Fetches data and returns (DataFrame, total_nav, report_date)."""
@@ -63,79 +118,36 @@ def get_header_panel(report_date, nav, ccy):
 
 def get_footer_panel():
     return Panel(
-        "[dim]Use [bold]↑/↓ ARROWS[/bold] to navigate positions | [bold]ESC[/bold] or [bold]Ctrl+C[/bold] to Exit[/dim]",
+        "[dim]Use [bold]↑/↓ ARROWS[/bold] to navigate | [bold]ESC[/bold] to Exit[/dim]",
         title="[bold]Controls[/bold]", title_align="left", border_style="dim"
     )
 
-def _generate_static_table(df, sort_by="Ticker"):
-    """Helper to generate a rich Table for both static and cockpit views."""
-    table = Table(expand=True, box=box.SIMPLE, header_style="bold cyan", pad_edge=False)
-    table.add_column("TICKER", style="bold")
-    table.add_column("PRICE", justify="right")
-    table.add_column("QTY", justify="right")
-    table.add_column("P/L", justify="right")
-    table.add_column("P/L %", justify="right")
-    table.add_column("UNRLZD P&L", justify="right")
-    table.add_column("UNRLZD P&L %", justify="right")
-    table.add_column("COST BASIS", justify="right")
-    table.add_column("MKT VAL", justify="right")
-    table.add_column("% NAV", justify="right")
-
-    df_view = df.copy()
-    if sort_by == "MarketValue":
-        df_view = df_view.sort_values('MarketValue', ascending=False)
-    elif sort_by == "Pct":
-        df_view = df_view.sort_values('PL_Inc_Pct', ascending=False)
-    else:
-        df_view = df_view.sort_values(['AssetClass', 'Ticker'], ascending=True)
-
-    for _, row in df_view.iterrows():
-        daily_color = "green" if row['PL_Daily'] >= 0 else "red"
-        inc_color = "green" if row['PL_Inc'] >= 0 else "red"
-        
-        table.add_row(
-            str(row['Ticker']),
-            f"{row['Price']:,.2f}",
-            f"{row['Qty']:,.0f}",
-            f"[{daily_color}]{row['PL_Daily']:,.0f}[/{daily_color}]",
-            f"[{daily_color}]{row['PL_Daily_Pct']:.1f}%[/{daily_color}]",
-            f"[{inc_color}]{row['PL_Inc']:,.0f}[/{inc_color}]",
-            f"[{inc_color}]{row['PL_Inc_Pct']:.1f}%[/{inc_color}]",
-            f"{row['CostBasis']:,.0f}",
-            f"{row['MarketValue']:,.0f}",
-            f"{row['NavPct']:.1f}%"
-        )
-    return table
-
-def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
-    if state.df.empty:
+def get_holdings_panel(state: CockpitState):
+    if state.df_view.empty:
         return Panel("[yellow]No active positions found.[/yellow]", title="Holdings")
 
-    # Reuse the static table logic but with selection highlighting
+    # CRITICAL: Disable wrapping to ensure 1 row = 1 terminal line
     table = Table(expand=True, box=box.SIMPLE, header_style="bold cyan", pad_edge=False)
-    table.add_column("TICKER", style="bold")
-    table.add_column("PRICE", justify="right")
-    table.add_column("QTY", justify="right")
-    table.add_column("P/L", justify="right")
-    table.add_column("P/L %", justify="right")
-    table.add_column("UNRLZD P&L", justify="right")
-    table.add_column("UNRLZD P&L %", justify="right")
-    table.add_column("COST BASIS", justify="right")
-    table.add_column("MKT VAL", justify="right")
-    table.add_column("% NAV", justify="right")
+    table.add_column("TICKER", style="bold", no_wrap=True)
+    table.add_column("PRICE", justify="right", no_wrap=True)
+    table.add_column("QTY", justify="right", no_wrap=True)
+    table.add_column("P/L", justify="right", no_wrap=True)
+    table.add_column("P/L %", justify="right", no_wrap=True)
+    table.add_column("UNRLZD P&L", justify="right", no_wrap=True)
+    table.add_column("UNRLZD P&L %", justify="right", no_wrap=True)
+    table.add_column("COST BASIS", justify="right", no_wrap=True)
+    table.add_column("MKT VAL", justify="right", no_wrap=True)
+    table.add_column("% NAV", justify="right", no_wrap=True)
 
-    df_view = state.df.copy()
-    if sort_by == "MarketValue":
-        df_view = df_view.sort_values('MarketValue', ascending=False)
-    elif sort_by == "Pct":
-        df_view = df_view.sort_values('PL_Inc_Pct', ascending=False)
-    else:
-        df_view = df_view.sort_values(['AssetClass', 'Ticker'], ascending=True)
-
-    state.max_index = len(df_view) - 1
+    # Calculate visible slice
+    start_idx = int(state.scroll_offset)
+    end_idx = min(start_idx + int(state.visible_rows), len(state.df_view))
     
-    for idx, (_, row) in enumerate(df_view.iterrows()):
-        is_selected = (idx == state.selected_index)
+    df_slice = state.df_view.iloc[start_idx:end_idx]
+    
+    for idx_relative, (_, row) in enumerate(df_slice.iterrows()):
+        idx_absolute = start_idx + idx_relative
+        is_selected = (idx_absolute == state.selected_index)
         daily_color = "green" if row['PL_Daily'] >= 0 else "red"
         inc_color = "green" if row['PL_Inc'] >= 0 else "red"
         style = "reverse" if is_selected else ""
@@ -154,19 +166,18 @@ def get_holdings_panel(state: CockpitState, sort_by="Ticker"):
             style=style
         )
 
-    return Panel(table, title="[bold]Portfolio Holdings[/bold]", border_style="blue")
+    title = f"[bold]Portfolio Holdings ({state.selected_index+1}/{len(state.df_view)})[/bold]"
+    return Panel(table, title=title, border_style="blue")
 
 def get_details_panel(state: CockpitState):
     """Context-aware panel for the selected position."""
-    if state.df.empty:
+    if state.df_view.empty:
         return Panel("", title="Position Details")
 
-    # Handle sorting consistent with get_holdings_panel (default is AssetClass/Ticker)
-    df_sorted = state.df.sort_values(['AssetClass', 'Ticker'], ascending=True)
-    if state.selected_index >= len(df_sorted):
+    if state.selected_index >= len(state.df_view):
         state.selected_index = 0
         
-    row = df_sorted.iloc[state.selected_index]
+    row = state.df_view.iloc[state.selected_index]
     
     details = Table.grid(expand=True)
     details.add_row(f"[bold yellow]{row['Name']}[/bold yellow]", "")
@@ -181,12 +192,10 @@ def get_details_panel(state: CockpitState):
     details.add_row("Currency:", str(row.get('CCY', '---')))
     details.add_row("", "")
     
-    # Block 2: Portfolio Impact (The "R" Constraint)
+    # Block 2: Portfolio Impact
     details.add_row("[bold yellow]PORTFOLIO IMPACT[/bold yellow]", "")
     details.add_row("NAV Weight:", f"[bold yellow]{row['NavPct']:.1f}%[/bold yellow]")
     
-    # Calculate R-Ratio (Risk Value / NAV Value)
-    # We assume total_nav is known in state
     r_ratio = (row['Risk_Val'] / state.total_nav) if state.total_nav and state.total_nav > 0 else 0
     r_color = "green" if r_ratio <= 1.0 else "red"
     details.add_row("R (Risk Ratio):", f"[{r_color}]{r_ratio:.2f}[/{r_color}]")
@@ -204,7 +213,7 @@ def get_details_panel(state: CockpitState):
     
     # Block 4: Performance
     details.add_row("[bold magenta]PERFORMANCE[/bold magenta]", "")
-    details.add_row("Inception:", row['Date'].strftime('%d/%m/%y') if pd.notnull(row['Date']) else "---")
+    details.add_row("Inception:", row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else "---")
     details.add_row("Avg Cost:", f"{row['Entry']:,.2f}")
     details.add_row("High Since Entry:", f"{row['MaxSinceEntry']:,.2f}")
     details.add_row("AAGR:", f"{row['AAGR']:.1f}%")
@@ -214,43 +223,50 @@ def get_details_panel(state: CockpitState):
 
 def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30, sort_by="Ticker", use_ledger=False):
     """
-    Interactive Cockpit Loop. If refresh_interval is None, it acts as a static interactive view.
+    Interactive Cockpit Loop.
     """
     state = CockpitState()
     layout = make_cockpit_layout()
     
-    # Register keyboard listeners
-    keyboard.on_press_key("up", state.move_up)
-    keyboard.on_press_key("down", state.move_down)
-
     # Initial Data Load
     from portfolio_manager import PortfolioManager
     pm = PortfolioManager()
-    state.df, state.total_nav, state.report_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
+    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
+    state.update_data(df, nav, r_date, sort_by)
     state.last_update = datetime.now()
 
     try:
-        with Live(layout, refresh_per_second=10, screen=True) as live:
+        with Live(layout, refresh_per_second=15, screen=True) as live:
             while True:
-                # 1. Periodically Refresh Data (only if refresh_interval is set)
-                if refresh_interval and (datetime.now() - state.last_update).total_seconds() > refresh_interval:
-                    state.df, state.total_nav, state.report_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
-                    state.last_update = datetime.now()
+                # Dynamically calculate visible rows
+                # Overhead calculation:
+                # Header (3) + Footer (3) + Panel Borders (2) + Table Header (2) + Margin (1) = 11 lines
+                # We use 11 lines overhead to maximize screen usage
+                state.visible_rows = max(5, console.size.height - 11)
+
+                # 1. Handle keyboard input via polling
+                state.handle_input()
 
                 if keyboard.is_pressed('esc'):
                     break
 
-                # 2. Update Layout Components
-                if not state.df.empty:
-                    ccy = state.df.iloc[0]['CCY'] if 'CCY' in state.df.columns else "EUR"
+                # 2. Periodically Refresh Data
+                if refresh_interval and (datetime.now() - state.last_update).total_seconds() > refresh_interval:
+                    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
+                    state.update_data(df, nav, r_date, sort_by)
+                    state.last_update = datetime.now()
+
+                # 3. Update Layout Components
+                if not state.df_view.empty:
+                    ccy = state.df_view.iloc[0]['CCY'] if 'CCY' in state.df_view.columns else "EUR"
                     layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy))
-                    layout["body"].update(get_holdings_panel(state, sort_by))
+                    layout["body"].update(get_holdings_panel(state))
                     layout["sidebar"].update(get_details_panel(state))
                     layout["footer"].update(get_footer_panel())
                 else:
                     layout["body"].update(Panel("[yellow]No data to display.[/yellow]"))
                 
-                time.sleep(0.1) # Loop speed for UI responsiveness
+                time.sleep(0.02) # Higher polling frequency for input
     except KeyboardInterrupt:
         pass
     finally:
@@ -258,12 +274,7 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
         console.clear()
 
 def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
-    """
-    Legacy static view. Now redirects to the interactive non-refreshing cockpit
-    for full feature parity (navigation, details, etc).
-    """
-    # Note: We need the portfolio manager to handle the data if redirected.
-    # For a pure 'print', we could just show the table, but user requested parity.
+    """Legacy entry point."""
     from portfolio_manager import PortfolioManager
     run_live_dashboard(PortfolioManager(), sort_by=sort_by, refresh_interval=None)
 

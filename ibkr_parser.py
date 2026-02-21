@@ -23,6 +23,8 @@ class IBKRParser:
             
             if 'Symbol' in df.columns:
                 df = df.dropna(subset=['Symbol'])
+            
+            # MANDATORY: Filter for EXECUTION level to avoid summary rows double counting
             if 'LevelOfDetail' in df.columns:
                 df = df[df['LevelOfDetail'] == 'EXECUTION']
             
@@ -41,6 +43,13 @@ class IBKRParser:
                     price = float(row.get('TradePrice', 0))
                     multiplier = float(row.get('Multiplier', 1.0))
                     
+                    # Normalize Conid
+                    conid_raw = row.get('Conid')
+                    try:
+                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                    except:
+                        conid = str(conid_raw)
+
                     ib_id = row.get('IBOrderID') or row.get('TradeID')
                     ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
 
@@ -54,7 +63,7 @@ class IBKRParser:
                         notes=f"IBKR TRADES Import {datetime.now().date()}",
                         source="IBKR_TRADES_CSV", external_id=ext_id,
                         description=row.get('Description', ''),
-                        conid=str(row.get('Conid', '')),
+                        conid=conid,
                         listing_exchange=str(row.get('ListingExchange', '')),
                         currency=str(row.get('CurrencyPrimary', '')),
                         underlying_symbol=str(row.get('UnderlyingSymbol', ''))
@@ -97,11 +106,25 @@ class IBKRParser:
                     pos_amt = float(row.get('PositionAmount', 0))
                     price = (pos_amt / qty) if qty != 0 else 0
                     
+                    # HEURISTIC: For Bonds/Bills, the PositionAmount is already the final value
+                    # (Face * Px / 100). To store price as a percentage (e.g. 98.5) like trades,
+                    # we must multiply by 100.
+                    asset_cat = row.get('AssetClass', 'STK')
+                    if asset_cat in ['BOND', 'BILL']:
+                        price = price * 100
+
                     side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
                     ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
 
                     if trade_exists(ext_id):
                         continue
+
+                    # Normalize Conid
+                    conid_raw = row.get('Conid')
+                    try:
+                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                    except:
+                        conid = str(conid_raw)
 
                     add_trade(
                         date=date_str, ticker=ticker, side=side, 
@@ -111,7 +134,7 @@ class IBKRParser:
                         notes=f"IBKR TRANSFER Import ({row.get('Type')})",
                         source="IBKR_TRANSFER_CSV", external_id=ext_id,
                         description=row.get('Description', ''),
-                        conid=str(row.get('Conid', '')),
+                        conid=conid,
                         listing_exchange=str(row.get('ListingExchange', '')),
                         currency=str(row.get('CurrencyPrimary', '')),
                         underlying_symbol=str(row.get('UnderlyingSymbol', ''))
@@ -159,6 +182,13 @@ class IBKRParser:
                     # Ensure qty is non-zero
                     if qty == 0: continue
 
+                    # Normalize Conid
+                    conid_raw = row.get('Conid')
+                    try:
+                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                    except:
+                        conid = str(conid_raw)
+
                     # Splits change quantity but price in ledger is technically 0 
                     # as it's an adjustment, not a new purchase.
                     ext_id = str(row.get('TransactionID')) if row.get('TransactionID') else f"CORP-{date_str}-{ticker}-{qty}"
@@ -172,7 +202,7 @@ class IBKRParser:
                         notes=f"IBKR CORP ACTION: {action_desc[:100]}",
                         source="IBKR_CORP_CSV", external_id=ext_id,
                         description=ticker, # Fallback
-                        conid=str(row.get('Conid', '')),
+                        conid=conid,
                         asset_category=row.get('AssetClass', 'STK')
                     )
                     count += 1

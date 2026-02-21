@@ -27,7 +27,6 @@ def show_menu():
     print("5. Calculate Position ATR")
     print("6. Assign Risk/ATR to Position")
     print("7. View Portfolio Dashboard")
-    print("8. Sync Config to OneDrive (Backup)")
     print("0. Exit")
 
 def handle_fetch_recent_data():
@@ -252,8 +251,6 @@ def main():
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=30)
             else:
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=None)
-        elif choice == '8':
-            sync_config.backup()
         elif choice == '0':
             print("Exiting...")
             sys.exit()

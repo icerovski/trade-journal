@@ -99,7 +99,6 @@ Private Equity proprietary tool. All rights reserved.
 8. .env and gemini.md are backed up in onedrive everytime I exit the application. whenever the application starts, it should check if it works with the latest versions and if not, copy them from the onedrive location.
 
 ## GEMINI Skills
-
 Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   install into my system. While I am generally smart about coding, a Skill gives
   me specific instructions on how you want things done in this specific project.
