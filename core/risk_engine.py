@@ -99,8 +99,6 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         # 4. Define Timeframes and Frequencies
         intervals = [
             ("14d", 14, 'D'),
-            ("21d", 21, 'D'),
-            ("12w", 12, 'W'),
             ("6m", 26, 'W'),
             ("8q", 24, 'M')
         ]
