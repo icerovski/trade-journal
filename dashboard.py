@@ -45,6 +45,10 @@ class CockpitState:
             self.df_view = df.sort_values('MarketValue', ascending=False)
         elif sort_by == "Pct":
             self.df_view = df.sort_values('PL_Inc_Pct', ascending=False)
+        elif sort_by == "PL":
+            self.df_view = df.sort_values('PL_Inc', ascending=False)
+        elif sort_by == "Date":
+            self.df_view = df.sort_values('Date', ascending=True)
         else:
             self.df_view = df.sort_values(['AssetClass', 'Ticker'], ascending=True)
 
@@ -225,7 +229,7 @@ def get_details_panel(state: CockpitState):
     
     # Block 5: Performance
     details.add_row("[bold magenta]PERFORMANCE[/bold magenta]", "")
-    details.add_row("Inception:", row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else "---")
+    details.add_row("First Entry Date:", row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else "---")
     details.add_row("Avg Cost:", f"{row['Entry']:,.2f}")
     details.add_row("High Since Entry:", f"{row['MaxSinceEntry']:,.2f}")
     details.add_row("AAGR:", f"{row['AAGR']:.1f}%")

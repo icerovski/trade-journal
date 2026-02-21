@@ -19,15 +19,47 @@ from config import DB_PATH
 def show_menu():
     print("\n--- PRIVATE EQUITY DASHBOARD ---")
     print("1. Fetch Recent Data (Trades, Positions, NAV)")
-    print("-" * 32)
     print("2. Update Database (YTD Only) - Fast update using current year CSVs")
+    print("-" * 32)
     print("3. Rebuild Database (Full)   - Wipe and re-import all historical CSVs")
     print("-" * 32)
     print("4. Manage Manual Trades")
     print("5. Calculate Position ATR")
     print("6. Assign Risk/ATR to Position")
     print("7. View Portfolio Dashboard")
+    print("8. Sync Historical Prices (Local DB)")
     print("0. Exit")
+
+def handle_sync_prices():
+    print("\n--- SYNC HISTORICAL PRICES ---")
+    print("This will fetch missing history for all open positions and store it in your OneDrive DB.")
+    manager = PortfolioManager()
+    open_positions = manager.get_open_positions_hybrid()
+    
+    if not open_positions:
+        print("No open positions found to sync.")
+        return
+
+    from services.price_service import PriceService
+    from rich.progress import Progress
+    from rich.console import Console
+    
+    ps = PriceService()
+    console = Console()
+    
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Syncing prices...", total=len(open_positions))
+        
+        for pos in open_positions:
+            try:
+                yf_ticker = manager.mapper.resolve_yf_ticker(pos.ticker)
+                ps.fetch_and_store(pos.conid, yf_ticker)
+                progress.update(task, advance=1, description=f"[cyan]Synced {pos.ticker}")
+            except Exception as e:
+                console.print(f"[red]Error syncing {pos.ticker}: {e}[/red]")
+                progress.update(task, advance=1)
+
+    print("\nSync complete.")
 
 def handle_fetch_recent_data():
     print("\n--- FETCH RECENT DATA ---")
@@ -163,6 +195,7 @@ def handle_atr_calculator():
         
         for pos in open_positions:
             ticker = pos.ticker
+            conid = pos.conid
             date_val = pos.date_entry.strftime("%Y-%m-%d")
             price = pos.entry_price
             
@@ -174,10 +207,11 @@ def handle_atr_calculator():
             else:
                 current_str = "Current: NOT SET"
                 
-            console.print(f"\n[bold yellow]--- {ticker} ---[/bold yellow] ({current_str})")
+            console.print(f"\n[bold yellow]--- {ticker} ---[/bold yellow] (Entry: {date_val})")
+            console.print(f"[dim]{current_str}[/dim]")
 
             with console.status(f"[bold green]Calculating ATR for {ticker}..."):
-                table, raw_atrs = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier)
+                table, raw_atrs = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier, conid=conid)
                 console.print(table)
             
             # Interactive Choice
@@ -228,16 +262,21 @@ def handle_atr_calculator():
                 
         return 
     elif choice == '2':
-        print("\nEnter details as: Ticker, Date, Price")
-        print("Example: AAPL, 24 jun 2025, 180.5")
+        print("\nEnter details as: Ticker, Date, Price, [conid]")
+        print("Example: AAPL, 24 jun 2025, 180.5, 265598")
         line = input("Input: ").strip()
         if not line: return
         try:
-            ticker, date_val, price, _ = parse_input_line(line)
+            parts = [p.strip() for p in line.split(',')]
+            ticker = parts[0].upper()
+            date_val = parse(parts[1]).strftime("%Y-%m-%d")
+            price = float(parts[2])
+            conid = parts[3] if len(parts) > 3 else None
+            
             from rich.console import Console
             console = Console()
             with console.status("[bold green]Calculating ATR metrics..."):
-                table, _ = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier)
+                table, _ = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier, conid=conid)
                 console.print(table)
         except Exception as e:
             print(f"Error: {e}")
@@ -292,9 +331,13 @@ def ask_sort_by():
     print("1. Ticker (A-Z)")
     print("2. Market Value (High-Low)")
     print("3. P/L % (High-Low)")
+    print("4. P/L Absolute (High-Low)")
+    print("5. Entry Date (Oldest First)")
     choice = input("Choice (default 1): ").strip()
     if choice == '2': return "MarketValue"
     elif choice == '3': return "Pct"
+    elif choice == '4': return "PL"
+    elif choice == '5': return "Date"
     return "Ticker"
 
 def main():
@@ -327,6 +370,7 @@ def main():
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=30)
             else:
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=None)
+        elif choice == '8': handle_sync_prices()
         elif choice == '0':
             print("Exiting...")
             sys.exit()

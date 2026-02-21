@@ -3,8 +3,10 @@ import numpy as np
 import yfinance as yf
 from rich.table import Table
 from rich.console import Console
+from rich import box
 from models import Position
 from db import update_high_water_mark
+from services.price_service import PriceService
 
 console = Console()
 
@@ -67,7 +69,7 @@ class RiskEngine:
         
         return position
 
-def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0):
+def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None):
     """
     Calculates ATR across multiple timeframes for visual analysis.
     Supports frequency scaling and optional multiplier for noise buffering.
@@ -79,33 +81,39 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         manager = PortfolioManager()
         yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol)
         
-        console.print(f"-> Resolved [bold]{ticker_symbol}[/bold] to Yahoo Ticker: [bold cyan]{yf_ticker}[/bold cyan]")
-
-        # 2. Fetch History
-        ticker_obj = yf.Ticker(yf_ticker)
-        df_daily = ticker_obj.history(period="3y")
+        # 2. Fetch History from Local DB (Fallback to Yahoo via fetch_and_store)
+        price_service = PriceService()
+        
+        # If conid is not provided, we try to get it from mapper (if possible)
+        # However, it's safer to have conid from the position
+        if not conid:
+            # Fallback for manual ATR calculation without conid
+            # Just use Yahoo directly (no local caching) or try to find conid
+            console.print(f"-> [yellow]Warning:[/yellow] No conid provided for {ticker_symbol}. Using direct Yahoo fetch.")
+            ticker_obj = yf.Ticker(yf_ticker)
+            df_daily = ticker_obj.history(period="3y")
+        else:
+            console.print(f"-> Resolved [bold]{ticker_symbol}[/bold] (conid:{conid}) to Yahoo Ticker: [bold cyan]{yf_ticker}[/bold cyan]")
+            df_daily = price_service.fetch_and_store(conid, yf_ticker)
+        
         if df_daily.empty:
             return f"[red]Error: No data found for {yf_ticker}[/red]", {}
 
         # 3. Handle Max Price since Entry Date
-        entry_date = pd.to_datetime(entry_date_str)
-        mask = df_daily.index >= entry_date.tz_localize(df_daily.index.tz) if df_daily.index.tz else df_daily.index >= entry_date
-        df_since_entry = df_daily.loc[mask]
-        
-        raw_max = df_since_entry['High'].max() if not df_since_entry.empty else entry_price
-        max_price = max(entry_price, raw_max)
-        current_price = df_daily['Close'].iloc[-1]
+        entry_date_dt = pd.to_datetime(entry_date_str)
+        max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
+        max_price = max(entry_price, max_price)
 
         # 4. Define Timeframes and Frequencies
         intervals = [
-            ("14d", 14, 'D'),
-            ("6m", 26, 'W'),
-            ("8q", 24, 'M')
+            ("14d", 14, 'daily'),
+            ("6m", 26, 'weekly'),
+            ("8q", 24, 'monthly')
         ]
         raw_values = {}
 
         # 5. Build Table
-        title = f"ATR Gauge for {ticker_symbol} (Entry {entry_price:,.2f}, Max {max_price:,.2f})"
+        title = f"ATR Gauge for {ticker_symbol} (Entry {entry_price:,.2f} on {entry_date_dt.strftime('%Y-%m-%d')}, Max {max_price:,.2f})"
         if multiplier != 1.0:
             title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
             
@@ -120,15 +128,11 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         table.add_column("ATR/Base %", justify="right", style="dim")
 
         # 6. Process each frequency
-        for label, window, freq in intervals:
-            if freq == 'D':
-                df = df_daily.copy()
-            elif freq == 'W':
-                df = df_daily.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'})
-            elif freq == 'M':
-                df = df_daily.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'})
+        for label, window, tf in intervals:
+            # Fetch resampled data from PriceService
+            df = price_service.get_prices(conid, timeframe=tf)
             
-            if len(df) < window: continue
+            if len(df) < window + 1: continue
 
             df['PrevClose'] = df['Close'].shift(1)
             df['TR'] = np.maximum(df['High'] - df['Low'], 
@@ -136,13 +140,14 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                                    abs(df['Low'] - df['PrevClose'])))
 
             atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
+            # Use Wilder's Smoothing as standard
             atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
 
             for method, val in [("SMA", atr_sma), ("Wilder", atr_wilder)]:
                 # Apply Multiplier
                 final_val = val * multiplier
                 
-                full_label = f"ATR_{label}_{freq}_{method}"
+                full_label = f"ATR_{label}_{tf[:1].upper()}_{method}"
                 raw_values[full_label] = final_val
                 
                 # Calculations
