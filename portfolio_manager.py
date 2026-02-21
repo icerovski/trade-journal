@@ -68,15 +68,13 @@ class PortfolioManager:
     def calculate_positions(self, trades_df) -> list[Position]:
         """
         Unified engine for "Reset-on-Zero" ledger replay.
-        Expects a cleaned DataFrame of trades.
-        Returns a list of Position objects.
+        Now supports Transfers and Corporate Actions (Splits).
         """
         if trades_df.empty:
             return []
             
         open_positions = []
         for conid, group in trades_df.groupby('Conid'):
-            # Copy to avoid SettingWithCopyWarning
             group = group.copy().sort_values('TradeDate')
             
             qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
@@ -92,20 +90,23 @@ class PortfolioManager:
                     qty, total_cost, first_date, multiplier = q, q * p * m, row['TradeDate'], m
                     continue
                 
-                if side == 'BUY':
+                if side in ['BUY', 'TRANSFER_IN']:
                     if qty <= 0.0001:
                         first_date = row['TradeDate']
-                        multiplier = m # Set multiplier on first buy
+                        multiplier = m
                     total_cost += q * p * m
                     qty += q
-                elif side == 'SELL' and qty > 0:
+                elif side in ['SELL', 'TRANSFER_OUT'] and qty > 0:
                     # Cost basis reduction (FIFO/WAC style)
                     total_cost -= q * (total_cost / qty)
                     qty -= q
-                    
-                    # RESET ON ZERO logic
                     if qty <= 0.0001:
                         qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
+                elif side == 'SPLIT':
+                    # A split changes quantity but keeps total_cost the same.
+                    # Qty in the CSV for splits is usually the CHANGE in shares.
+                    qty += q
+                    # first_date and multiplier remain unchanged
             
             if qty > 0.0001:
                 latest = group.iloc[-1]
@@ -128,7 +129,7 @@ class PortfolioManager:
 
     def get_open_positions_hybrid(self, asset_class_filter=None) -> list[Position]:
         """
-        Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades.
+        Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades/transfers.
         """
         broker_verified, report_date = self.loader.get_broker_verified_snapshot()
         all_trades = self.loader.load_trades_from_db()
@@ -149,36 +150,28 @@ class PortfolioManager:
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
             multiplier = v.get('Multiplier', 1.0)
             
-            # Smart Fallback: 
-            # Prefer Ledger for both Entry Price and Entry Date if available, 
-            # as the Ledger contains the complete historical record.
             if conid in ledger_positions:
                 lp = ledger_positions[conid]
-                # Fallback entry price if broker returns 0
                 if not entry or entry == 0:
                     entry = lp.entry_price
-                    logger.info(f"Using Ledger fallback for {ticker} cost basis: {entry:,.2f}")
-                
-                # ALWAYS prefer Ledger for Entry Date to avoid "Report Date" (today) from snapshot
                 first_date = lp.date_entry
-                multiplier = lp.multiplier # Prefer ledger multiplier
-                logger.debug(f"Using Ledger entry date for {ticker}: {first_date}")
+                multiplier = lp.multiplier
 
             # Apply any pending manual adjustments
             adjustments = pending_manual[pending_manual['Conid'] == conid]
             for _, row in adjustments.iterrows():
                 side, q, p, m = row['Buy/Sell'], row['Quantity'], row['Price'], row.get('Multiplier', 1.0)
-                if side == 'BUY':
+                if side in ['BUY', 'TRANSFER_IN']:
                     new_qty = qty + q
-                    # entry_price = total_cost / (qty * multiplier)
-                    # new_total_cost = (qty * entry * multiplier) + (q * p * m)
                     entry = ((qty * entry * multiplier) + (q * p * m)) / (new_qty * m) if (new_qty * m) != 0 else 0
                     qty = new_qty
                     multiplier = m
                     if not first_date: first_date = row['TradeDate']
-                else:
+                elif side in ['SELL', 'TRANSFER_OUT']:
                     qty = max(0, qty - q)
                     if qty <= 0: qty, entry, first_date = 0, 0, None
+                elif side == 'SPLIT':
+                    qty += q
 
             if qty > 0.0001:
                 open_list.append(Position(

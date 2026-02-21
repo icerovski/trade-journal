@@ -42,7 +42,7 @@ class IBKRParser:
                     multiplier = float(row.get('Multiplier', 1.0))
                     
                     ib_id = row.get('IBOrderID') or row.get('TradeID')
-                    ext_id = str(ib_id) if ib_id else f"MAN-{date_str}-{ticker}-{price}-{qty}"
+                    ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
 
                     if trade_exists(ext_id):
                         continue
@@ -51,8 +51,8 @@ class IBKRParser:
                         date=date_str, ticker=ticker, side=side, 
                         quantity=qty, price=price, multiplier=multiplier,
                         asset_category=row.get('AssetClass', 'STK'), 
-                        notes=f"IBKR CSV Import {datetime.now().date()}",
-                        source="IBKR_CSV", external_id=ext_id,
+                        notes=f"IBKR TRADES Import {datetime.now().date()}",
+                        source="IBKR_TRADES_CSV", external_id=ext_id,
                         description=row.get('Description', ''),
                         conid=str(row.get('Conid', '')),
                         listing_exchange=str(row.get('ListingExchange', '')),
@@ -64,7 +64,123 @@ class IBKRParser:
                     continue
             return count
         except Exception as e:
-            print(f"ERROR: IBKR CSV Parsing Error: {e}")
+            print(f"ERROR: IBKR TRADES CSV Parsing Error: {e}")
+            return 0
+
+    @staticmethod
+    def parse_transfers_csv(file_path):
+        """Parses an IBKR Transfers CSV and saves INTERCOMPANY moves to DB."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            df = pd.read_csv(file_path)
+            df.columns = df.columns.str.strip()
+            
+            # Filter for Intercompany as requested
+            if 'Type' in df.columns:
+                df = df[df['Type'] == 'INTERCOMPANY']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = row.get('Symbol')
+                direction = str(row.get('Direction', '')).upper() # IN / OUT
+                
+                if not ticker or direction not in ['IN', 'OUT']:
+                    continue
+
+                try:
+                    date_str = pd.to_datetime(row.get('Date')).strftime("%Y-%m-%d")
+                    qty = abs(float(row.get('Quantity', 0)))
+                    
+                    # Calculate price from PositionAmount (Cost Basis)
+                    pos_amt = float(row.get('PositionAmount', 0))
+                    price = (pos_amt / qty) if qty != 0 else 0
+                    
+                    side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
+                    ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
+
+                    if trade_exists(ext_id):
+                        continue
+
+                    add_trade(
+                        date=date_str, ticker=ticker, side=side, 
+                        quantity=qty, price=price, 
+                        multiplier=float(row.get('Multiplier', 1.0)),
+                        asset_category=row.get('AssetClass', 'STK'), 
+                        notes=f"IBKR TRANSFER Import ({row.get('Type')})",
+                        source="IBKR_TRANSFER_CSV", external_id=ext_id,
+                        description=row.get('Description', ''),
+                        conid=str(row.get('Conid', '')),
+                        listing_exchange=str(row.get('ListingExchange', '')),
+                        currency=str(row.get('CurrencyPrimary', '')),
+                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                    )
+                    count += 1
+                except:
+                    continue
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR TRANSFER CSV Parsing Error: {e}")
+            return 0
+
+    @staticmethod
+    def parse_corporate_actions_csv(file_path):
+        """Parses IBKR Corporate Actions (Splits, etc.) CSV."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            # Handle multiple headers by ignoring rows that repeat the header
+            df = pd.read_csv(file_path, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            
+            # Remove rows where Symbol is the column name itself (redundant headers)
+            if 'Symbol' in df.columns:
+                df = df[df['Symbol'] != 'Symbol']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = row.get('Symbol')
+                if not ticker or str(ticker) == '-': continue
+                
+                # Check different possible column names for Type/Description
+                action_desc = str(row.get('ActionDescription', row.get('Type', ''))).upper()
+                
+                if 'SPLIT' not in action_desc:
+                    continue
+
+                try:
+                    # Check different possible column names for Date
+                    raw_date = row.get('Report Date', row.get('Date'))
+                    date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+                    qty = float(row.get('Quantity', 0))
+                    
+                    # Ensure qty is non-zero
+                    if qty == 0: continue
+
+                    # Splits change quantity but price in ledger is technically 0 
+                    # as it's an adjustment, not a new purchase.
+                    ext_id = str(row.get('TransactionID')) if row.get('TransactionID') else f"CORP-{date_str}-{ticker}-{qty}"
+
+                    if trade_exists(ext_id):
+                        continue
+
+                    add_trade(
+                        date=date_str, ticker=ticker, side='SPLIT', 
+                        quantity=qty, price=0.0, 
+                        notes=f"IBKR CORP ACTION: {action_desc[:100]}",
+                        source="IBKR_CORP_CSV", external_id=ext_id,
+                        description=ticker, # Fallback
+                        conid=str(row.get('Conid', '')),
+                        asset_category=row.get('AssetClass', 'STK')
+                    )
+                    count += 1
+                except Exception as e:
+                    continue
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR CORP ACTION CSV Parsing Error: {e}")
             return 0
 
     @staticmethod

@@ -108,13 +108,53 @@ def download_trade_report(year=None, is_ytd=True):
     return download_flex_report(IBKR_QUERY_ID_TRADES, output_path, force_download=True)
 
 def process_local_csvs():
-    """Incorporate all found CSVs into DB."""
-    if IBKR_TRADES_CSV.exists():
-        logger.info(f"Parsing: {IBKR_TRADES_CSV.name}")
-        IBKRParser.parse_trade_csv(IBKR_TRADES_CSV)
+    """Incorporate all found CSVs from BASE_DATA_DIR into DB."""
+    from config import BASE_DATA_DIR
     
-    for f in list(DATA_DIR.glob("*_FY.csv")) + list(DATA_DIR.glob("*_YTD.csv")):
-        logger.info(f"Parsing: {f.name}")
+    if not BASE_DATA_DIR.exists():
+        logger.warning(f"Base data directory {BASE_DATA_DIR} does not exist.")
+        return
+
+    # 1. TRADES
+    for f in list(BASE_DATA_DIR.glob("trades_*.csv")) + list(BASE_DATA_DIR.glob("*_FY.csv")) + list(BASE_DATA_DIR.glob("*_YTD.csv")):
+        # Avoid re-processing if it matches patterns twice
+        logger.info(f"Parsing Trades: {f.name}")
         IBKRParser.parse_trade_csv(f)
     
-    logger.info("Database up to date.")
+    # 2. TRANSFERS
+    for f in BASE_DATA_DIR.glob("transfers_*.csv"):
+        logger.info(f"Parsing Transfers: {f.name}")
+        IBKRParser.parse_transfers_csv(f)
+
+    # 3. CORPORATE ACTIONS / SPLITS
+    for f in list(BASE_DATA_DIR.glob("corp_actions_*.csv")) + list(BASE_DATA_DIR.glob("stock_splits_*.csv")):
+        logger.info(f"Parsing Corp Actions: {f.name}")
+        IBKRParser.parse_corporate_actions_csv(f)
+    
+    logger.info("Database up to date with historical CSVs.")
+
+def process_ytd_only():
+    """Incorporate ONLY YTD CSVs from BASE_DATA_DIR into DB for quick updates."""
+    from config import BASE_DATA_DIR
+    if not BASE_DATA_DIR.exists():
+        logger.warning(f"Base data directory {BASE_DATA_DIR} does not exist.")
+        return
+    
+    ytd_files = list(BASE_DATA_DIR.glob("*_ytd.csv"))
+    if not ytd_files:
+        logger.warning("No YTD files found in data_base.")
+        return
+
+    for f in ytd_files:
+        name = f.name.lower()
+        if "trades" in name:
+            logger.info(f"Updating YTD Trades: {f.name}")
+            IBKRParser.parse_trade_csv(f)
+        elif "transfers" in name:
+            logger.info(f"Updating YTD Transfers: {f.name}")
+            IBKRParser.parse_transfers_csv(f)
+        elif "corp_actions" in name:
+            logger.info(f"Updating YTD Corp Actions: {f.name}")
+            IBKRParser.parse_corporate_actions_csv(f)
+            
+    logger.info("Database updated with YTD records.")

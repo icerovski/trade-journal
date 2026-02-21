@@ -5,51 +5,72 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", module="yfinance")
 
 from db import init_db, get_manual_trades, delete_trade, add_trade, set_position_risk
-from ibkr import download_trade_report, process_local_csvs, fetch_trade_history, fetch_open_positions
+from ibkr import download_trade_report, process_local_csvs, process_ytd_only, fetch_trade_history, fetch_open_positions
 from dashboard import print_nav_table, print_rich_portfolio, run_live_dashboard, calculate_dashboard_data
 from portfolio_manager import PortfolioManager
 from risk_engine import calculate_atr_metrics
 import sync_config
 import pandas as pd
+import os
 from datetime import datetime
 from dateutil.parser import parse
+from config import DB_PATH
 
 def show_menu():
     print("\n--- PRIVATE EQUITY DASHBOARD ---")
-    print("1. Fetch Trades from IBKR")
-    print("2. Fetch Open Positions from IBKR")
-    print("3. Fetch NAV Balance from IBKR")
-    print("4. Incorporate CSVs into Database")
-    print("5. Manage Manual Trades")
-    print("6. Calculate Position ATR")
-    print("7. Assign Risk/ATR to Position")
-    print("8. View Portfolio Dashboard")
-    print("9. Sync Config to OneDrive (Backup)")
+    print("1. Fetch Recent Data (Trades, Positions, NAV)")
+    print("-" * 32)
+    print("2. Update Database (YTD Only) - Fast update using current year CSVs")
+    print("3. Rebuild Database (Full)   - Wipe and re-import all historical CSVs")
+    print("-" * 32)
+    print("4. Manage Manual Trades")
+    print("5. Calculate Position ATR")
+    print("6. Assign Risk/ATR to Position")
+    print("7. View Portfolio Dashboard")
+    print("8. Sync Config to OneDrive (Backup)")
     print("0. Exit")
 
-def handle_fetch_trades():
-    print("\n--- FETCH TRADES ---")
-    print("1. Fetch Current Year (YTD)")
-    print("2. Fetch Specific Year (Full Year)")
+def handle_fetch_recent_data():
+    print("\n--- FETCH RECENT DATA ---")
+    print("1. Standard Daily Sync (YTD Trades, Positions, NAV)")
+    print("2. Fetch Specific Year (Historical Trades Only)")
     choice = input("Choice: ").strip()
-    
+
     if choice == '1':
-        fetch_trade_history() 
+        print("\n-> Fetching Trades (YTD)...")
+        fetch_trade_history()
+        print("-> Fetching Open Positions snapshot...")
+        fetch_open_positions()
+        print("-> Fetching NAV Balance...")
+        handle_fetch_nav()
     elif choice == '2':
-        year_input = input("Enter Year (e.g. 2025): ").strip()
+        year_input = input("Enter Year (e.g. 2024): ").strip()
         year = int(year_input) if year_input else datetime.now().year - 1
         download_trade_report(year=year, is_ytd=False)
     else:
         print("Invalid choice.")
 
-def handle_fetch_open_positions():
-    print("\n--- FETCH OPEN POSITIONS ---")
-    fetch_open_positions()
-
 def handle_fetch_nav():
-    print("\n--- FETCH NAV ---")
     manager = PortfolioManager()
     print_nav_table(manager, force_download=True)
+
+def handle_update_db():
+    print("\nUpdating database using YTD files...")
+    process_ytd_only()
+
+def handle_rebuild_db():
+    print("\nWARNING: This will wipe the current database and re-import all history.")
+    confirm = input("Are you absolutely sure? (y/N): ").strip().lower()
+    if confirm == 'y':
+        if DB_PATH.exists():
+            os.remove(DB_PATH)
+            print(f"Deleted {DB_PATH.name}")
+        init_db()
+        print("Database structure re-initialized.")
+        process_local_csvs()
+        print("Full rebuild complete.")
+    else:
+        print("Aborted.")
 
 def parse_input_line(line):
     """Common parser for Ticker, Date, Price line."""
@@ -202,19 +223,19 @@ def ask_sort_by():
     return "Ticker"
 
 def main():
+    sync_config.smart_sync()
     init_db()
     while True:
         show_menu()
         choice = input("\nSelect option: ").strip()
         
-        if choice == '1': handle_fetch_trades()
-        elif choice == '2': handle_fetch_open_positions()
-        elif choice == '3': handle_fetch_nav()
-        elif choice == '4': process_local_csvs()
-        elif choice == '5': handle_manual_trades()
-        elif choice == '6': handle_atr_calculator()
-        elif choice == '7': handle_assign_risk()
-        elif choice == '8':
+        if choice == '1': handle_fetch_recent_data()
+        elif choice == '2': handle_update_db()
+        elif choice == '3': handle_rebuild_db()
+        elif choice == '4': handle_manual_trades()
+        elif choice == '5': handle_atr_calculator()
+        elif choice == '6': handle_assign_risk()
+        elif choice == '7':
             filter_val = ask_asset_class()
             sort_val = ask_sort_by()
             print("\n--- CALCULATION METHOD ---")
@@ -230,9 +251,8 @@ def main():
             if view_type == '2':
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=30)
             else:
-                # Static view is now also interactive but without auto-refresh
                 run_live_dashboard(manager, asset_class_filter=filter_val, sort_by=sort_val, use_ledger=use_ledger, refresh_interval=None)
-        elif choice == '9':
+        elif choice == '8':
             sync_config.backup()
         elif choice == '0':
             print("Exiting...")

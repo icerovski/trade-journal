@@ -60,9 +60,15 @@ class DataLoader:
         if 'Conid' in df.columns:
             df['Conid'] = df['Conid'].fillna(df['Symbol']).astype(str)
             
-        df = df.dropna(subset=['TradeDate', 'Quantity', 'Price'])
+        # For SPLITS, price is 0. For others, price must be valid.
         df['Buy/Sell'] = df['Buy/Sell'].str.strip().str.upper()
-        df = df[df['Buy/Sell'].isin(['BUY', 'SELL'])]
+        allowed_sides = ['BUY', 'SELL', 'TRANSFER_IN', 'TRANSFER_OUT', 'SPLIT']
+        df = df[df['Buy/Sell'].isin(allowed_sides)]
+        
+        # Keep rows with valid Date and Quantity. Price can be 0 for Splits.
+        df = df.dropna(subset=['TradeDate', 'Quantity'])
+        df = df[(df['Buy/Sell'] == 'SPLIT') | (df['Price'].notna())]
+        
         return df.sort_values('TradeDate')
 
     @staticmethod

@@ -22,8 +22,13 @@ elif onedrive_env.exists():
 # Priority: .env DATA_PATH > Local "data" folder
 DATA_DIR = Path(os.environ.get("DATA_PATH", "data"))
 
-# Ensure the data directory exists
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Sub-directories for organization
+BASE_DATA_DIR = DATA_DIR / "data_base"
+LBD_DIR = DATA_DIR / "last_business_day"
+
+# Ensure directories exist
+for d in [DATA_DIR, BASE_DATA_DIR, LBD_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
 
 # 3. Database Path
 DB_PATH = DATA_DIR / "trade_journal.db"
@@ -35,6 +40,9 @@ IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
 IBKR_QUERY_ID_OPEN_POSITIONS = os.environ.get("IBKR_QUERY_ID_OPEN_POSITIONS", "0")
 
 # 5. File Paths
-IBKR_TRADES_CSV = DATA_DIR / "trades_ytd.csv"
-IBKR_NAV_CSV = DATA_DIR / "nav_lbd.csv"
-IBKR_OPEN_POSITIONS_CSV = DATA_DIR / "open_positions_lbd.csv"
+# Snapshots (Last Business Day)
+IBKR_NAV_CSV = LBD_DIR / "nav_lbd.csv"
+IBKR_OPEN_POSITIONS_CSV = LBD_DIR / "open_positions_lbd.csv"
+
+# Historical Ledger Files (within data_base)
+IBKR_TRADES_CSV = BASE_DATA_DIR / "trades_ytd.csv"
