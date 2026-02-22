@@ -8,13 +8,14 @@ from config import (
     IBKR_TRADES_CSV,
     IBKR_OPEN_POSITIONS_CSV,
     IBKR_NAV_CSV,
+    IBKR_CONFIRMATIONS_CSV,
     DATA_DIR
 )
 from .ibkr_parser import IBKRParser
 from logger import logger, log_system_milestone
 
 # Log the recent improvement
-log_system_milestone("Separated Networking (ibkr.py) from Parsing (ibkr_parser.py)")
+log_system_milestone("Implemented Real-Time Trade Confirmations with Fingerprint De-duplication")
 
 # --- 1. MASTER DOWNLOADER (Generic) ---
 def download_flex_report(query_id, output_path, force_download=False):
@@ -82,7 +83,7 @@ def download_flex_report(query_id, output_path, force_download=False):
 # --- 2. WRAPPERS ---
 
 def sync_ibkr_trades():
-    """Main entry point for syncing - expected by tests."""
+    """Main entry point for syncing - focusing on permanent history."""
     fetch_trade_history()
     process_local_csvs()
 
@@ -93,6 +94,19 @@ def fetch_trade_history():
 def fetch_open_positions():
     from config import IBKR_QUERY_ID_OPEN_POSITIONS
     return download_flex_report(IBKR_QUERY_ID_OPEN_POSITIONS, IBKR_OPEN_POSITIONS_CSV, force_download=True)
+
+def fetch_trade_confirmations():
+    from config import IBKR_QUERY_ID_CONFIRMATIONS
+    return download_flex_report(IBKR_QUERY_ID_CONFIRMATIONS, IBKR_CONFIRMATIONS_CSV, force_download=True)
+
+def process_confirmations():
+    """Ingests today's trade confirmations into the DB."""
+    if IBKR_CONFIRMATIONS_CSV.exists():
+        logger.info("Processing intraday trade confirmations...")
+        count = IBKRParser.parse_confirmations_csv(IBKR_CONFIRMATIONS_CSV)
+        logger.info(f"Ingested {count} new confirmations.")
+        return count
+    return 0
 
 def download_trade_report(year=None, is_ytd=True):
     from config import IBKR_QUERY_ID_TRADES

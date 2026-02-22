@@ -3,13 +3,79 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
-from db import add_trade, trade_exists
+from db import add_trade, trade_exists, delete_manual_duplicates
 
 class IBKRParser:
     """
     Handles interpreting IBKR-specific file formats (CSV and XML).
     Separates the 'Knowledge of Columns' from the 'Networking' layer.
     """
+
+    @staticmethod
+    def parse_confirmations_csv(file_path):
+        """Parses real-time Trade Confirmations and replaces matching manual entries."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            # Handle multiple redundant headers typical in Flex CSV
+            df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            
+            if 'Symbol' in df.columns:
+                df = df[df['Symbol'] != 'Symbol'].dropna(subset=['Symbol'])
+            
+            # Filter for EXECUTION rows only
+            if 'LevelOfDetail' in df.columns:
+                df = df[df['LevelOfDetail'] == 'EXECUTION']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = str(row.get('Symbol', '')).upper()
+                side = str(row.get('Buy/Sell', '')).upper()
+                date_val = str(row.get('TradeDate', ''))
+                qty = abs(float(row.get('Quantity', 0)))
+                
+                if not ticker or side not in ['BUY', 'SELL'] or qty == 0:
+                    continue
+
+                # 1. Fingerprint De-duplication: Delete manual entries that match this trade
+                deleted_count = delete_manual_duplicates(ticker, date_val, qty, side)
+                if deleted_count > 0:
+                    from logger import logger
+                    logger.info(f"Reconciled {deleted_count} manual entries for {ticker}")
+
+                # 2. Ingest Official Trade
+                price = float(row.get('Price', 0))
+                multiplier = float(row.get('Multiplier', 1.0))
+                conid_raw = row.get('Conid')
+                try:
+                    conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                except:
+                    conid = str(conid_raw)
+
+                # Generate a unique ID if none exists
+                ib_id = row.get('TradeID') or row.get('ExecID')
+                ext_id = str(ib_id) if ib_id else f"CONF-{date_val}-{ticker}-{qty}"
+
+                if not trade_exists(ext_id):
+                    add_trade(
+                        date=date_val, ticker=ticker, side=side, 
+                        quantity=qty, price=price, multiplier=multiplier,
+                        asset_category=row.get('AssetClass', 'STK'), 
+                        notes=f"IBKR CONFIRMATION {datetime.now().date()}",
+                        source="IBKR_CONFIRMATION", external_id=ext_id,
+                        description=row.get('Description', ''),
+                        conid=conid,
+                        listing_exchange=str(row.get('ListingExchange', '')),
+                        currency=str(row.get('CurrencyPrimary', '')),
+                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                    )
+                    count += 1
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR CONFIRMATION Parsing Error: {e}")
+            return 0
 
     @staticmethod
     def parse_trade_csv(file_path):

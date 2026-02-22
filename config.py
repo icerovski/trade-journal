@@ -38,14 +38,17 @@ IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "")
 IBKR_QUERY_ID_TRADES = os.environ.get("IBKR_QUERY_ID_TRADES", "0")
 IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
 IBKR_QUERY_ID_OPEN_POSITIONS = os.environ.get("IBKR_QUERY_ID_OPEN_POSITIONS", "0")
+IBKR_QUERY_ID_CONFIRMATIONS = os.environ.get("IBKR_QUERY_ID_CONFIRMATIONS", "0")
 
 # 5. File Paths
 TICKER_MAP_PATH = CONFIG_VAULT / "ticker_map.json"
 PRICES_DB_PATH = DATA_DIR / "prices.db"
+SNAPSHOTS_JSON = DATA_DIR / "snapshots.json"
 
 # Snapshots (Last Business Day)
 IBKR_NAV_CSV = LBD_DIR / "nav_lbd.csv"
 IBKR_OPEN_POSITIONS_CSV = LBD_DIR / "open_positions_lbd.csv"
+IBKR_CONFIRMATIONS_CSV = LBD_DIR / "confirmations_today.csv"
 
 # Historical Ledger Files (within data_base)
 IBKR_TRADES_CSV = BASE_DATA_DIR / "trades_ytd.csv"

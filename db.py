@@ -34,13 +34,18 @@ def init_db():
         )
     """)
 
-    # 2. Position Risk Table (Settings for ATR/Stops)
+    # 2. Risk Profiles Table (Historical tracking)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS position_risk (
-            ticker TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS risk_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conid TEXT NOT NULL,
+            ticker TEXT NOT NULL,
             atr_value REAL NOT NULL,
             stop_type TEXT NOT NULL,  -- 'FIXED' or 'TRAILING'
-            highest_sl REAL DEFAULT 0.0
+            highest_sl REAL DEFAULT 0.0,
+            status TEXT DEFAULT 'ACTIVE', -- 'ACTIVE' or 'CLOSED'
+            start_date TEXT,
+            end_date TEXT
         )
     """)
     
@@ -61,54 +66,91 @@ def init_db():
         if col_name not in columns:
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
 
-    # Position Risk Migration
-    cursor.execute("PRAGMA table_info(position_risk)")
-    risk_cols = [info[1] for info in cursor.fetchall()]
-    if 'highest_sl' not in risk_cols:
-        cursor.execute("ALTER TABLE position_risk ADD COLUMN highest_sl REAL DEFAULT 0.0")
+    # Legacy Migration: If old position_risk exists, move data to risk_profiles
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='position_risk'")
+    if cursor.fetchone():
+        cursor.execute("SELECT ticker, atr_value, stop_type, highest_sl FROM position_risk")
+        old_risks = cursor.fetchall()
+        for r in old_risks:
+            # We don't have conid for old risks easily here, so we'll use ticker as a placeholder
+            # or try to find it from trades. For simplicity in migration, use ticker.
+            cursor.execute("""
+                INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, highest_sl, status)
+                SELECT conid, ticker, ?, ?, ?, 'ACTIVE' FROM trades WHERE ticker = ? LIMIT 1
+            """, (r['atr_value'], r['stop_type'], r['highest_sl'], r['ticker']))
+        
+        cursor.execute("DROP TABLE position_risk")
 
     conn.commit()
     conn.close()
 
-def set_position_risk(ticker, atr, stop_type, reset_sl=True):
-    """Saves or updates ATR/Stop settings for a ticker."""
+def wipe_trades_only():
+    """Drops and recreates the trades table, preserving risk profiles."""
     conn = get_conn()
-    if reset_sl:
-        conn.execute("""
-            INSERT INTO position_risk (ticker, atr_value, stop_type, highest_sl) 
-            VALUES (?, ?, ?, 0.0)
-            ON CONFLICT(ticker) DO UPDATE SET 
-                atr_value = excluded.atr_value,
-                stop_type = excluded.stop_type,
-                highest_sl = 0.0
-        """, (ticker.upper(), float(atr), stop_type.upper()))
+    conn.execute("DROP TABLE IF EXISTS trades")
+    conn.commit()
+    conn.close()
+    init_db()
+
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True):
+    """Saves or updates the ACTIVE risk profile for a conid."""
+    conn = get_conn()
+    conid = str(conid)
+    
+    # Check if an active profile exists
+    cursor = conn.execute("SELECT id FROM risk_profiles WHERE conid = ? AND status = 'ACTIVE'", (conid,))
+    existing = cursor.fetchone()
+
+    if existing:
+        if reset_sl:
+            conn.execute("""
+                UPDATE risk_profiles SET 
+                    atr_value = ?, stop_type = ?, highest_sl = 0.0, ticker = ?
+                WHERE id = ?
+            """, (float(atr), stop_type.upper(), ticker.upper(), existing['id']))
+        else:
+            conn.execute("""
+                UPDATE risk_profiles SET 
+                    atr_value = ?, stop_type = ?, ticker = ?
+                WHERE id = ?
+            """, (float(atr), stop_type.upper(), ticker.upper(), existing['id']))
     else:
         conn.execute("""
-            INSERT INTO position_risk (ticker, atr_value, stop_type) 
-            VALUES (?, ?, ?)
-            ON CONFLICT(ticker) DO UPDATE SET 
-                atr_value = excluded.atr_value,
-                stop_type = excluded.stop_type
-        """, (ticker.upper(), float(atr), stop_type.upper()))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, start_date, status) 
+            VALUES (?, ?, ?, ?, ?, 'ACTIVE')
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), start_date))
+    
     conn.commit()
     conn.close()
 
-def update_high_water_mark(ticker, sl_price):
-    """Updates the highest stop loss price achieved."""
+def close_risk_profile(conid, end_date):
+    """Archives an active risk profile when a position is closed."""
     conn = get_conn()
     conn.execute("""
-        UPDATE position_risk SET highest_sl = MAX(highest_sl, ?) WHERE ticker = ?
-    """, (float(sl_price), ticker.upper()))
+        UPDATE risk_profiles 
+        SET status = 'CLOSED', end_date = ? 
+        WHERE conid = ? AND status = 'ACTIVE'
+    """, (end_date, str(conid)))
+    conn.commit()
+    conn.close()
+
+def update_high_water_mark(conid, sl_price):
+    """Updates the highest stop loss price achieved for an active profile."""
+    conn = get_conn()
+    conn.execute("""
+        UPDATE risk_profiles SET highest_sl = MAX(highest_sl, ?) 
+        WHERE conid = ? AND status = 'ACTIVE'
+    """, (float(sl_price), str(conid)))
     conn.commit()
     conn.close()
 
 def get_all_risk_settings():
-    """Returns all risk settings as a dict {ticker: (atr, type, highest_sl)}."""
+    """Returns all ACTIVE risk settings as a dict {conid: (atr, type, highest_sl)}."""
     conn = get_conn()
-    cursor = conn.execute("SELECT ticker, atr_value, stop_type, highest_sl FROM position_risk")
+    cursor = conn.execute("SELECT conid, atr_value, stop_type, highest_sl FROM risk_profiles WHERE status = 'ACTIVE'")
     rows = cursor.fetchall()
     conn.close()
-    return {r['ticker']: (r['atr_value'], r['stop_type'], r['highest_sl']) for r in rows}
+    return {r['conid']: (r['atr_value'], r['stop_type'], r['highest_sl']) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False
@@ -146,6 +188,39 @@ def get_manual_trades():
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+def delete_manual_duplicates(ticker, date, quantity, side):
+    """
+    Fingerprint De-duplication: Removes manual trades that match a broker execution.
+    Matches on Ticker, Date (YYYY-MM-DD), and Quantity.
+    """
+    conn = get_conn()
+    ticker = ticker.upper()
+    side = side.upper()
+    # Normalize date to YYYY-MM-DD in case it's a full timestamp
+    date_str = date[:10] if isinstance(date, str) else date.strftime("%Y-%m-%d")
+    
+    cursor = conn.execute("""
+        DELETE FROM trades 
+        WHERE source = 'MANUAL' 
+        AND ticker = ? 
+        AND date LIKE ? 
+        AND ABS(quantity) = abs(?)
+        AND side = ?
+    """, (ticker, f"{date_str}%", float(quantity), side))
+    
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+def get_conid_for_ticker(ticker):
+    """Attempts to find a known Conid for a ticker from trade history."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT conid FROM trades WHERE ticker = ? AND conid IS NOT NULL LIMIT 1", (ticker.upper(),))
+    row = cursor.fetchone()
+    conn.close()
+    return row['conid'] if row else None
 
 def delete_trade(trade_id):
     """Deletes a trade by its database ID."""

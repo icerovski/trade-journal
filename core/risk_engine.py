@@ -21,8 +21,8 @@ class RiskEngine:
         Enriches a Position object with risk metrics based on provided settings.
         Implements the 'Ratchet' rule: Stop Loss only moves in the trader's favor.
         """
-        if position.ticker in risk_settings:
-            atr, s_type, highest_sl = risk_settings[position.ticker]
+        if str(position.conid) in risk_settings:
+            atr, s_type, highest_sl = risk_settings[str(position.conid)]
             
             # 1. Base Stop Loss Calculation
             # Stop Base is Entry Price (Fixed) or Max Price Since Entry (Trailing)
@@ -38,7 +38,7 @@ class RiskEngine:
             
             # Update high-water mark in DB if we reached a new high
             if final_sl > highest_sl:
-                update_high_water_mark(position.ticker, final_sl)
+                update_high_water_mark(position.conid, final_sl)
             
             position.sl_price = final_sl
             
@@ -107,8 +107,8 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         # 4. Define Timeframes and Frequencies
         intervals = [
             ("14d", 14, 'daily'),
-            ("6m", 26, 'weekly'),
-            ("8q", 24, 'monthly')
+            ("12w", 12, 'weekly'),
+            ("24m", 24, 'monthly')
         ]
         raw_values = {}
 
@@ -147,7 +147,8 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                 # Apply Multiplier
                 final_val = val * multiplier
                 
-                full_label = f"ATR_{label}_{tf[:1].upper()}_{method}"
+                # Create a concise semantic label
+                full_label = f"{tf.capitalize()}_{window}_{method}"
                 raw_values[full_label] = final_val
                 
                 # Calculations
