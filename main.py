@@ -197,6 +197,7 @@ def handle_manual_trades():
 
 def handle_atr_calculator():
     console.print("\n[bold yellow]--- ATR DISCOVERY ---[/bold yellow]")
+    
     print("1. Batch Mode (Existing Stocks)")
     print("2. Manual Mode (New Position)")
     choice = input("Choice: ").strip()
@@ -204,6 +205,10 @@ def handle_atr_calculator():
     manager = PortfolioManager()
     from db import get_all_risk_settings
     risk_settings = get_all_risk_settings()
+    
+    # Fetch latest NAV for portfolio-weighted risk calculation
+    nav_res = manager.fetch_nav_data(force_download=False)
+    total_nav = nav_res[0] if nav_res else 0.0
 
     multiplier_input = input("Noise Buffer (e.g. 1.5) [default 1.0]: ").strip()
     try: multiplier = float(multiplier_input) if multiplier_input else 1.0
@@ -217,42 +222,82 @@ def handle_atr_calculator():
         for pos in open_positions:
             ticker, conid = pos.ticker, pos.conid
             date_val, price = pos.date_entry.strftime("%Y-%m-%d"), pos.entry_price
+            qty, inst_mult = pos.qty, pos.multiplier
             
             current = risk_settings.get(str(conid))
             current_str = f"Current: {current[0]:.2f} ({current[1]}) | High SL: {current[2]:,.2f}" if current else "Current: NOT SET"
                 
             console.print(f"\n[bold yellow]--- {ticker} ---[/bold yellow] ({current_str})")
+            
+            # Ask for Stop Type for this specific ticker
+            stop_choice_loop = input(f"Stop Type for {ticker}? (f)ixed / (t)railing [t]: ").strip().lower()
+            stop_type_loop = "FIXED" if stop_choice_loop == 'f' else "TRAILING"
+            
             with console.status(f"Calculating ATR for {ticker}..."):
-                table, raw_atrs = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier, conid=conid)
+                table, raw_atrs = calculate_atr_metrics(
+                    ticker, date_val, price, multiplier=multiplier, conid=conid, 
+                    stop_type=stop_type_loop, qty=qty, inst_multiplier=inst_mult,
+                    total_nav=total_nav
+                )
                 console.print(table)
             
             if raw_atrs:
-                print(f"\nUpdate {ticker}? (e.g. '1' for selection, '4.05 t' for custom Trailing, or Enter to skip)")
+                print(f"\nUpdate {ticker}? (e.g. '1' for selection, '1 1.5' for selection * 1.5, '4.05' for custom, or Enter to skip)")
                 options = list(raw_atrs.keys())
                 for i, label in enumerate(options, 1): print(f"{i}. {label}: {raw_atrs[label]:.2f}")
                 
                 user_input = input("Entry: ").strip().lower()
                 if not user_input: continue
+                
                 try:
-                    if user_input.isdigit() and 1 <= int(user_input) <= len(options):
-                        idx = int(user_input) - 1
-                        val = raw_atrs[options[idx]]
-                        stop_choice = input("Type (f)ixed/(t)railing [t]: ").strip().lower()
-                        set_position_risk(conid, ticker, val, "FIXED" if stop_choice == 'f' else "TRAILING", start_date=date_val)
+                    parts = user_input.split()
+                    first = parts[0]
+                    
+                    # 1. Determine Base Value (Option or Literal)
+                    if first.isdigit() and 1 <= int(first) <= len(options):
+                        base_val = raw_atrs[options[int(first) - 1]]
                     else:
-                        parts = user_input.split()
-                        val = float(parts[0])
-                        set_position_risk(conid, ticker, val, "FIXED" if (len(parts) > 1 and parts[1] == 'f') else "TRAILING", start_date=date_val)
-                except Exception: console.print("[red]Invalid. Skipping.[/red]")
+                        base_val = float(first)
+                    
+                    # 2. Process Multiplier and Type override
+                    final_mult = 1.0
+                    final_type = stop_type_loop
+                    
+                    for p in parts[1:]:
+                        try:
+                            # Try as numeric multiplier
+                            final_mult = float(p)
+                        except ValueError:
+                            # Try as type flag override
+                            if p == 'f': final_type = "FIXED"
+                            elif p == 't': final_type = "TRAILING"
+                    
+                    final_val = base_val * final_mult
+                    set_position_risk(conid, ticker, final_val, final_type, start_date=date_val)
+                    console.print(f"[green]SUCCESS: {ticker} assigned {final_val:.2f} ({final_type})[/green]")
+                except Exception as e:
+                    console.print(f"[red]Error parsing selection: {e}[/red]")
+                    
     elif choice == '2':
-        print("\nEnter: Ticker, Date, Price, conid")
+        print("\nEnter: Ticker, Date, Price, Qty, [conid]")
         line = input("Input: ").strip()
         if not line: return
         try:
             parts = [p.strip() for p in line.split(',')]
-            ticker, date_val, price, conid = parts[0].upper(), parse(parts[1]).strftime("%Y-%m-%d"), float(parts[2]), parts[3]
+            ticker = parts[0].upper()
+            date_val = parse(parts[1]).strftime("%Y-%m-%d")
+            price = float(parts[2])
+            qty = float(parts[3])
+            conid = parts[4] if len(parts) > 4 else None
+            
+            stop_choice = input(f"Stop Type for {ticker}? (f)ixed / (t)railing [t]: ").strip().lower()
+            stop_type = "FIXED" if stop_choice == 'f' else "TRAILING"
+            
             with console.status("Calculating..."):
-                table, _ = calculate_atr_metrics(ticker, date_val, price, multiplier=multiplier, conid=conid)
+                table, _ = calculate_atr_metrics(
+                    ticker, date_val, price, multiplier=multiplier, conid=conid, 
+                    stop_type=stop_type, qty=qty, total_nav=total_nav
+                )
                 console.print(table)
         except Exception as e: console.print(f"[red]Error: {e}[/red]")
 

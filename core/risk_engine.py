@@ -69,7 +69,7 @@ class RiskEngine:
         
         return position
 
-def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None):
+def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
     """
     Calculates ATR across multiple timeframes for visual analysis.
     Supports frequency scaling and optional multiplier for noise buffering.
@@ -81,14 +81,10 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         manager = PortfolioManager()
         yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol)
         
-        # 2. Fetch History from Local DB (Fallback to Yahoo via fetch_and_store)
+        # 2. Fetch History from Local DB
         price_service = PriceService()
         
-        # If conid is not provided, we try to get it from mapper (if possible)
-        # However, it's safer to have conid from the position
         if not conid:
-            # Fallback for manual ATR calculation without conid
-            # Just use Yahoo directly (no local caching) or try to find conid
             console.print(f"-> [yellow]Warning:[/yellow] No conid provided for {ticker_symbol}. Using direct Yahoo fetch.")
             ticker_obj = yf.Ticker(yf_ticker)
             df_daily = ticker_obj.history(period="3y")
@@ -107,31 +103,32 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         # 4. Define Timeframes and Frequencies
         intervals = [
             ("14d", 14, 'daily'),
-            ("12w", 12, 'weekly'),
-            ("24m", 24, 'monthly')
+            ("12m", 12, 'monthly'),
+            ("8q", 8, 'quarterly')
         ]
         raw_values = {}
 
         # 5. Build Table
-        title = f"ATR Gauge for {ticker_symbol} (Entry {entry_price:,.2f} on {entry_date_dt.strftime('%Y-%m-%d')}, Max {max_price:,.2f})"
+        stop_type = stop_type.upper()
+        mode_str = "TRAILING" if stop_type == 'TRAILING' else "FIXED"
+        base_price = max_price if stop_type == 'TRAILING' else entry_price
+        
+        title = f"ATR Gauge for {ticker_symbol} ({mode_str} Stop)"
         if multiplier != 1.0:
             title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
             
-        table = Table(title=title, header_style="bold cyan", box=None)
+        table = Table(title=title, header_style="bold cyan", box=None, 
+                      caption=f"\n[dim]Base Price for {mode_str}: {base_price:,.2f} | Entry: {entry_price:,.2f} | Max since entry: {max_price:,.2f}[/dim]")
         table.add_column("Label", style="bold")
         table.add_column(f"ATR ({multiplier}x)", justify="right", style="yellow")
-        table.add_column("Base (F)", justify="right", style="dim")
-        table.add_column("Fixed SL", justify="right", style="green")
+        table.add_column("Stop Price", justify="right", style="magenta" if stop_type == 'TRAILING' else "green")
         table.add_column("ATR/Base %", justify="right", style="dim")
-        table.add_column("Base (T)", justify="right", style="dim")
-        table.add_column("Trail SL", justify="right", style="magenta")
-        table.add_column("ATR/Base %", justify="right", style="dim")
+        table.add_column("P/L at Stop", justify="right", style="bold")
+        table.add_column("% of NAV", justify="right", style="dim")
 
         # 6. Process each frequency
         for label, window, tf in intervals:
-            # Fetch resampled data from PriceService
             df = price_service.get_prices(conid, timeframe=tf)
-            
             if len(df) < window + 1: continue
 
             df['PrevClose'] = df['Close'].shift(1)
@@ -140,37 +137,38 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                                    abs(df['Low'] - df['PrevClose'])))
 
             atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
-            # Use Wilder's Smoothing as standard
             atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
 
             for method, val in [("SMA", atr_sma), ("Wilder", atr_wilder)]:
-                # Apply Multiplier
                 final_val = val * multiplier
-                
-                # Create a concise semantic label
                 full_label = f"{tf.capitalize()}_{window}_{method}"
                 raw_values[full_label] = final_val
                 
-                # Calculations
-                fixed_sl = entry_price - final_val
-                trail_sl = max_price - final_val
+                # Calculation
+                stop_price = base_price - final_val
+                atr_pct = (final_val / base_price * 100) if base_price > 0 else 0
                 
-                # Percentage of ATR relative to the specific Base
-                fixed_atr_pct = (final_val / entry_price * 100) if entry_price > 0 else 0
-                trail_atr_pct = (final_val / max_price * 100) if max_price > 0 else 0
+                # P/L at Stop calculation: (StopPrice - EntryPrice) * Qty * Multiplier
+                pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
+                pl_color = "green" if pl_at_stop >= 0 else "red"
+                
+                # % of NAV calculation
+                pl_pct_nav = (pl_at_stop / total_nav * 100) if total_nav > 0 else 0
                 
                 table.add_row(
                     full_label,
                     f"{final_val:.2f}",
-                    f"{entry_price:,.2f}",
-                    f"{fixed_sl:.2f}",
-                    f"{fixed_atr_pct:.1f}%",
-                    f"{max_price:,.2f}",
-                    f"{trail_sl:.2f}",
-                    f"{trail_atr_pct:.1f}%"
+                    f"{stop_price:,.2f}",
+                    f"{atr_pct:.1f}%",
+                    f"[{pl_color}]{pl_at_stop:,.0f}[/{pl_color}]",
+                    f"{pl_pct_nav:.2f}%"
                 )
             
         return table, raw_values
+
+    except Exception as e:
+        return f"[red]Error calculating ATR: {e}[/red]", {}
+
 
     except Exception as e:
         return f"[red]Error calculating ATR: {e}[/red]", {}

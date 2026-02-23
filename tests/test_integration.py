@@ -13,8 +13,8 @@ from unittest.mock import patch, MagicMock
 
 # Import components
 import db
-import ibkr
-import portfolio_manager
+from services import ibkr
+from core import portfolio_manager
 import dashboard
 from config import DB_PATH
 from data_loader import DataLoader
@@ -31,11 +31,13 @@ class TestFullFeatures(unittest.TestCase):
             patch("db.DB_PATH", self.test_db),
             patch("config.DB_PATH", self.test_db),
             patch("config.DATA_DIR", self.test_dir),
+            patch("config.BASE_DATA_DIR", self.test_dir),
+            patch("config.LBD_DIR", self.test_dir),
             patch("data_loader.DATA_DIR", self.test_dir),
-            patch("ibkr.DATA_DIR", self.test_dir),
-            patch("ibkr.IBKR_TRADES_CSV", self.test_dir / "trades.csv"),
+            patch("services.ibkr.DATA_DIR", self.test_dir),
+            patch("services.ibkr.IBKR_TRADES_CSV", self.test_dir / "trades.csv"),
             patch("data_loader.DataLoader.get_connection", lambda: sqlite3.connect(self.test_db)),
-            patch("portfolio_manager.get_all_risk_settings", return_value={})
+            patch("core.portfolio_manager.get_all_risk_settings", return_value={})
         ]
         for p in self.patches:
             p.start()
@@ -68,7 +70,7 @@ MSFT,BUY,{current_year}-02-01,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
         prev_fy_path.write_text(csv_content)
         
         # --- B. Test Sync Logic ---
-        with patch("ibkr.download_flex_report") as mock_dl:
+        with patch("services.ibkr.download_flex_report") as mock_dl:
             # Simulate YTD download returning an empty but valid CSV
             ytd_path = self.test_dir / f"{current_year}_YTD.csv"
             ytd_path.write_text("Symbol,Buy/Sell,TradeDate,Quantity,TradePrice,AssetClass,Description,Conid,ListingExchange,CurrencyPrimary,UnderlyingSymbol")
@@ -100,12 +102,19 @@ MSFT,BUY,{current_year}-02-01,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
 
         # --- D. Test Dashboard Calculation ---
         # Mock yfinance to return fixed prices
-        with patch("yfinance.Ticker") as mock_yf:
-            # Use side_effect to return different values
+        with patch("yfinance.download") as mock_dl, patch("yfinance.Ticker") as mock_yf:
+            # 1. Mock Batch Download (Current Price)
+            # Create a MultiIndex DataFrame like yfinance returns for multiple tickers
+            tickers = ['AAPL', 'MSFT']
+            cols = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']])
+            mock_data = pd.DataFrame(index=[pd.Timestamp.now()], columns=cols)
+            mock_data.loc[:, ('AAPL', 'Close')] = 200.0
+            mock_data.loc[:, ('MSFT', 'Close')] = 350.0
+            mock_dl.return_value = mock_data
+
+            # 2. Mock Individual Ticker (MaxSinceEntry)
             def yf_side_effect(ticker):
                 m = MagicMock()
-                # fast_info is a dict or a mock
-                m.fast_info = {'last_price': 200.0 if "AAPL" in ticker else 350.0}
                 # history for MaxSinceEntry
                 hist = pd.DataFrame({'High': [210.0]}, index=[pd.Timestamp.now()])
                 m.history.return_value = hist

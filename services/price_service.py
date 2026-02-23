@@ -34,13 +34,14 @@ class PriceService:
         conn.commit()
         conn.close()
 
-    def get_latest_date(self, conid: str):
+    def get_date_range(self, conid: str):
         conn = self._connect()
         result = conn.execute(
-            "SELECT MAX(date) FROM prices_daily WHERE conid = ?", (conid,)
+            "SELECT MIN(date), MAX(date) FROM prices_daily WHERE conid = ?", (conid,)
         ).fetchone()
         conn.close()
-        return pd.to_datetime(result[0]) if result[0] else None
+        return (pd.to_datetime(result[0]) if result[0] else None, 
+                pd.to_datetime(result[1]) if result[1] else None)
 
     def save_prices(self, conid: str, ticker: str, df: pd.DataFrame):
         if df.empty:
@@ -48,6 +49,11 @@ class PriceService:
 
         # Prepare for DB
         df = df.copy()
+        
+        # --- MultiIndex Fix: Flatten columns if they are MultiIndex ---
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
         if 'Date' in df.columns:
             df = df.rename(columns={'Date': 'date'})
         elif not 'date' in df.columns:
@@ -88,31 +94,34 @@ class PriceService:
 
         # Insert new rows
         df.to_sql("prices_daily", conn, if_exists="append", index=False, method="multi")
+        conn.commit()
         conn.close()
         return len(df)
 
-    def fetch_and_store(self, conid: str, yf_ticker: str, days_back: int = 365 * 3):
-        """Fetches from Yahoo and saves to local DB, only for missing dates."""
-        latest = self.get_latest_date(conid)
+    def fetch_and_store(self, conid: str, yf_ticker: str, days_back: int = 365 * 10):
+        """Fetches from Yahoo and saves to local DB, handling both gaps and updates."""
+        first, latest = self.get_date_range(conid)
+        required_start = (datetime.now() - timedelta(days=days_back)).date()
         
+        # 1. Check for Forward Update (Missing recent data)
         if latest:
-            # If we have data, start from the day after latest
-            start_date = (latest + timedelta(days=1)).strftime('%Y-%m-%d')
-            # If latest is today or yesterday, might not need anything
-            if latest.date() >= datetime.now().date() - timedelta(days=1):
-                return self.get_prices(conid)
-        else:
-            start_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+            if latest.date() < datetime.now().date() - timedelta(days=1):
+                start_f = (latest + timedelta(days=1)).strftime('%Y-%m-%d')
+                logger.info(f"Updating {yf_ticker} forward from {start_f}")
+                df_f = yf.download(yf_ticker, start=start_f, interval="1d", progress=False, auto_adjust=True)
+                if not df_f.empty:
+                    self.save_prices(conid, yf_ticker, df_f)
 
-        logger.info(f"Fetching {yf_ticker} (conid:{conid}) from {start_date}")
-        df = yf.download(yf_ticker, start=start_date, interval="1d", progress=False, auto_adjust=True)
-        
-        if not df.empty:
-            # Handle MultiIndex if present
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+        # 2. Check for Backward Gap (Missing historical data)
+        if not first or first.date() > required_start:
+            # We need more history
+            start_b = required_start.strftime('%Y-%m-%d')
+            end_b = first.strftime('%Y-%m-%d') if first else datetime.now().strftime('%Y-%m-%d')
             
-            self.save_prices(conid, yf_ticker, df)
+            logger.info(f"Fetching historical gap for {yf_ticker} from {start_b} to {end_b}")
+            df_b = yf.download(yf_ticker, start=start_b, end=end_b, interval="1d", progress=False, auto_adjust=True)
+            if not df_b.empty:
+                self.save_prices(conid, yf_ticker, df_b)
             
         return self.get_prices(conid)
 
