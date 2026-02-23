@@ -157,7 +157,16 @@ class DataLoader:
                     conid_str = str(conid_val)
                     
                 qty = group['Quantity'].sum()
-                if abs(qty) < 0.0001: continue
+                asset_cat = str(group['AssetClass'].iloc[0]).upper()
+                multiplier = group['Multiplier'].iloc[0]
+
+                # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                    qty = qty / 1000.0
+                    if multiplier == 1.0:
+                        multiplier = 10.0
+
+                if abs(qty) < 0.0000001: continue
                 
                 entry = group['CostBasisPrice'].iloc[0] if 'CostBasisPrice' in group.columns else 0
                 isin_val = group['ISIN'].iloc[0] if 'ISIN' in group.columns else np.nan
@@ -165,11 +174,11 @@ class DataLoader:
                 broker_data[conid_str] = {
                     'Qty': qty, 
                     'Entry': entry,
-                    'Multiplier': group['Multiplier'].iloc[0],
+                    'Multiplier': multiplier,
                     'Date': earliest_dates.get(conid_val) or report_date,
                     'Description': group['Description'].iloc[0], 
                     'Symbol': group['Symbol'].iloc[0],
-                    'AssetClass': group['AssetClass'].iloc[0], 
+                    'AssetClass': asset_cat, 
                     'Currency': group['CurrencyPrimary'].iloc[0],
                     'ListingExchange': group['ListingExchange'].iloc[0], 
                     'UnderlyingSymbol': group['UnderlyingSymbol'].iloc[0],

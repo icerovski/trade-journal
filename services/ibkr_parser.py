@@ -48,6 +48,14 @@ class IBKRParser:
                 # 2. Ingest Official Trade
                 price = float(row.get('Price', 0))
                 multiplier = float(row.get('Multiplier', 1.0))
+                asset_cat = str(row.get('AssetClass', 'STK')).upper()
+
+                # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                    qty = qty / 1000.0
+                    if multiplier == 1.0:
+                        multiplier = 10.0
+
                 conid_raw = row.get('Conid')
                 try:
                     conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
@@ -62,7 +70,7 @@ class IBKRParser:
                     add_trade(
                         date=date_val, ticker=ticker, side=side, 
                         quantity=qty, price=price, multiplier=multiplier,
-                        asset_category=row.get('AssetClass', 'STK'), 
+                        asset_category=asset_cat, 
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
                         source="IBKR_CONFIRMATION", external_id=ext_id,
                         description=row.get('Description', ''),
@@ -108,7 +116,14 @@ class IBKRParser:
                     qty = abs(float(row.get('Quantity', 0)))
                     price = float(row.get('TradePrice', 0))
                     multiplier = float(row.get('Multiplier', 1.0))
-                    
+                    asset_cat = str(row.get('AssetClass', 'STK')).upper()
+
+                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                        qty = qty / 1000.0
+                        if multiplier == 1.0:
+                            multiplier = 10.0
+
                     # Normalize Conid
                     conid_raw = row.get('Conid')
                     try:
@@ -125,7 +140,7 @@ class IBKRParser:
                     add_trade(
                         date=date_str, ticker=ticker, side=side, 
                         quantity=qty, price=price, multiplier=multiplier,
-                        asset_category=row.get('AssetClass', 'STK'), 
+                        asset_category=asset_cat, 
                         notes=f"IBKR TRADES Import {datetime.now().date()}",
                         source="IBKR_TRADES_CSV", external_id=ext_id,
                         description=row.get('Description', ''),
@@ -167,17 +182,19 @@ class IBKRParser:
                 try:
                     date_str = pd.to_datetime(row.get('Date')).strftime("%Y-%m-%d")
                     qty = abs(float(row.get('Quantity', 0)))
-                    
+                    multiplier = float(row.get('Multiplier', 1.0))
+                    asset_cat = str(row.get('AssetClass', 'STK')).upper()
+
                     # Calculate price from PositionAmount (Cost Basis)
                     pos_amt = float(row.get('PositionAmount', 0))
-                    price = (pos_amt / qty) if qty != 0 else 0
                     
-                    # HEURISTIC: For Bonds/Bills, the PositionAmount is already the final value
-                    # (Face * Px / 100). To store price as a percentage (e.g. 98.5) like trades,
-                    # we must multiply by 100.
-                    asset_cat = row.get('AssetClass', 'STK')
-                    if asset_cat in ['BOND', 'BILL']:
-                        price = price * 100
+                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                        qty = qty / 1000.0
+                        if multiplier == 1.0:
+                            multiplier = 10.0
+                    
+                    price = (pos_amt / (qty * multiplier)) if (qty * multiplier) != 0 else 0
 
                     side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
                     ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
@@ -195,8 +212,8 @@ class IBKRParser:
                     add_trade(
                         date=date_str, ticker=ticker, side=side, 
                         quantity=qty, price=price, 
-                        multiplier=float(row.get('Multiplier', 1.0)),
-                        asset_category=row.get('AssetClass', 'STK'), 
+                        multiplier=multiplier,
+                        asset_category=asset_cat, 
                         notes=f"IBKR TRANSFER Import ({row.get('Type')})",
                         source="IBKR_TRANSFER_CSV", external_id=ext_id,
                         description=row.get('Description', ''),

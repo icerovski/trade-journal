@@ -36,6 +36,29 @@ def setup_logging():
 
     return logger
 
+def disable_console_logging():
+    """Removes the StreamHandler from the global logger to prevent UI disruption."""
+    logger = logging.getLogger("trade_journal")
+    for handler in logger.handlers[:]:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+
+def enable_console_logging():
+    """Restores the StreamHandler to the global logger."""
+    logger = logging.getLogger("trade_journal")
+    # Check if console handler already exists
+    if any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in logger.handlers):
+        return
+    
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(module)s:%(funcName)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
+
 # Initialize the global logger instance
 logger = setup_logging()
 

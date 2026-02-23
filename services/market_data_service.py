@@ -36,7 +36,7 @@ class MarketDataService:
     Optimized for performance and rate-limit avoidance.
     """
 
-    def fetch_market_data(self, positions: List[Position], mapper) -> List[Position]:
+    def fetch_market_data(self, positions: List[Position], mapper, silent=False) -> List[Position]:
         """
         Enriches a list of positions with current prices and max-since-entry highs.
         Uses batch fetching for efficiency.
@@ -60,7 +60,8 @@ class MarketDataService:
             yf_to_pos[yf_ticker].append(p)
 
         yf_tickers = list(yf_to_pos.keys())
-        logger.info(f"Batch fetching market data for {len(yf_tickers)} unique YF tickers...")
+        if not silent:
+            logger.info(f"Batch fetching market data for {len(yf_tickers)} unique YF tickers...")
 
         try:
             # 2. Batch Fetch Current Prices (fastest way)

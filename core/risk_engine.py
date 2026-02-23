@@ -124,9 +124,12 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         table.add_column("Stop Price", justify="right", style="magenta" if stop_type == 'TRAILING' else "green")
         table.add_column("ATR/Base %", justify="right", style="dim")
         table.add_column("P/L at Stop", justify="right", style="bold")
+        table.add_column("Buffer (%)", justify="right", style="cyan")
         table.add_column("% of NAV", justify="right", style="dim")
 
         # 6. Process each frequency
+        current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
+        
         for label, window, tf in intervals:
             df = price_service.get_prices(conid, timeframe=tf)
             if len(df) < window + 1: continue
@@ -155,20 +158,21 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                 # % of NAV calculation
                 pl_pct_nav = (pl_at_stop / total_nav * 100) if total_nav > 0 else 0
                 
+                # Buffer to Stop Loss from CURRENT price
+                buffer_pts = current_price - stop_price
+                buffer_pct = (buffer_pts / current_price * 100) if current_price > 0 else 0
+                
                 table.add_row(
                     full_label,
                     f"{final_val:.2f}",
                     f"{stop_price:,.2f}",
                     f"{atr_pct:.1f}%",
                     f"[{pl_color}]{pl_at_stop:,.0f}[/{pl_color}]",
+                    f"{buffer_pct:.1f}%",
                     f"{pl_pct_nav:.2f}%"
                 )
             
         return table, raw_values
-
-    except Exception as e:
-        return f"[red]Error calculating ATR: {e}[/red]", {}
-
 
     except Exception as e:
         return f"[red]Error calculating ATR: {e}[/red]", {}

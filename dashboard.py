@@ -9,7 +9,7 @@ from rich.live import Live
 from rich.layout import Layout
 from rich.panel import Panel
 from datetime import datetime
-from logger import log_system_milestone
+from logger import log_system_milestone, disable_console_logging, enable_console_logging
 from core.portfolio_manager import PortfolioManager
 
 # Log the recent improvement
@@ -94,12 +94,24 @@ class CockpitState:
                 self.selected_index - self.visible_rows + padding + 1
             )
 
-def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_ledger=False):
+def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_ledger=False, silent=False):
     """Fetches data and returns (DataFrame, total_nav, report_date)."""
-    nav_res = portfolio_manager.fetch_nav_data(force_download=False)
-    real_nav, report_date = (nav_res[0], nav_res[2]) if nav_res else (None, "Unknown")
-    df = portfolio_manager.get_dashboard_df(asset_class_filter=asset_class_filter, total_nav=real_nav, use_ledger=use_ledger)
-    return df, real_nav, report_date
+    if silent:
+        disable_console_logging()
+    
+    try:
+        nav_res = portfolio_manager.fetch_nav_data(force_download=False)
+        real_nav, report_date = (nav_res[0], nav_res[2]) if nav_res else (None, "Unknown")
+        df = portfolio_manager.get_dashboard_df(
+            asset_class_filter=asset_class_filter, 
+            total_nav=real_nav, 
+            use_ledger=use_ledger,
+            silent=silent
+        )
+        return df, real_nav, report_date
+    finally:
+        if silent:
+            enable_console_logging()
 
 def make_cockpit_layout() -> Layout:
     """Defines the structure of the dashboard cockpit."""
@@ -115,9 +127,10 @@ def make_cockpit_layout() -> Layout:
     )
     return layout
 
-def get_header_panel(report_date, nav, ccy):
+def get_header_panel(report_date, nav, ccy, is_refreshing=False):
+    status = "[bold yellow]REFRESHING...[/bold yellow]" if is_refreshing else "[bold green]BATCH-MD[/bold green]"
     return Panel(
-        f"[bold cyan]PRIVATE EQUITY TRADING COCKPIT[/bold cyan] | [bold green]BATCH-MD[/bold green] | IBKR: {report_date} | [bold green]AUM: {ccy} {nav:,.0f}[/bold green] | [dim]{datetime.now().strftime('%H:%M:%S')}[/dim]",
+        f"[bold cyan]PRIVATE EQUITY TRADING COCKPIT[/bold cyan] | {status} | IBKR: {report_date} | [bold green]AUM: {ccy} {nav:,.0f}[/bold green] | [dim]{datetime.now().strftime('%H:%M:%S')}[/dim]",
         box=box.HORIZONTALS, border_style="cyan"
     )
 
@@ -237,16 +250,17 @@ def get_details_panel(state: CockpitState):
 
     return Panel(details, title=f"[bold]{row['Ticker']} Analysis[/bold]", border_style="magenta")
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=30, sort_by="Ticker", use_ledger=False):
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=300, sort_by="Ticker", use_ledger=False):
     """
     Interactive Cockpit Loop.
     """
     state = CockpitState()
     layout = make_cockpit_layout()
+    is_refreshing = False
     
     # Initial Data Load
     pm = PortfolioManager()
-    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
+    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger, silent=True)
     state.update_data(df, nav, r_date, sort_by)
     state.last_update = datetime.now()
 
@@ -254,9 +268,6 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
         with Live(layout, refresh_per_second=15, screen=True) as live:
             while True:
                 # Dynamically calculate visible rows
-                # Overhead calculation:
-                # Header (3) + Footer (3) + Panel Borders (2) + Table Header (2) + Margin (1) = 11 lines
-                # We use 11 lines overhead to maximize screen usage
                 state.visible_rows = max(5, console.size.height - 11)
 
                 # 1. Handle keyboard input via polling
@@ -267,14 +278,20 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
 
                 # 2. Periodically Refresh Data
                 if refresh_interval and (datetime.now() - state.last_update).total_seconds() > refresh_interval:
-                    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger)
+                    is_refreshing = True
+                    # Update layout immediately to show refreshing status
+                    ccy = state.df_view.iloc[0]['CCY'] if not state.df_view.empty else "USD"
+                    layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy, is_refreshing=True))
+                    
+                    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger, silent=True)
                     state.update_data(df, nav, r_date, sort_by)
                     state.last_update = datetime.now()
+                    is_refreshing = False
 
                 # 3. Update Layout Components
                 if not state.df_view.empty:
                     ccy = state.df_view.iloc[0]['CCY'] if 'CCY' in state.df_view.columns else "EUR"
-                    layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy))
+                    layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy, is_refreshing=is_refreshing))
                     layout["body"].update(get_holdings_panel(state))
                     layout["sidebar"].update(get_details_panel(state))
                     layout["footer"].update(get_footer_panel())

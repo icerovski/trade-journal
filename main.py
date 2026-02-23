@@ -351,8 +351,8 @@ def handle_view_dashboard():
         f = ask_asset_class()
         s = ask_sort_by()
         l = (input("\nMethod: 1. Hybrid [default] | 2. Ledger: ").strip() == '2')
-        r_choice = input("View: 1. Static [default] | 2. Live (30s): ").strip()
-        r = 30 if r_choice == '2' else None
+        r_choice = input("View: 1. Static [default] | 2. Live (5min): ").strip()
+        r = 300 if r_choice == '2' else None
         
     run_live_dashboard(PortfolioManager(), asset_class_filter=f, sort_by=s, use_ledger=l, refresh_interval=r)
 

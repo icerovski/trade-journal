@@ -56,10 +56,9 @@ class LedgerEngine:
                     # Cost basis reduction (FIFO/WAC style)
                     total_cost -= q * (total_cost / qty)
                     qty -= q
-                    # Reset point: if we hit zero, wipe history and archive risk profile
+                    # Reset point: if we hit zero, wipe history
                     if qty <= 0.0001:
                         qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
-                        close_risk_profile(conid, t.date)
                 elif side == 'SPLIT':
                     # A split changes quantity but keeps total_cost the same.
                     qty += q

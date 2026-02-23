@@ -55,7 +55,7 @@ class PortfolioManager:
     def recon(self):
         return self._recon or ReconciliationService()
 
-    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, use_ledger=False):
+    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, use_ledger=False, silent=False):
         """
         Enriches open positions with market data and risk metrics.
         Uses batch fetching for price updates.
@@ -74,7 +74,9 @@ class PortfolioManager:
             AssetRegistry.enrich_position_metadata(p)
         
         # Batch Market Data Enrichment
-        enriched_positions = self.market_data.fetch_market_data(positions, self.mapper)
+        if not silent:
+            logger.info(f"Fetching market data for {len(positions)} unique tickers...")
+        enriched_positions = self.market_data.fetch_market_data(positions, self.mapper, silent=silent)
             
         # Calculate Metrics for each position
         today = pd.Timestamp.now()
