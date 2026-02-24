@@ -71,9 +71,9 @@ def handle_sync_all():
 def handle_manage_positions():
     while True:
         console.print("\n[bold yellow]--- MANAGE POSITIONS & RISK ---[/bold yellow]")
-        print("1. ATR Discovery (Calculator)")
-        print("2. Assign Risk Strategy (ATR/Stops)")
-        print("3. Manual Trade Entries")
+        print("1. ATR Discovery & Analysis (Calculator)")
+        print("2. Quick Assign Strategy (Direct Entry)")
+        print("3. Manual Trade Entries (Ledger)")
         print("0. Back")
         
         choice = input("\nChoice: ").strip()
@@ -199,7 +199,7 @@ def handle_atr_calculator():
     console.print("\n[bold yellow]--- ATR DISCOVERY ---[/bold yellow]")
     
     print("1. Batch Mode (Existing Stocks)")
-    print("2. Manual Mode (New Position)")
+    print("2. Manual Mode (Analysis only)")
     choice = input("Choice: ").strip()
 
     manager = PortfolioManager()
@@ -229,6 +229,10 @@ def handle_atr_calculator():
                 
             console.print(f"\n[bold yellow]--- {ticker} ---[/bold yellow] ({current_str})")
             
+            # Allow skipping immediately
+            skip = input("Press Enter to skip this ticker, or any key to calculate: ").strip()
+            if not skip: continue
+
             # Ask for Stop Type for this specific ticker
             stop_choice_loop = input(f"Stop Type for {ticker}? (f)ixed / (t)railing [t]: ").strip().lower()
             stop_type_loop = "FIXED" if stop_choice_loop == 'f' else "TRAILING"
@@ -253,22 +257,16 @@ def handle_atr_calculator():
                     parts = user_input.split()
                     first = parts[0]
                     
-                    # 1. Determine Base Value (Option or Literal)
                     if first.isdigit() and 1 <= int(first) <= len(options):
                         base_val = raw_atrs[options[int(first) - 1]]
                     else:
                         base_val = float(first)
                     
-                    # 2. Process Multiplier and Type override
                     final_mult = 1.0
                     final_type = stop_type_loop
-                    
                     for p in parts[1:]:
-                        try:
-                            # Try as numeric multiplier
-                            final_mult = float(p)
+                        try: final_mult = float(p)
                         except ValueError:
-                            # Try as type flag override
                             if p == 'f': final_type = "FIXED"
                             elif p == 't': final_type = "TRAILING"
                     
@@ -294,14 +292,52 @@ def handle_atr_calculator():
             stop_type = "FIXED" if stop_choice == 'f' else "TRAILING"
             
             with console.status("Calculating..."):
-                table, _ = calculate_atr_metrics(
+                table, raw_atrs = calculate_atr_metrics(
                     ticker, date_val, price, multiplier=multiplier, conid=conid, 
                     stop_type=stop_type, qty=qty, total_nav=total_nav
                 )
                 console.print(table)
+
+            if raw_atrs:
+                print(f"\nAssign to {ticker}? (e.g. '1', '1 1.5', '4.05', or Enter to skip)")
+                options = list(raw_atrs.keys())
+                for i, label in enumerate(options, 1): print(f"{i}. {label}: {raw_atrs[label]:.2f}")
+                
+                user_input = input("Entry: ").strip().lower()
+                if not user_input: return
+                
+                try:
+                    parts = user_input.split()
+                    first = parts[0]
+                    
+                    if first.isdigit() and 1 <= int(first) <= len(options):
+                        base_val = raw_atrs[options[int(first) - 1]]
+                    else:
+                        base_val = float(first)
+                    
+                    final_mult = 1.0
+                    final_type = stop_type
+                    for p in parts[1:]:
+                        try: final_mult = float(p)
+                        except ValueError:
+                            if p == 'f': final_type = "FIXED"
+                            elif p == 't': final_type = "TRAILING"
+                    
+                    final_val = base_val * final_mult
+                    
+                    if not conid:
+                        from db import get_conid_for_ticker
+                        conid = get_conid_for_ticker(ticker) or ticker
+
+                    set_position_risk(conid, ticker, final_val, final_type, start_date=date_val)
+                    console.print(f"[green]SUCCESS: {ticker} assigned {final_val:.2f} ({final_type})[/green]")
+                except Exception as e:
+                    console.print(f"[red]Error parsing selection: {e}[/red]")
+
         except Exception as e: console.print(f"[red]Error: {e}[/red]")
 
 def handle_assign_risk():
+    """Simple direct risk assignment."""
     console.print("\n[bold yellow]--- ASSIGN RISK STRATEGY ---[/bold yellow]")
     print("Format: Ticker, Conid, ATR, Type (Fixed/Trailing)")
     line = input("Input: ").strip()
@@ -342,17 +378,18 @@ def handle_view_dashboard():
         process_confirmations()
         
     # 2. Layout & Calculation Defaults
-    console.print("\nDefaults: [bold]STOCKS[/bold], [bold]Ticker[/bold], [bold]Hybrid[/bold], [bold]Static[/bold]")
+    console.print("\nDefaults: [bold]STOCKS[/bold], [bold]Ticker[/bold], [bold]Hybrid[/bold], [bold]Live (5min)[/bold]")
     fast_path = input("Use these layout defaults? [Y/n]: ").strip().lower()
     
     if fast_path in ['', 'y', 'yes']:
-        f, s, l, r = 'STK', 'Ticker', False, None
+        # Default now includes refresh_interval=300 (Live)
+        f, s, l, r = 'STK', 'Ticker', False, 300
     else:
         f = ask_asset_class()
         s = ask_sort_by()
         l = (input("\nMethod: 1. Hybrid [default] | 2. Ledger: ").strip() == '2')
-        r_choice = input("View: 1. Static [default] | 2. Live (5min): ").strip()
-        r = 300 if r_choice == '2' else None
+        r_choice = input("View: 1. Live (5min) [default] | 2. Static: ").strip()
+        r = None if r_choice == '2' else 300
         
     run_live_dashboard(PortfolioManager(), asset_class_filter=f, sort_by=s, use_ledger=l, refresh_interval=r)
 

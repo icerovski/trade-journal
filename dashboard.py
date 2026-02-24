@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 import pandas as pd
 import keyboard
 from rich.console import Console
@@ -9,7 +10,7 @@ from rich.live import Live
 from rich.layout import Layout
 from rich.panel import Panel
 from datetime import datetime
-from logger import log_system_milestone, disable_console_logging, enable_console_logging
+from logger import logger, log_system_milestone, disable_console_logging, enable_console_logging
 from core.portfolio_manager import PortfolioManager
 
 # Log the recent improvement
@@ -30,31 +31,48 @@ class CockpitState:
         self.scroll_offset = 0
         self.visible_rows = 10 # Default
         self.last_key_time = 0
+        self.is_refreshing = True
 
     def update_data(self, df, total_nav, report_date, sort_by="Ticker"):
-        self.df = df
-        self.total_nav = total_nav
-        self.report_date = report_date
-        
-        if df.empty:
-            self.df_view = df
-            self.max_index = 0
-            return
+        try:
+            print(f"DEBUG: update_data started. DF Rows: {len(df)}, NAV: {total_nav}, Date: {report_date}")
+            self.df = df
+            self.total_nav = total_nav
+            self.report_date = report_date
+            
+            if df.empty:
+                print("DEBUG: DF is empty, skipping sort.")
+                self.df_view = df
+                self.max_index = 0
+                return
 
-        if sort_by == "MarketValue":
-            self.df_view = df.sort_values('MarketValue', ascending=False)
-        elif sort_by == "Pct":
-            self.df_view = df.sort_values('PL_Inc_Pct', ascending=False)
-        elif sort_by == "PL":
-            self.df_view = df.sort_values('PL_Inc', ascending=False)
-        elif sort_by == "Date":
-            self.df_view = df.sort_values('Date', ascending=True)
-        else:
-            self.df_view = df.sort_values(['AssetClass', 'Ticker'], ascending=True)
+            print(f"DEBUG: Sorting by {sort_by}...")
+            # Column mapping check
+            valid_cols = df.columns.tolist()
+            print(f"DEBUG: Valid columns: {valid_cols}")
 
-        self.max_index = len(self.df_view) - 1
-        if self.selected_index > self.max_index:
-            self.selected_index = max(0, self.max_index)
+            if sort_by == "MarketValue" and "MarketValue" in df.columns:
+                self.df_view = df.sort_values('MarketValue', ascending=False)
+            elif sort_by == "Pct" and "PL_Inc_Pct" in df.columns:
+                self.df_view = df.sort_values('PL_Inc_Pct', ascending=False)
+            elif sort_by == "PL" and "PL_Inc" in df.columns:
+                self.df_view = df.sort_values('PL_Inc', ascending=False)
+            elif sort_by == "Date" and "Date" in df.columns:
+                self.df_view = df.sort_values('Date', ascending=True)
+            else:
+                sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
+                if sort_cols:
+                    self.df_view = df.sort_values(sort_cols, ascending=True)
+                else:
+                    self.df_view = df
+
+            self.max_index = len(self.df_view) - 1
+            if self.selected_index > self.max_index:
+                self.selected_index = max(0, self.max_index)
+            
+            print(f"DEBUG: update_data complete. df_view rows: {len(self.df_view)}")
+        except Exception as e:
+            print(f"DEBUG: update_data Critical Error: {e}")
 
     def handle_input(self):
         """Polls for keyboard input with throttling."""
@@ -100,15 +118,29 @@ def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_led
         disable_console_logging()
     
     try:
+        print(f"DEBUG: calculate_dashboard_data started. Filter: {asset_class_filter}")
         nav_res = portfolio_manager.fetch_nav_data(force_download=False)
-        real_nav, report_date = (nav_res[0], nav_res[2]) if nav_res else (None, "Unknown")
+        
+        if nav_res:
+            real_nav, accounts, report_date = nav_res
+            print(f"DEBUG: NAV Parsed: {real_nav}")
+        else:
+            print("DEBUG: NAV Parsed failed")
+            real_nav, report_date = 0.0, "Unknown"
+        
+        print("DEBUG: Fetching Dashboard DF...")
         df = portfolio_manager.get_dashboard_df(
             asset_class_filter=asset_class_filter, 
             total_nav=real_nav, 
             use_ledger=use_ledger,
             silent=silent
         )
+        print(f"DEBUG: Dashboard DF rows: {len(df)}")
+        
         return df, real_nav, report_date
+    except Exception as e:
+        print(f"DEBUG: calculate_dashboard_data Error: {e}")
+        return pd.DataFrame(), 0.0, "Error"
     finally:
         if silent:
             enable_console_logging()
@@ -127,10 +159,11 @@ def make_cockpit_layout() -> Layout:
     )
     return layout
 
-def get_header_panel(report_date, nav, ccy, is_refreshing=False):
-    status = "[bold yellow]REFRESHING...[/bold yellow]" if is_refreshing else "[bold green]BATCH-MD[/bold green]"
+def get_header_panel(state: CockpitState, ccy="EUR"):
+    refresh_tag = " [bold yellow][REFRESHING...][/bold yellow]" if state.is_refreshing else ""
+    nav_val = state.total_nav if state.total_nav is not None else 0.0
     return Panel(
-        f"[bold cyan]PRIVATE EQUITY TRADING COCKPIT[/bold cyan] | {status} | IBKR: {report_date} | [bold green]AUM: {ccy} {nav:,.0f}[/bold green] | [dim]{datetime.now().strftime('%H:%M:%S')}[/dim]",
+        f"[bold cyan]PRIVATE EQUITY TRADING COCKPIT[/bold cyan] | [bold green]BATCH-MD[/bold green] | IBKR: {state.report_date} | [bold green]AUM: {ccy} {nav_val:,.0f}[/bold green] | [dim]{datetime.now().strftime('%H:%M:%S')}[/dim]{refresh_tag}",
         box=box.HORIZONTALS, border_style="cyan"
     )
 
@@ -142,6 +175,8 @@ def get_footer_panel():
 
 def get_holdings_panel(state: CockpitState):
     if state.df_view.empty:
+        if state.is_refreshing:
+            return Panel("\n\n[bold yellow]   INITIALIZING MARKET DATA...[/bold yellow]\n\n", title="Holdings", border_style="blue")
         return Panel("[yellow]No active positions found.[/yellow]", title="Holdings")
 
     # CRITICAL: Disable wrapping to ensure 1 row = 1 terminal line
@@ -252,58 +287,89 @@ def get_details_panel(state: CockpitState):
 
 def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=300, sort_by="Ticker", use_ledger=False):
     """
-    Interactive Cockpit Loop.
+    Interactive Cockpit Loop with background refreshes.
     """
+    logger.info(f"Dashboard: run_live_dashboard initiated (Filter: {asset_class_filter}).")
     state = CockpitState()
     layout = make_cockpit_layout()
-    is_refreshing = False
-    
-    # Initial Data Load
     pm = PortfolioManager()
-    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger, silent=True)
-    state.update_data(df, nav, r_date, sort_by)
-    state.last_update = datetime.now()
+
+    # CRITICAL: Do the first load SYNCHRONOUSLY so we can see any errors in the console
+    # before the 'Live' context takes over the screen.
+    try:
+        console.print("[cyan]Initializing dashboard data...[/cyan]")
+        df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger, silent=False)
+        if df is not None:
+            state.update_data(df, nav, r_date, sort_by)
+            state.last_update = datetime.now()
+        state.is_refreshing = False
+        console.print(f"[green]Initialization complete. {len(df)} positions found.[/green]")
+    except Exception as e:
+        logger.error(f"Dashboard: Initial synchronous load failed: {e}", exc_info=True)
+        console.print(f"[red]Error during initialization: {e}[/red]")
+        time.sleep(2)
+
+    def refresh_worker():
+        """Background thread for periodic refreshes."""
+        if not refresh_interval:
+            return
+
+        while True:
+            try:
+                time.sleep(refresh_interval)
+                state.is_refreshing = True
+                logger.info("Dashboard: Periodic background refresh starting...")
+                df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger, silent=True)
+                state.update_data(df, nav, r_date, sort_by)
+                state.last_update = datetime.now()
+                state.is_refreshing = False
+                logger.info("Dashboard: Periodic refresh complete.")
+            except Exception as e:
+                logger.error(f"Dashboard: Periodic refresh error: {e}")
+                state.is_refreshing = False
+
+    # Start background thread only if refresh is enabled
+    if refresh_interval:
+        t = threading.Thread(target=refresh_worker, daemon=True)
+        t.start()
+        logger.info("Dashboard: Background thread spawned successfully.")
 
     try:
-        with Live(layout, refresh_per_second=15, screen=True) as live:
+        with Live(layout, refresh_per_second=10, screen=True) as live:
+            logger.info("Dashboard: Live UI context started.")
             while True:
-                # Dynamically calculate visible rows
                 state.visible_rows = max(5, console.size.height - 11)
-
-                # 1. Handle keyboard input via polling
-                state.handle_input()
-
-                if keyboard.is_pressed('esc'):
-                    break
-
-                # 2. Periodically Refresh Data
-                if refresh_interval and (datetime.now() - state.last_update).total_seconds() > refresh_interval:
-                    is_refreshing = True
-                    # Update layout immediately to show refreshing status
-                    ccy = state.df_view.iloc[0]['CCY'] if not state.df_view.empty else "USD"
-                    layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy, is_refreshing=True))
-                    
-                    df, nav, r_date = calculate_dashboard_data(pm, asset_class_filter, use_ledger, silent=True)
-                    state.update_data(df, nav, r_date, sort_by)
-                    state.last_update = datetime.now()
-                    is_refreshing = False
-
-                # 3. Update Layout Components
-                if not state.df_view.empty:
-                    ccy = state.df_view.iloc[0]['CCY'] if 'CCY' in state.df_view.columns else "EUR"
-                    layout["header"].update(get_header_panel(state.report_date, state.total_nav or 0, ccy, is_refreshing=is_refreshing))
-                    layout["body"].update(get_holdings_panel(state))
-                    layout["sidebar"].update(get_details_panel(state))
-                    layout["footer"].update(get_footer_panel())
-                else:
-                    layout["body"].update(Panel("[yellow]No data to display.[/yellow]"))
                 
-                time.sleep(0.02) # Higher polling frequency for input
+                # Input handling
+                try:
+                    state.handle_input()
+                    if keyboard.is_pressed('esc'):
+                        break
+                except Exception as e:
+                    logger.debug(f"Input handling error: {e}")
+
+                # Update components
+                ccy = "EUR"
+                if not state.df_view.empty:
+                    try:
+                        # Extract CCY from first row if available
+                        ccy = state.df_view.iloc[0]['CCY'] if 'CCY' in state.df_view.columns else "EUR"
+                    except: pass
+                
+                layout["header"].update(get_header_panel(state, ccy))
+                layout["body"].update(get_holdings_panel(state))
+                layout["sidebar"].update(get_details_panel(state))
+                layout["footer"].update(get_footer_panel())
+                
+                time.sleep(0.05)
     except KeyboardInterrupt:
         pass
     finally:
-        keyboard.unhook_all()
+        try:
+            keyboard.unhook_all()
+        except: pass
         console.clear()
+        logger.info("Dashboard: Cleaned up and returned to main menu.")
 
 def print_rich_portfolio(df, total_nav_override=None, report_date="Unknown", sort_by="Ticker"):
     """Legacy entry point."""

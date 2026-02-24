@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
 from db import add_trade, trade_exists, delete_manual_duplicates
+from logger import logger
 
 class IBKRParser:
     """
@@ -300,43 +301,52 @@ class IBKRParser:
     def parse_nav_csv(file_path):
         """
         Parses an IBKR Equity Summary CSV and returns (total_nav, account_list, report_date).
-        IBKR Flex CSVs for NAV usually have sections like 'Equity Summary By Report Date In Base'.
+        Supports both Flex sections and flat CSVs with repeated headers.
         """
         if not file_path or not Path(file_path).exists():
             return 0.0, [], "Unknown"
 
         try:
-            # Load CSV - usually has many sections. 
-            # We look for rows where the first column indicates Equity Summary.
+            # Load CSV - do not skip rows, handle repeated headers manually
             df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
-            
-            # Clean columns
             df.columns = df.columns.str.strip()
             
-            # Identify the correct section. 
-            # In Flex CSV, Section Name is usually in the first column or 'SectionName'
-            section_col = 'SectionName' if 'SectionName' in df.columns else df.columns[0]
+            # Clean repeated headers
+            if 'Total' in df.columns:
+                df = df[df['Total'].astype(str) != 'Total']
             
-            # Filter for Equity Summary rows
-            nav_rows = df[df[section_col].str.contains('EquitySummary', na=False, case=False)]
+            # Find Equity Summary rows
+            # 1. Check SectionName column if it exists
+            section_col = next((c for c in df.columns if 'SectionName' in c), None)
+            
+            if section_col:
+                nav_rows = df[df[section_col].str.contains('EquitySummary', na=False, case=False)]
+            else:
+                # 2. If no SectionName, use rows that have both 'Total' and 'ReportDate'
+                nav_rows = df.dropna(subset=['Total', 'ReportDate'], how='any')
             
             if nav_rows.empty:
-                # Fallback: just look for 'Total' and 'ReportDate'
-                nav_rows = df.dropna(subset=['Total', 'ReportDate'], how='all') if 'Total' in df.columns else pd.DataFrame()
-
-            if nav_rows.empty:
+                logger.warning(f"No NAV data found in {file_path}")
                 return 0.0, [], "Unknown"
 
             # Ensure numeric
-            if 'Total' in nav_rows.columns:
-                nav_rows['Total'] = pd.to_numeric(nav_rows['Total'], errors='coerce')
+            nav_rows = nav_rows.copy()
+            nav_rows['Total'] = pd.to_numeric(nav_rows['Total'], errors='coerce')
+            nav_rows = nav_rows.dropna(subset=['Total'])
             
-            total_nav = nav_rows['Total'].sum() if 'Total' in nav_rows.columns else 0.0
-            report_date = str(nav_rows['ReportDate'].iloc[0]) if 'ReportDate' in nav_rows.columns else "Unknown"
+            total_nav = nav_rows['Total'].sum()
+            
+            # Extract ReportDate (normalize to string)
+            report_date = "Unknown"
+            if 'ReportDate' in nav_rows.columns:
+                valid_dates = nav_rows['ReportDate'].dropna()
+                if not valid_dates.empty:
+                    report_date = str(valid_dates.iloc[0])
             
             accounts = []
-            # Map accounts if Alias or AccountId is present
-            acct_col = 'AccountId' if 'AccountId' in nav_rows.columns else ('Account Alias' if 'Account Alias' in nav_rows.columns else None)
+            # Map accounts using standard IBKR columns
+            acct_col = next((c for c in ['AccountId', 'Account Alias', 'ClientAccountID'] if c in nav_rows.columns), None)
+            
             if acct_col:
                 for _, row in nav_rows.iterrows():
                     accounts.append({
@@ -344,7 +354,8 @@ class IBKRParser:
                         'nav': float(row.get('Total', 0))
                     })
             
+            logger.info(f"Parsed NAV: {total_nav:,.2f} for date {report_date} from {len(accounts)} accounts.")
             return total_nav, accounts, report_date
         except Exception as e:
-            print(f"ERROR: IBKR NAV CSV Parsing Error: {e}")
+            logger.error(f"ERROR: IBKR NAV CSV Parsing Error: {e}")
             return 0.0, [], "Unknown"

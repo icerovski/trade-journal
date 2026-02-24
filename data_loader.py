@@ -114,18 +114,31 @@ class DataLoader:
         """Reads open_positions_lbd.csv and returns aggregated summary using Conid."""
         from config import IBKR_OPEN_POSITIONS_CSV
         path = IBKR_OPEN_POSITIONS_CSV
+        logger.info(f"Checking for snapshot at: {path}")
         if not path.exists():
+            logger.warning(f"Snapshot file not found at: {path}")
             return {}, None
             
         try:
-            df = pd.read_csv(path, skiprows=1, on_bad_lines='skip', low_memory=False)
+            # Load CSV - do NOT skip rows, we will handle repeated headers manually
+            df = pd.read_csv(path, low_memory=False, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            
+            # Robust header discovery: if 'LevelOfDetail' is not in columns, search for it in rows
             if 'LevelOfDetail' not in df.columns:
-                df = pd.read_csv(path, on_bad_lines='skip', low_memory=False)
+                for i in range(min(10, len(df))):
+                    if "LevelOfDetail" in df.iloc[i].values:
+                        df.columns = df.iloc[i].str.strip()
+                        df = df.iloc[i+1:]
+                        break
             
             if 'LevelOfDetail' not in df.columns:
-                logger.error("Could not find 'LevelOfDetail' column in open_positions.csv")
+                logger.error(f"Could not find 'LevelOfDetail' column in {path.name}")
                 return {}, None
 
+            # Filter out redundant header rows and empty symbols
+            df = df[df['Symbol'] != 'Symbol'].dropna(subset=['Symbol'])
+            
             df = df[df['LevelOfDetail'].isin(['SUMMARY', 'LOT'])]
             df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
             df['CostBasisPrice'] = pd.to_numeric(df['CostBasisPrice'], errors='coerce')
@@ -136,14 +149,15 @@ class DataLoader:
             
             summaries = df[df['LevelOfDetail'] == 'SUMMARY'].copy()
             if summaries.empty:
-                logger.warning("No 'SUMMARY' rows found in open_positions.csv")
+                logger.warning(f"No 'SUMMARY' rows found in {path.name}")
                 return {}, None
                 
             summaries = summaries.dropna(subset=['Quantity', 'Conid'])
             lots = df[df['LevelOfDetail'] == 'LOT'].copy()
             earliest_dates = {}
             if not lots.empty:
-                lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].str.split(';').str[0], errors='coerce')
+                # OpenDateTime often has multiple timestamps separated by semicolon
+                lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].astype(str).str.split(';').str[0], errors='coerce')
                 earliest_dates = lots.groupby('Conid')['OpenDateClean'].min().to_dict()
             
             report_date_raw = summaries['ReportDate'].iloc[0]
@@ -186,6 +200,8 @@ class DataLoader:
                     'MarkPrice': group['MarkPrice'].iloc[0],
                     'NavPct': group['PercentOfNAV'].sum()
                 }
+            
+            logger.info(f"Successfully loaded {len(broker_data)} positions from {path.name}")
             return broker_data, report_date
         except Exception as e:
             logger.error(f"Error parsing open_positions.csv: {e}")

@@ -21,21 +21,22 @@ log_system_milestone("Implemented Real-Time Trade Confirmations with Fingerprint
 def download_flex_report(query_id, output_path, force_download=False):
     """
     Downloads a Flex Report (XML or CSV) and saves it to output_path.
+    If force_download is False and the file exists, it returns the existing file.
     """
     from config import IBKR_TOKEN
     file_path = Path(output_path)
     
-    # Local Cache Check
+    # If the file exists and we are not forcing a refresh, USE IT.
+    # This ensures the system works with existing OneDrive snapshots even if the token is missing.
     if not force_download and file_path.exists():
-        try:
-            file_date = pd.Timestamp(file_path.stat().st_mtime, unit='s').date()
-            if file_date == pd.Timestamp.now().date():
-                return file_path
-        except Exception:
-            pass 
+        return file_path
 
     if query_id == "0" or not IBKR_TOKEN:
-        logger.error(f"IBKR Credentials/Query ID missing in .env (ID: {query_id})")
+        # If no credentials, we MUST fallback to the existing file if it exists
+        if file_path.exists():
+            logger.info(f"IBKR: Token missing, using existing snapshot: {file_path.name}")
+            return file_path
+        logger.error(f"IBKR: Credentials missing and no local snapshot found (ID: {query_id})")
         return None
         
     url = f"https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest?t={IBKR_TOKEN}&q={query_id}&v=3"
@@ -45,7 +46,7 @@ def download_flex_report(query_id, output_path, force_download=False):
         resp = requests.get(url)
         if not resp.content.strip().startswith(b"<"):
             logger.warning(f"IBKR Handshake Error: {resp.text}")
-            return None
+            return file_path if file_path.exists() else None
 
         root = ET.fromstring(resp.content)
         if root.find("Status") is not None and root.find("Status").text == "Success":
@@ -78,7 +79,8 @@ def download_flex_report(query_id, output_path, force_download=False):
                         temp_path.unlink()
     except Exception as e:
         logger.error(f"IBKR Download Error: {e}")
-    return None
+    
+    return file_path if file_path.exists() else None
 
 # --- 2. WRAPPERS ---
 

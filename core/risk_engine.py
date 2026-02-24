@@ -72,37 +72,43 @@ class RiskEngine:
 def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
     """
     Calculates ATR across multiple timeframes for visual analysis.
-    Supports frequency scaling and optional multiplier for noise buffering.
-    Returns (Rich.Table, dict of {label: value})
+    Prioritizes Wilder ATR with SMA in brackets for audit.
     """
     from .portfolio_manager import PortfolioManager
     try:
         # 1. Resolve Ticker
         manager = PortfolioManager()
         yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol)
-        
-        # 2. Fetch History from Local DB
         price_service = PriceService()
         
-        if not conid:
-            console.print(f"-> [yellow]Warning:[/yellow] No conid provided for {ticker_symbol}. Using direct Yahoo fetch.")
-            ticker_obj = yf.Ticker(yf_ticker)
-            df_daily = ticker_obj.history(period="3y")
-        else:
+        # 2. Fetch/Prepare Data
+        if conid:
             console.print(f"-> Resolved [bold]{ticker_symbol}[/bold] (conid:{conid}) to Yahoo Ticker: [bold cyan]{yf_ticker}[/bold cyan]")
             df_daily = price_service.fetch_and_store(conid, yf_ticker)
+        else:
+            console.print(f"-> [yellow]Warning:[/yellow] No conid provided for {ticker_symbol}. Using direct Yahoo fetch.")
+            df_daily = yf.Ticker(yf_ticker).history(period="3y")
         
         if df_daily.empty:
             return f"[red]Error: No data found for {yf_ticker}[/red]", {}
 
         # 3. Handle Max Price since Entry Date
-        entry_date_dt = pd.to_datetime(entry_date_str)
-        max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
+        if conid:
+            max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
+        else:
+            try:
+                entry_dt = pd.to_datetime(entry_date_str).tz_localize(df_daily.index.tz) if df_daily.index.tz else pd.to_datetime(entry_date_str)
+                df_since = df_daily[df_daily.index >= entry_dt]
+                max_price = df_since['High'].max() if not df_since.empty else entry_price
+            except:
+                max_price = entry_price
+        
         max_price = max(entry_price, max_price)
 
-        # 4. Define Timeframes and Frequencies
+        # 4. Define Timeframes (Added Weekly 12)
         intervals = [
             ("14d", 14, 'daily'),
+            ("12w", 12, 'weekly'),
             ("12m", 12, 'monthly'),
             ("8q", 8, 'quarterly')
         ]
@@ -114,13 +120,12 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         base_price = max_price if stop_type == 'TRAILING' else entry_price
         
         title = f"ATR Gauge for {ticker_symbol} ({mode_str} Stop)"
-        if multiplier != 1.0:
-            title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
+        if multiplier != 1.0: title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
             
         table = Table(title=title, header_style="bold cyan", box=None, 
                       caption=f"\n[dim]Base Price for {mode_str}: {base_price:,.2f} | Entry: {entry_price:,.2f} | Max since entry: {max_price:,.2f}[/dim]")
         table.add_column("Label", style="bold")
-        table.add_column(f"ATR ({multiplier}x)", justify="right", style="yellow")
+        table.add_column(f"ATR Wilder (SMA) @{multiplier}x", justify="right", style="yellow")
         table.add_column("Stop Price", justify="right", style="magenta" if stop_type == 'TRAILING' else "green")
         table.add_column("ATR/Base %", justify="right", style="dim")
         table.add_column("P/L at Stop", justify="right", style="bold")
@@ -131,7 +136,14 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
         current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
         
         for label, window, tf in intervals:
-            df = price_service.get_prices(conid, timeframe=tf)
+            if conid:
+                df = price_service.get_prices(conid, timeframe=tf)
+            else:
+                # Map timeframe to yfinance periods/intervals
+                yf_period = "3y" if tf == 'daily' else ("5y" if tf == 'weekly' else ("10y" if tf == 'monthly' else "max"))
+                yf_interval = "1d" if tf == 'daily' else ("1wk" if tf == 'weekly' else ("1mo" if tf == 'monthly' else "3mo"))
+                df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
+
             if len(df) < window + 1: continue
 
             df['PrevClose'] = df['Close'].shift(1)
@@ -139,38 +151,33 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                         np.maximum(abs(df['High'] - df['PrevClose']), 
                                    abs(df['Low'] - df['PrevClose'])))
 
-            atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
+            # 1. Calculate Wilder (Primary) and SMA (Audit)
             atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
+            atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
 
-            for method, val in [("SMA", atr_sma), ("Wilder", atr_wilder)]:
-                final_val = val * multiplier
-                full_label = f"{tf.capitalize()}_{window}_{method}"
-                raw_values[full_label] = final_val
-                
-                # Calculation
-                stop_price = base_price - final_val
-                atr_pct = (final_val / base_price * 100) if base_price > 0 else 0
-                
-                # P/L at Stop calculation: (StopPrice - EntryPrice) * Qty * Multiplier
-                pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
-                pl_color = "green" if pl_at_stop >= 0 else "red"
-                
-                # % of NAV calculation
-                pl_pct_nav = (pl_at_stop / total_nav * 100) if total_nav > 0 else 0
-                
-                # Buffer to Stop Loss from CURRENT price
-                buffer_pts = current_price - stop_price
-                buffer_pct = (buffer_pts / current_price * 100) if current_price > 0 else 0
-                
-                table.add_row(
-                    full_label,
-                    f"{final_val:.2f}",
-                    f"{stop_price:,.2f}",
-                    f"{atr_pct:.1f}%",
-                    f"[{pl_color}]{pl_at_stop:,.0f}[/{pl_color}]",
-                    f"{buffer_pct:.1f}%",
-                    f"{pl_pct_nav:.2f}%"
-                )
+            # 2. Store Wilder for assignment options
+            raw_values[label] = atr_wilder * multiplier
+            
+            # 3. Calculations for Table (Using Wilder as base)
+            final_val_wilder = atr_wilder * multiplier
+            final_val_sma = atr_sma * multiplier
+            
+            stop_price = base_price - final_val_wilder
+            atr_pct = (final_val_wilder / base_price * 100) if base_price > 0 else 0
+            pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
+            pl_color = "green" if pl_at_stop >= 0 else "red"
+            pl_pct_nav = (pl_at_stop / total_nav * 100) if total_nav > 0 else 0
+            buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0
+            
+            table.add_row(
+                label, 
+                f"{final_val_wilder:.2f} ({final_val_sma:.2f})", 
+                f"{stop_price:,.2f}", 
+                f"{atr_pct:.1f}%",
+                f"[{pl_color}]{pl_at_stop:,.0f}[/{pl_color}]", 
+                f"{buffer_pct:.1f}%", 
+                f"{pl_pct_nav:.2f}%"
+            )
             
         return table, raw_values
 

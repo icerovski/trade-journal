@@ -6,7 +6,7 @@ from logger import logger
 class ReconciliationService:
     """
     Handles the reconciliation between broker-verified snapshots and manual trades.
-    Treats the broker snapshot as a 'Checkpoint' and manual trades as a 'Delta'.
+    Treats the broker snapshot as a 'Checkpoint' and manual trades/confirmations as a 'Delta'.
     """
 
     @staticmethod
@@ -17,18 +17,20 @@ class ReconciliationService:
         ledger_engine
     ) -> List[Position]:
         """
-        Merges broker-verified positions with pending manual trades.
+        Merges broker-verified positions with pending delta trades (Manual + Confirmations).
         """
-        # 1. Filter for manual trades occurring AFTER the report date
-        def is_pending_manual(t):
+        # 1. Filter for trades occurring AFTER the report date (or explicitly marked as pending)
+        # We include both 'MANUAL' and 'IBKR_CONFIRMATION' sources.
+        def is_pending_delta(t):
             t_date = pd.to_datetime(t.date)
-            is_manual = t.source == 'MANUAL'
+            is_delta_source = t.source in ['MANUAL', 'IBKR_CONFIRMATION']
             if report_date:
-                # Use a small buffer or same-day inclusion logic if needed
-                return is_manual and t_date > report_date
-            return is_manual
+                # Same-day trades might have same date as report_date depending on precision.
+                # However, confirmations are specifically 'today' and snapshot is 'LBD'.
+                return is_delta_source and t_date > report_date
+            return is_delta_source
 
-        pending_manual = [t for t in all_trades if is_pending_manual(t)]
+        pending_deltas = [t for t in all_trades if is_pending_delta(t)]
 
         open_list = []
         matched_conids = set()
@@ -50,8 +52,8 @@ class ReconciliationService:
                 first_date = lp.date_entry
                 multiplier = lp.multiplier
 
-            # 4. Apply 'Delta' (Pending Manual Adjustments)
-            adjustments = [t for t in pending_manual if t.conid == conid]
+            # 4. Apply 'Delta' (Pending Adjustments)
+            adjustments = [t for t in pending_deltas if t.conid == conid]
             for t in adjustments:
                 side, q, p, m = t.side.upper(), t.quantity, t.price, t.multiplier
                 if side in ['BUY', 'TRANSFER_IN']:
@@ -78,9 +80,9 @@ class ReconciliationService:
                 ))
             matched_conids.add(str(conid))
 
-        # 5. Add manual trades for assets NOT in IBKR snapshot
-        remaining_manual = [t for t in pending_manual if t.conid not in matched_conids]
-        if remaining_manual:
-            open_list.extend(ledger_engine.calculate_positions(remaining_manual))
+        # 5. Add delta trades for assets NOT in IBKR snapshot
+        remaining_delta = [t for t in pending_deltas if t.conid not in matched_conids]
+        if remaining_delta:
+            open_list.extend(ledger_engine.calculate_positions(remaining_delta))
 
         return open_list
