@@ -159,4 +159,4 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   2. Confluence zones discovery - ATRs can also come close to EMAs, Bollinger Bands, Fibonacci, etc.
   3. Analyze volumes to discover bear and bull markets. Bull market volumes rise with the price, bear markets volums move oposite direction. Only with other markers though.
   4. Refreshing doesn't work still.
-  5. ticker-map.json should hold conid: (ticker_ibkr, ticker_yfinance)
+  5. ticker_info table in the db: bond multipliers should be x0.001; ISIN info should be taken from the trade tables, where you also take stock exchange, etc.
