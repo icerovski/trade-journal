@@ -31,6 +31,7 @@ class CockpitState:
         self.scroll_offset = 0
         self.visible_rows = 10 # Default
         self.last_key_time = 0
+        self.is_refreshing = False
         self.is_refreshing = True
 
     def update_data(self, df, total_nav, report_date, sort_by="Ticker"):
@@ -118,28 +119,23 @@ def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_led
         disable_console_logging()
     
     try:
-        print(f"DEBUG: calculate_dashboard_data started. Filter: {asset_class_filter}")
         nav_res = portfolio_manager.fetch_nav_data(force_download=False)
         
         if nav_res:
             real_nav, accounts, report_date = nav_res
-            print(f"DEBUG: NAV Parsed: {real_nav}")
         else:
-            print("DEBUG: NAV Parsed failed")
             real_nav, report_date = 0.0, "Unknown"
         
-        print("DEBUG: Fetching Dashboard DF...")
         df = portfolio_manager.get_dashboard_df(
             asset_class_filter=asset_class_filter, 
             total_nav=real_nav, 
             use_ledger=use_ledger,
             silent=silent
         )
-        print(f"DEBUG: Dashboard DF rows: {len(df)}")
         
         return df, real_nav, report_date
     except Exception as e:
-        print(f"DEBUG: calculate_dashboard_data Error: {e}")
+        logger.error(f"calculate_dashboard_data Error: {e}")
         return pd.DataFrame(), 0.0, "Error"
     finally:
         if silent:
@@ -285,7 +281,7 @@ def get_details_panel(state: CockpitState):
 
     return Panel(details, title=f"[bold]{row['Ticker']} Analysis[/bold]", border_style="magenta")
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=300, sort_by="Ticker", use_ledger=False):
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval: int | None = 300, sort_by="Ticker", use_ledger=False):
     """
     Interactive Cockpit Loop with background refreshes.
     """
