@@ -14,5 +14,7 @@ data/
 
 # Secrets (Sensitive data)
 .env
-ibkr_opening.xml
-ibkr_ytd.xml
+trades.csv
+ibkr_nav.xml
+gha-creds-*.json
+/GEMINI.md

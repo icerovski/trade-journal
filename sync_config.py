@@ -1,0 +1,70 @@
+import shutil
+from pathlib import Path
+import os
+import atexit
+from config import CONFIG_VAULT
+
+# 1. Define Vault Paths
+# Metadata Vault (Secrets and project-specific instructions)
+METADATA_VAULT = CONFIG_VAULT
+
+# Global Context Vault (parent of Metadata Vault)
+GLOBAL_VAULT = CONFIG_VAULT.parent
+
+# Local paths
+REPO_DIR = Path.cwd()
+LOCAL_GEMINI_DIR = Path(os.path.expanduser('~')) / '.gemini'
+
+# Mapping: (Local Source Path, Remote Destination Path)
+FILES_TO_SYNC = [
+    (REPO_DIR / 'GEMINI.md', METADATA_VAULT / 'GEMINI.md'),
+    (REPO_DIR / '.env', METADATA_VAULT / '.env'),
+    (LOCAL_GEMINI_DIR / 'GEMINI.md', GLOBAL_VAULT / 'global_GEMINI.md'),
+]
+
+def backup():
+    """Copies local files TO OneDrive."""
+    print("\n🚀 Backing up Metadata to OneDrive...")
+    
+    for local_path, remote_path in FILES_TO_SYNC:
+        if local_path.exists():
+            remote_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local_path, remote_path)
+            print(f"  -> Backed up {local_path.name}")
+
+def smart_sync():
+    """
+    On startup: Ensures local files are the latest version compared to OneDrive.
+    If OneDrive version is newer (or local is missing), it copies it locally.
+    """
+    print("\n🔄 Syncing Configuration with OneDrive...")
+    
+    for local_path, remote_path in FILES_TO_SYNC:
+        if remote_path.exists():
+            if not local_path.exists():
+                print(f"  -> {local_path.name} missing. Restoring from OneDrive...")
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(remote_path, local_path)
+            else:
+                local_mtime = local_path.stat().st_mtime
+                remote_mtime = remote_path.stat().st_mtime
+                
+                # If remote is significantly newer (> 2 seconds to avoid filesystem noise)
+                if remote_mtime > local_mtime + 2:
+                    print(f"  -> OneDrive has a newer {local_path.name}. Updating local copy...")
+                    shutil.copy2(remote_path, local_path)
+                elif local_mtime > remote_mtime + 2:
+                    print(f"  -> Local {local_path.name} is newer. Will backup on exit.")
+                else:
+                    print(f"  -> {local_path.name} is in sync.")
+        else:
+            if local_path.exists():
+                print(f"  -> Remote {remote_path.name} not found. Will backup on exit.")
+            else:
+                print(f"  ⚠️ Warning: Both local and remote {local_path.name} are missing.")
+
+# Automatically register the backup function to run on exit
+atexit.register(backup)
+
+if __name__ == "__main__":
+    smart_sync()

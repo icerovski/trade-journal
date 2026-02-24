@@ -1,0 +1,361 @@
+import pandas as pd
+import numpy as np
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from datetime import datetime
+from db import add_trade, trade_exists, delete_manual_duplicates
+from logger import logger
+
+class IBKRParser:
+    """
+    Handles interpreting IBKR-specific file formats (CSV and XML).
+    Separates the 'Knowledge of Columns' from the 'Networking' layer.
+    """
+
+    @staticmethod
+    def parse_confirmations_csv(file_path):
+        """Parses real-time Trade Confirmations and replaces matching manual entries."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            # Handle multiple redundant headers typical in Flex CSV
+            df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            
+            if 'Symbol' in df.columns:
+                df = df[df['Symbol'] != 'Symbol'].dropna(subset=['Symbol'])
+            
+            # Filter for EXECUTION rows only
+            if 'LevelOfDetail' in df.columns:
+                df = df[df['LevelOfDetail'] == 'EXECUTION']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = str(row.get('Symbol', '')).upper()
+                side = str(row.get('Buy/Sell', '')).upper()
+                date_val = str(row.get('TradeDate', ''))
+                qty = abs(float(row.get('Quantity', 0)))
+                
+                if not ticker or side not in ['BUY', 'SELL'] or qty == 0:
+                    continue
+
+                # 1. Fingerprint De-duplication: Delete manual entries that match this trade
+                deleted_count = delete_manual_duplicates(ticker, date_val, qty, side)
+                if deleted_count > 0:
+                    from logger import logger
+                    logger.info(f"Reconciled {deleted_count} manual entries for {ticker}")
+
+                # 2. Ingest Official Trade
+                price = float(row.get('Price', 0))
+                multiplier = float(row.get('Multiplier', 1.0))
+                asset_cat = str(row.get('AssetClass', 'STK')).upper()
+
+                # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                    qty = qty / 1000.0
+                    if multiplier == 1.0:
+                        multiplier = 10.0
+
+                conid_raw = row.get('Conid')
+                try:
+                    conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                except:
+                    conid = str(conid_raw)
+
+                # Generate a unique ID if none exists
+                ib_id = row.get('TradeID') or row.get('ExecID')
+                ext_id = str(ib_id) if ib_id else f"CONF-{date_val}-{ticker}-{qty}"
+
+                if not trade_exists(ext_id):
+                    add_trade(
+                        date=date_val, ticker=ticker, side=side, 
+                        quantity=qty, price=price, multiplier=multiplier,
+                        asset_category=asset_cat, 
+                        notes=f"IBKR CONFIRMATION {datetime.now().date()}",
+                        source="IBKR_CONFIRMATION", external_id=ext_id,
+                        description=row.get('Description', ''),
+                        conid=conid,
+                        listing_exchange=str(row.get('ListingExchange', '')),
+                        currency=str(row.get('CurrencyPrimary', '')),
+                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                    )
+                    count += 1
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR CONFIRMATION Parsing Error: {e}")
+            return 0
+
+    @staticmethod
+    def parse_trade_csv(file_path):
+        """Parses an IBKR Trade Confirmation CSV and saves results to DB."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            df = pd.read_csv(file_path)
+            df.columns = df.columns.str.strip()
+            
+            if 'Symbol' in df.columns:
+                df = df.dropna(subset=['Symbol'])
+            
+            # MANDATORY: Filter for EXECUTION level to avoid summary rows double counting
+            if 'LevelOfDetail' in df.columns:
+                df = df[df['LevelOfDetail'] == 'EXECUTION']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = row.get('Symbol')
+                side = str(row.get('Buy/Sell', '')).upper()
+                date_raw = str(row.get('TradeDate', '')).replace('-', '')
+                
+                if not ticker or side not in ['BUY', 'SELL']:
+                    continue
+
+                try:
+                    date_str = pd.to_datetime(date_raw).strftime("%Y-%m-%d")
+                    qty = abs(float(row.get('Quantity', 0)))
+                    price = float(row.get('TradePrice', 0))
+                    multiplier = float(row.get('Multiplier', 1.0))
+                    asset_cat = str(row.get('AssetClass', 'STK')).upper()
+
+                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                        qty = qty / 1000.0
+                        if multiplier == 1.0:
+                            multiplier = 10.0
+
+                    # Normalize Conid
+                    conid_raw = row.get('Conid')
+                    try:
+                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                    except:
+                        conid = str(conid_raw)
+
+                    ib_id = row.get('IBOrderID') or row.get('TradeID')
+                    ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
+
+                    if trade_exists(ext_id):
+                        continue
+
+                    add_trade(
+                        date=date_str, ticker=ticker, side=side, 
+                        quantity=qty, price=price, multiplier=multiplier,
+                        asset_category=asset_cat, 
+                        notes=f"IBKR TRADES Import {datetime.now().date()}",
+                        source="IBKR_TRADES_CSV", external_id=ext_id,
+                        description=row.get('Description', ''),
+                        conid=conid,
+                        listing_exchange=str(row.get('ListingExchange', '')),
+                        currency=str(row.get('CurrencyPrimary', '')),
+                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                    )
+                    count += 1
+                except:
+                    continue
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR TRADES CSV Parsing Error: {e}")
+            return 0
+
+    @staticmethod
+    def parse_transfers_csv(file_path):
+        """Parses an IBKR Transfers CSV and saves INTERCOMPANY moves to DB."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            df = pd.read_csv(file_path)
+            df.columns = df.columns.str.strip()
+            
+            # Filter for Intercompany as requested
+            if 'Type' in df.columns:
+                df = df[df['Type'] == 'INTERCOMPANY']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = row.get('Symbol')
+                direction = str(row.get('Direction', '')).upper() # IN / OUT
+                
+                if not ticker or direction not in ['IN', 'OUT']:
+                    continue
+
+                try:
+                    date_str = pd.to_datetime(row.get('Date')).strftime("%Y-%m-%d")
+                    qty = abs(float(row.get('Quantity', 0)))
+                    multiplier = float(row.get('Multiplier', 1.0))
+                    asset_cat = str(row.get('AssetClass', 'STK')).upper()
+
+                    # Calculate price from PositionAmount (Cost Basis)
+                    pos_amt = float(row.get('PositionAmount', 0))
+                    
+                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                        qty = qty / 1000.0
+                        if multiplier == 1.0:
+                            multiplier = 10.0
+                    
+                    price = (pos_amt / (qty * multiplier)) if (qty * multiplier) != 0 else 0
+
+                    side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
+                    ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
+
+                    if trade_exists(ext_id):
+                        continue
+
+                    # Normalize Conid
+                    conid_raw = row.get('Conid')
+                    try:
+                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                    except:
+                        conid = str(conid_raw)
+
+                    add_trade(
+                        date=date_str, ticker=ticker, side=side, 
+                        quantity=qty, price=price, 
+                        multiplier=multiplier,
+                        asset_category=asset_cat, 
+                        notes=f"IBKR TRANSFER Import ({row.get('Type')})",
+                        source="IBKR_TRANSFER_CSV", external_id=ext_id,
+                        description=row.get('Description', ''),
+                        conid=conid,
+                        listing_exchange=str(row.get('ListingExchange', '')),
+                        currency=str(row.get('CurrencyPrimary', '')),
+                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                    )
+                    count += 1
+                except:
+                    continue
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR TRANSFER CSV Parsing Error: {e}")
+            return 0
+
+    @staticmethod
+    def parse_corporate_actions_csv(file_path):
+        """Parses IBKR Corporate Actions (Splits, etc.) CSV."""
+        if not file_path or not Path(file_path).exists():
+            return 0
+
+        try:
+            # Handle multiple headers by ignoring rows that repeat the header
+            df = pd.read_csv(file_path, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            
+            # Remove rows where Symbol is the column name itself (redundant headers)
+            if 'Symbol' in df.columns:
+                df = df[df['Symbol'] != 'Symbol']
+            
+            count = 0
+            for _, row in df.iterrows():
+                ticker = row.get('Symbol')
+                if not ticker or str(ticker) == '-': continue
+                
+                # Check different possible column names for Type/Description
+                action_desc = str(row.get('ActionDescription', row.get('Type', ''))).upper()
+                
+                if 'SPLIT' not in action_desc:
+                    continue
+
+                try:
+                    # Check different possible column names for Date
+                    raw_date = row.get('Report Date', row.get('Date'))
+                    date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+                    qty = float(row.get('Quantity', 0))
+                    
+                    # Ensure qty is non-zero
+                    if qty == 0: continue
+
+                    # Normalize Conid
+                    conid_raw = row.get('Conid')
+                    try:
+                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+                    except:
+                        conid = str(conid_raw)
+
+                    # Splits change quantity but price in ledger is technically 0 
+                    # as it's an adjustment, not a new purchase.
+                    ext_id = str(row.get('TransactionID')) if row.get('TransactionID') else f"CORP-{date_str}-{ticker}-{qty}"
+
+                    if trade_exists(ext_id):
+                        continue
+
+                    add_trade(
+                        date=date_str, ticker=ticker, side='SPLIT', 
+                        quantity=qty, price=0.0, 
+                        notes=f"IBKR CORP ACTION: {action_desc[:100]}",
+                        source="IBKR_CORP_CSV", external_id=ext_id,
+                        description=ticker, # Fallback
+                        conid=conid,
+                        asset_category=row.get('AssetClass', 'STK')
+                    )
+                    count += 1
+                except Exception as e:
+                    continue
+            return count
+        except Exception as e:
+            print(f"ERROR: IBKR CORP ACTION CSV Parsing Error: {e}")
+            return 0
+
+    @staticmethod
+    def parse_nav_csv(file_path):
+        """
+        Parses an IBKR Equity Summary CSV and returns (total_nav, account_list, report_date).
+        Supports both Flex sections and flat CSVs with repeated headers.
+        """
+        if not file_path or not Path(file_path).exists():
+            return 0.0, [], "Unknown"
+
+        try:
+            # Load CSV - do not skip rows, handle repeated headers manually
+            df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            
+            # Clean repeated headers
+            if 'Total' in df.columns:
+                df = df[df['Total'].astype(str) != 'Total']
+            
+            # Find Equity Summary rows
+            # 1. Check SectionName column if it exists
+            section_col = next((c for c in df.columns if 'SectionName' in c), None)
+            
+            if section_col:
+                nav_rows = df[df[section_col].str.contains('EquitySummary', na=False, case=False)]
+            else:
+                # 2. If no SectionName, use rows that have both 'Total' and 'ReportDate'
+                nav_rows = df.dropna(subset=['Total', 'ReportDate'], how='any')
+            
+            if nav_rows.empty:
+                logger.warning(f"No NAV data found in {file_path}")
+                return 0.0, [], "Unknown"
+
+            # Ensure numeric
+            nav_rows = nav_rows.copy()
+            nav_rows['Total'] = pd.to_numeric(nav_rows['Total'], errors='coerce')
+            nav_rows = nav_rows.dropna(subset=['Total'])
+            
+            total_nav = nav_rows['Total'].sum()
+            
+            # Extract ReportDate (normalize to string)
+            report_date = "Unknown"
+            if 'ReportDate' in nav_rows.columns:
+                valid_dates = nav_rows['ReportDate'].dropna()
+                if not valid_dates.empty:
+                    report_date = str(valid_dates.iloc[0])
+            
+            accounts = []
+            # Map accounts using standard IBKR columns
+            acct_col = next((c for c in ['AccountId', 'Account Alias', 'ClientAccountID'] if c in nav_rows.columns), None)
+            
+            if acct_col:
+                for _, row in nav_rows.iterrows():
+                    accounts.append({
+                        'alias': row[acct_col],
+                        'nav': float(row.get('Total', 0))
+                    })
+            
+            logger.info(f"Parsed NAV: {total_nav:,.2f} for date {report_date} from {len(accounts)} accounts.")
+            return total_nav, accounts, report_date
+        except Exception as e:
+            logger.error(f"ERROR: IBKR NAV CSV Parsing Error: {e}")
+            return 0.0, [], "Unknown"

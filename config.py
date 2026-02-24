@@ -3,35 +3,52 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 1. Load Environment Variables
-load_dotenv()
+# 1. Define Configuration Vault (Bootstrap)
+# Priority: System Environment Variable > Local Fallback
+# This path is used to find the backup .env if the local one is missing.
+CONFIG_VAULT = Path(os.environ.get("CONFIG_VAULT", r"C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal"))
 
-# 2. Define Data Directory
-# We look for 'DATA_PATH' in the .env file. 
-# If not found, we default to a local "data" folder in the project directory.
-env_data_path = os.environ.get("DATA_PATH")
+# 2. Load Environment Variables (Single Source of Truth)
+# We look for .env in the repo root first, then the Vault.
+local_env = Path(".env")
+onedrive_env = CONFIG_VAULT / ".env"
 
-if env_data_path:
-    DATA_DIR = Path(env_data_path)
-else:
-    BASE_DIR = Path(__file__).resolve().parent
-    DATA_DIR = BASE_DIR / "data"
+if local_env.exists():
+    load_dotenv(local_env, override=True)
+elif onedrive_env.exists():
+    load_dotenv(onedrive_env, override=True)
 
-# Ensure the directory exists (create it if missing)
-try:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-except Exception as e:
-    print(f"⚠️ Warning: Could not create data directory at {DATA_DIR}: {e}")
+# 3. Define Storage Hub (Database/Logs/Market Data)
+# Priority: .env DATA_PATH > Local "data" folder
+DATA_DIR = Path(os.environ.get("DATA_PATH", "data"))
+
+# Sub-directories for organization
+BASE_DATA_DIR = DATA_DIR / "data_base"
+LBD_DIR = DATA_DIR / "last_business_day"
+
+# Ensure directories exist
+for d in [DATA_DIR, BASE_DATA_DIR, LBD_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
 
 # 3. Database Path
-DB_PATH = DATA_DIR / "simple_journal.db"
+DB_PATH = DATA_DIR / "trade_journal.db"
 
-# 4. IBKR Configuration
+# 4. IBKR Configuration (from .env)
 IBKR_TOKEN = os.environ.get("IBKR_TOKEN", "")
-IBKR_QUERY_ID_TRADES = os.environ.get("IBKR_QUERY_ID_TRADES", "0") # Renamed from YTD
+IBKR_QUERY_ID_TRADES = os.environ.get("IBKR_QUERY_ID_TRADES", "0")
 IBKR_QUERY_ID_NAV = os.environ.get("IBKR_QUERY_ID_NAV", "0")
+IBKR_QUERY_ID_OPEN_POSITIONS = os.environ.get("IBKR_QUERY_ID_OPEN_POSITIONS", "0")
+IBKR_QUERY_ID_CONFIRMATIONS = os.environ.get("IBKR_QUERY_ID_CONFIRMATIONS", "0")
 
-# 5. XML File Paths
-IBKR_TRADES_XML = DATA_DIR / "trades.xml" # Renamed from YTD
-IBKR_NAV_XML = DATA_DIR / "ibkr_nav.xml"
-IBKR_PRICING_XML = DATA_DIR / "ibkr_pricing.xml"
+# 5. File Paths
+TICKER_MAP_PATH = CONFIG_VAULT / "ticker_map.json"
+PRICES_DB_PATH = DATA_DIR / "prices.db"
+SNAPSHOTS_JSON = DATA_DIR / "snapshots.json"
+
+# Snapshots (Last Business Day)
+IBKR_NAV_CSV = LBD_DIR / "nav_lbd.csv"
+IBKR_OPEN_POSITIONS_CSV = LBD_DIR / "open_positions_lbd.csv"
+IBKR_CONFIRMATIONS_CSV = LBD_DIR / "confirmations_today.csv"
+
+# Historical Ledger Files (within data_base)
+IBKR_TRADES_CSV = BASE_DATA_DIR / "trades_ytd.csv"
