@@ -9,7 +9,7 @@
 - **Dashboard Stabilization (`dashboard.py`, `logger.py`, `core/portfolio_manager.py`)**: 
     - Implemented `disable_console_logging()` and `enable_console_logging()` to prevent UI-disrupting console output during background refreshes.
     - Added a **`[REFRESHING...]`** status indicator in the cockpit header.
-    - Updated the default refresh interval to **5 minutes (300s)**.
+    - Updated the default refresh interval to **1 minute (60s)** for debugging.
 - **ATR Discovery Enhancement (`core/risk_engine.py`)**: Added a **Buffer (%)** column to the ATR gauge, showing the percentage distance from the current price to the proposed stop loss.
 
 ## Logic & Decisions

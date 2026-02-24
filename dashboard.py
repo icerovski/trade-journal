@@ -31,49 +31,42 @@ class CockpitState:
         self.scroll_offset = 0
         self.visible_rows = 10 # Default
         self.last_key_time = 0
-        self.is_refreshing = True
+        self.is_refreshing = False
+        self.lock = threading.Lock()
 
     def update_data(self, df, total_nav, report_date, sort_by="Ticker"):
-        try:
-            print(f"DEBUG: update_data started. DF Rows: {len(df)}, NAV: {total_nav}, Date: {report_date}")
-            self.df = df
-            self.total_nav = total_nav
-            self.report_date = report_date
-            
-            if df.empty:
-                print("DEBUG: DF is empty, skipping sort.")
-                self.df_view = df
-                self.max_index = 0
-                return
-
-            print(f"DEBUG: Sorting by {sort_by}...")
-            # Column mapping check
-            valid_cols = df.columns.tolist()
-            print(f"DEBUG: Valid columns: {valid_cols}")
-
-            if sort_by == "MarketValue" and "MarketValue" in df.columns:
-                self.df_view = df.sort_values('MarketValue', ascending=False)
-            elif sort_by == "Pct" and "PL_Inc_Pct" in df.columns:
-                self.df_view = df.sort_values('PL_Inc_Pct', ascending=False)
-            elif sort_by == "PL" and "PL_Inc" in df.columns:
-                self.df_view = df.sort_values('PL_Inc', ascending=False)
-            elif sort_by == "Date" and "Date" in df.columns:
-                self.df_view = df.sort_values('Date', ascending=True)
-            else:
-                sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
-                if sort_cols:
-                    self.df_view = df.sort_values(sort_cols, ascending=True)
-                else:
+        with self.lock:
+            try:
+                self.df = df
+                self.total_nav = total_nav
+                self.report_date = report_date
+                
+                if df.empty:
                     self.df_view = df
+                    self.max_index = 0
+                    return
 
-            self.max_index = len(self.df_view) - 1
-            if self.selected_index > self.max_index:
-                self.selected_index = max(0, self.max_index)
-            
-            print(f"DEBUG: update_data complete. df_view rows: {len(self.df_view)}")
-        except Exception as e:
-            print(f"DEBUG: update_data Critical Error: {e}")
+                if sort_by == "MarketValue" and "MarketValue" in df.columns:
+                    self.df_view = df.sort_values('MarketValue', ascending=False)
+                elif sort_by == "Pct" and "PL_Inc_Pct" in df.columns:
+                    self.df_view = df.sort_values('PL_Inc_Pct', ascending=False)
+                elif sort_by == "PL" and "PL_Inc" in df.columns:
+                    self.df_view = df.sort_values('PL_Inc', ascending=False)
+                elif sort_by == "Date" and "Date" in df.columns:
+                    self.df_view = df.sort_values('Date', ascending=True)
+                else:
+                    sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
+                    if sort_cols:
+                        self.df_view = df.sort_values(sort_cols, ascending=True)
+                    else:
+                        self.df_view = df
 
+                self.max_index = len(self.df_view) - 1
+                if self.selected_index > self.max_index:
+                    self.selected_index = max(0, self.max_index)
+                
+            except Exception as e:
+                logger.error(f"update_data Critical Error: {e}")
     def handle_input(self):
         """Polls for keyboard input with throttling."""
         now = time.time()
@@ -118,28 +111,23 @@ def calculate_dashboard_data(portfolio_manager, asset_class_filter=None, use_led
         disable_console_logging()
     
     try:
-        print(f"DEBUG: calculate_dashboard_data started. Filter: {asset_class_filter}")
         nav_res = portfolio_manager.fetch_nav_data(force_download=False)
         
         if nav_res:
             real_nav, accounts, report_date = nav_res
-            print(f"DEBUG: NAV Parsed: {real_nav}")
         else:
-            print("DEBUG: NAV Parsed failed")
             real_nav, report_date = 0.0, "Unknown"
         
-        print("DEBUG: Fetching Dashboard DF...")
         df = portfolio_manager.get_dashboard_df(
             asset_class_filter=asset_class_filter, 
             total_nav=real_nav, 
             use_ledger=use_ledger,
             silent=silent
         )
-        print(f"DEBUG: Dashboard DF rows: {len(df)}")
         
         return df, real_nav, report_date
     except Exception as e:
-        print(f"DEBUG: calculate_dashboard_data Error: {e}")
+        logger.error(f"calculate_dashboard_data Error: {e}")
         return pd.DataFrame(), 0.0, "Error"
     finally:
         if silent:
@@ -285,7 +273,7 @@ def get_details_panel(state: CockpitState):
 
     return Panel(details, title=f"[bold]{row['Ticker']} Analysis[/bold]", border_style="magenta")
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=300, sort_by="Ticker", use_ledger=False):
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval: int | None = 60, sort_by="Ticker", use_ledger=False):
     """
     Interactive Cockpit Loop with background refreshes.
     """
@@ -349,17 +337,18 @@ def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_inter
                     logger.debug(f"Input handling error: {e}")
 
                 # Update components
-                ccy = "EUR"
-                if not state.df_view.empty:
-                    try:
-                        # Extract CCY from first row if available
-                        ccy = state.df_view.iloc[0]['CCY'] if 'CCY' in state.df_view.columns else "EUR"
-                    except: pass
-                
-                layout["header"].update(get_header_panel(state, ccy))
-                layout["body"].update(get_holdings_panel(state))
-                layout["sidebar"].update(get_details_panel(state))
-                layout["footer"].update(get_footer_panel())
+                with state.lock:
+                    ccy = "EUR"
+                    if not state.df_view.empty:
+                        try:
+                            # Extract CCY from first row if available
+                            ccy = state.df_view.iloc[0]['CCY'] if 'CCY' in state.df_view.columns else "EUR"
+                        except: pass
+                    
+                    layout["header"].update(get_header_panel(state, ccy))
+                    layout["body"].update(get_holdings_panel(state))
+                    layout["sidebar"].update(get_details_panel(state))
+                    layout["footer"].update(get_footer_panel())
                 
                 time.sleep(0.05)
     except KeyboardInterrupt:
