@@ -34,20 +34,19 @@ def init_db():
         )
     """)
 
-    # 2. Risk Profiles Table (Historical tracking)
+# 3. Ticker Info Table (Asset Master)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS risk_profiles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conid TEXT NOT NULL,
-            ticker TEXT NOT NULL,
-            atr_value REAL NOT NULL,
-            stop_type TEXT NOT NULL,  -- 'FIXED' or 'TRAILING'
-            highest_sl REAL DEFAULT 0.0,
-            status TEXT DEFAULT 'ACTIVE', -- 'ACTIVE' or 'CLOSED'
-            start_date TEXT,
-            end_date TEXT
+        CREATE TABLE IF NOT EXISTS ticker_info (
+            conid TEXT PRIMARY KEY,
+            ticker_ibkr TEXT NOT NULL,
+            ticker_yfinance TEXT NOT NULL,
+            isin TEXT,
+            asset_class TEXT,
+            multiplier REAL DEFAULT 1.0,
+            last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_ibkr ON ticker_info(ticker_ibkr)")
     
     # Migrations...
     cursor.execute("PRAGMA table_info(trades)")
@@ -59,7 +58,8 @@ def init_db():
         ('listing_exchange', 'TEXT'),
         ('currency', 'TEXT'),
         ('underlying_symbol', 'TEXT'),
-        ('multiplier', 'REAL')
+        ('multiplier', 'REAL'),
+        ('isin', 'TEXT')
     ]
     
     for col_name, col_type in migrations:
@@ -215,12 +215,55 @@ def delete_manual_duplicates(ticker, date, quantity, side):
     return count
 
 def get_conid_for_ticker(ticker):
-    """Attempts to find a known Conid for a ticker from trade history."""
+    """Attempts to find a known Conid for a ticker from asset master or trade history."""
     conn = get_conn()
-    cursor = conn.execute("SELECT conid FROM trades WHERE ticker = ? AND conid IS NOT NULL LIMIT 1", (ticker.upper(),))
+    ticker = ticker.upper()
+    
+    # 1. Try Asset Master first
+    cursor = conn.execute("SELECT conid FROM ticker_info WHERE ticker_ibkr = ? LIMIT 1", (ticker,))
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return row['conid']
+        
+    # 2. Fallback to trade history
+    cursor = conn.execute("SELECT conid FROM trades WHERE ticker = ? AND conid IS NOT NULL LIMIT 1", (ticker,))
     row = cursor.fetchone()
     conn.close()
     return row['conid'] if row else None
+
+def get_ticker_info(conid):
+    """Returns all info for a specific conid."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT * FROM ticker_info WHERE conid = ?", (str(conid),))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def save_ticker_info(conid, ticker_ibkr, ticker_yfinance, isin=None, asset_class=None, multiplier=1.0):
+    """Upserts ticker mapping and metadata."""
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO ticker_info (conid, ticker_ibkr, ticker_yfinance, isin, asset_class, multiplier, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(conid) DO UPDATE SET
+            ticker_ibkr = excluded.ticker_ibkr,
+            ticker_yfinance = excluded.ticker_yfinance,
+            isin = COALESCE(excluded.isin, ticker_info.isin),
+            asset_class = COALESCE(excluded.asset_class, ticker_info.asset_class),
+            multiplier = excluded.multiplier,
+            last_updated = CURRENT_TIMESTAMP
+    """, (str(conid), ticker_ibkr.upper(), ticker_yfinance, isin, asset_class, float(multiplier)))
+    conn.commit()
+    conn.close()
+
+def get_yf_ticker(ticker_ibkr):
+    """Helper to find YF ticker directly from IBKR ticker if conid is unknown."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT ticker_yfinance FROM ticker_info WHERE ticker_ibkr = ? LIMIT 1", (ticker_ibkr.upper(),))
+    row = cursor.fetchone()
+    conn.close()
+    return row['ticker_yfinance'] if row else None
 
 def delete_trade(trade_id):
     """Deletes a trade by its database ID."""
