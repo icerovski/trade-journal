@@ -273,7 +273,7 @@ def get_details_panel(state: CockpitState):
 
     return Panel(details, title=f"[bold]{row['Ticker']} Analysis[/bold]", border_style="magenta")
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval: int | None = 300, sort_by="Ticker", use_ledger=False):
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval: int | None = 60, sort_by="Ticker", use_ledger=False):
     """
     Interactive Cockpit Loop with background refreshes.
     """

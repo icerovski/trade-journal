@@ -382,15 +382,15 @@ def handle_view_dashboard():
     fast_path = input("Use these layout defaults? [Y/n]: ").strip().lower()
     
     if fast_path in ['', 'y', 'yes']:
-        # Default now includes refresh_interval=300 (Live)
-        f, s, l, r = 'STK', 'Ticker', False, 300
+        # Default now includes refresh_interval=60 (Live)
+        f, s, l, r = 'STK', 'Ticker', False, 60
     else:
         f = ask_asset_class()
         s = ask_sort_by()
         l = (input("\nMethod: 1. Hybrid [default] | 2. Ledger: ").strip() == '2')
-        # If user chooses 1 (Live), interval is 300. If they choose 2 (Static), interval is None.
-        r_choice = input("View: 1. Live (5min) [default] | 2. Static: ").strip()
-        r = 300 if r_choice != '2' else None
+        # If user chooses 1 (Live), interval is 60. If they choose 2 (Static), interval is None.
+        r_choice = input("View: 1. Live (1min) [default] | 2. Static: ").strip()
+        r = 60 if r_choice != '2' else None
         
     run_live_dashboard(PortfolioManager(), asset_class_filter=f, sort_by=s, use_ledger=l, refresh_interval=r)
 
