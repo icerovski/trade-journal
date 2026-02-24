@@ -155,6 +155,5 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   Truth" will never drift. 
 
   ## Outstanding points
-  1. Make sure gemini_global.md is being backed up at close and copied at open
   2. Confluence zones discovery - ATRs can also come close to EMAs, Bollinger Bands, Fibonacci, etc.
   3. Analyze volumes to discover bear and bull markets. Bull market volumes rise with the price, bear markets volums move oposite direction. Only with other markers though.
