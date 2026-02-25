@@ -78,7 +78,7 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
     try:
         # 1. Resolve Ticker
         manager = PortfolioManager()
-        yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol)
+        yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol, conid=conid)
         price_service = PriceService()
         
         # 2. Fetch/Prepare Data

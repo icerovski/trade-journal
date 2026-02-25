@@ -18,6 +18,7 @@ class Trade:
     listing_exchange: str = ""
     currency: str = "USD"
     underlying_symbol: str = ""
+    isin: str = ""
     source: str = "MANUAL"
     external_id: Optional[str] = None
     notes: str = ""

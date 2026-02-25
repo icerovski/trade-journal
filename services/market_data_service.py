@@ -49,8 +49,15 @@ class MarketDataService:
         # 1. Map IBKR tickers to Yahoo Tickers
         yf_to_pos = {} 
         for p in positions:
-            yf_ticker = mapper.resolve_yf_ticker(p.ticker, isin=p.isin, asset=p.asset_class, 
-                                               exchange=p.listing_exchange, ccy=p.ccy, underlying=p.underlying_symbol)
+            yf_ticker = mapper.resolve_yf_ticker(
+                p.ticker, 
+                isin=p.isin, 
+                asset=p.asset_class, 
+                exchange=p.listing_exchange, 
+                ccy=p.ccy, 
+                underlying=p.underlying_symbol,
+                conid=p.conid
+            )
             if yf_ticker not in yf_to_pos:
                 yf_to_pos[yf_ticker] = []
             yf_to_pos[yf_ticker].append(p)

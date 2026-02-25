@@ -72,11 +72,19 @@ class TickerMapper:
         # 1. Check DB via Conid (Primary Source of Truth)
         if conid:
             info = db.get_ticker_info(conid)
-            if info: return info['ticker_yfinance']
+            if info: 
+                # If we have both ticker and ISIN, we are done
+                if info['ticker_yfinance'] and info['isin'] and not pd.isna(info['isin']):
+                    return info['ticker_yfinance']
+                # Otherwise, continue to see if we can enrich it
+                if not isin: isin = info['isin']
+                if not asset: asset = info['asset_class']
             
         # 2. Check DB via IBKR Ticker (Secondary fallback)
         yf_direct = db.get_yf_ticker(ticker_upper)
-        if yf_direct: return yf_direct
+        if yf_direct and not conid: 
+            # If we don't have conid, we can't easily check for ISIN enrichment here
+            return yf_direct
 
         # 3. Gather details for search and heuristics
         details = {
@@ -87,7 +95,17 @@ class TickerMapper:
             'underlying': underlying
         }
 
-        # If any detail is missing, try to fill from cached positions CSV
+        # If any detail is missing, try to fill from Trades table (New Priority)
+        if conid and not all(details.values()):
+            trade_info = db.get_asset_details_from_trades(conid)
+            if trade_info:
+                details['isin'] = details['isin'] or trade_info['isin']
+                details['asset'] = details['asset'] or trade_info['asset_category']
+                details['exchange'] = details['exchange'] or trade_info['listing_exchange']
+                details['ccy'] = details['ccy'] or trade_info['currency']
+                details['underlying'] = details['underlying'] or trade_info['underlying_symbol']
+
+        # If still missing, try to fill from cached positions CSV
         if not all(details.values()):
             df_open = cls._get_positions_df()
             if not df_open.empty and 'Symbol_Upper' in df_open.columns:
@@ -101,14 +119,23 @@ class TickerMapper:
                     details['underlying'] = details['underlying'] or row.get('UnderlyingSymbol', '')
                     if not conid: conid = row.get('Conid')
 
+        # Clean up details (remove 'nan' strings)
+        for k, v in details.items():
+            if str(v).lower() in ['nan', 'none', '']:
+                details[k] = None
+
         # 4. Online Search (via ISIN)
         yf_ticker = None
-        if details['isin'] and not pd.isna(details['isin']):
+        if details['isin']:
             yf_ticker = cls.search_online_ticker(details['isin'])
 
         # 5. Heuristics Fallback
         if not yf_ticker:
-            yf_ticker = cls._apply_heuristics(ticker_ibkr, details)
+            # If we already have a yf_ticker from DB but were just looking for ISIN, use it
+            if conid and info:
+                yf_ticker = info['ticker_yfinance']
+            else:
+                yf_ticker = cls._apply_heuristics(ticker_ibkr, details)
         
         # 6. Save result to Asset Master (DB) for future persistence
         if yf_ticker and conid:

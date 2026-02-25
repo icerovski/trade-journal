@@ -106,30 +106,40 @@ def process_confirmations():
     return 0
 
 def process_local_csvs():
-    """Incorporate all found CSVs from BASE_DATA_DIR into DB."""
-    from config import BASE_DATA_DIR
+    """Incorporate all found CSVs from BASE_DATA_DIR and LBD_DIR into DB."""
+    from config import BASE_DATA_DIR, LBD_DIR
     
-    if not BASE_DATA_DIR.exists():
-        logger.warning(f"Base data directory {BASE_DATA_DIR} does not exist.")
+    # 1. Gather all potential sources
+    search_paths = []
+    if BASE_DATA_DIR.exists(): search_paths.append(BASE_DATA_DIR)
+    if LBD_DIR.exists(): search_paths.append(LBD_DIR)
+
+    if not search_paths:
+        logger.warning("No data directories found to scan.")
         return
 
-    # 1. TRADES
-    for f in list(BASE_DATA_DIR.glob("trades_*.csv")) + list(BASE_DATA_DIR.glob("*_FY.csv")) + list(BASE_DATA_DIR.glob("*_YTD.csv")):
-        # Avoid re-processing if it matches patterns twice
-        logger.info(f"Parsing Trades: {f.name}")
-        IBKRParser.parse_trade_csv(f)
-    
-    # 2. TRANSFERS
-    for f in BASE_DATA_DIR.glob("transfers_*.csv"):
-        logger.info(f"Parsing Transfers: {f.name}")
-        IBKRParser.parse_transfers_csv(f)
+    # 2. Process Files
+    for path in search_paths:
+        # A. TRADES
+        trade_patterns = ["trades_*.csv", "*_FY.csv", "*_YTD.csv", "trades_ytd.csv"]
+        for pattern in trade_patterns:
+            for f in path.glob(pattern):
+                logger.info(f"Parsing Trades: {f.name} from {path.name}")
+                IBKRParser.parse_trade_csv(f)
+        
+        # B. TRANSFERS
+        for f in path.glob("transfers_*.csv"):
+            logger.info(f"Parsing Transfers: {f.name} from {path.name}")
+            IBKRParser.parse_transfers_csv(f)
 
-    # 3. CORPORATE ACTIONS / SPLITS
-    for f in list(BASE_DATA_DIR.glob("corp_actions_*.csv")) + list(BASE_DATA_DIR.glob("stock_splits_*.csv")):
-        logger.info(f"Parsing Corp Actions: {f.name}")
-        IBKRParser.parse_corporate_actions_csv(f)
+        # C. CORPORATE ACTIONS / SPLITS
+        split_patterns = ["corp_actions_*.csv", "stock_splits_*.csv", "corp_actions_ytd.csv"]
+        for pattern in split_patterns:
+            for f in path.glob(pattern):
+                logger.info(f"Parsing Corp Actions: {f.name} from {path.name}")
+                IBKRParser.parse_corporate_actions_csv(f)
     
-    logger.info("Database up to date with historical CSVs.")
+    logger.info("Database up to date with all local CSVs.")
 
 def process_ytd_only():
     """Incorporate ONLY YTD CSVs from BASE_DATA_DIR into DB for quick updates."""

@@ -117,7 +117,7 @@ def handle_sync_prices(silent=False):
         task = progress.add_task("[cyan]Syncing prices...", total=len(open_positions))
         for pos in open_positions:
             try:
-                yf_ticker = manager.mapper.resolve_yf_ticker(pos.ticker)
+                yf_ticker = manager.mapper.resolve_yf_ticker(pos.ticker, conid=pos.conid)
                 ps.fetch_and_store(pos.conid, yf_ticker)
                 progress.update(task, advance=1, description=f"[cyan]Synced {pos.ticker}")
             except Exception:

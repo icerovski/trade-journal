@@ -11,76 +11,54 @@ def init_db():
     conn = get_conn()
     cursor = conn.cursor()
     
-    # 1. Trades Table
+    # 1. Trades Table (Activity Only)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
+            conid TEXT NOT NULL,
             ticker TEXT NOT NULL,
-            description TEXT,
             side TEXT NOT NULL,
             quantity REAL NOT NULL,
             price REAL NOT NULL,
-            multiplier REAL DEFAULT 1.0,
-            asset_category TEXT DEFAULT 'STK',
-            expiry TEXT,
             notes TEXT,
             source TEXT DEFAULT 'MANUAL',
-            external_id TEXT UNIQUE,
-            conid TEXT,
-            listing_exchange TEXT,
-            currency TEXT,
-            underlying_symbol TEXT
+            external_id TEXT UNIQUE
         )
     """)
 
-# 3. Ticker Info Table (Asset Master)
+    # 2. Risk Profiles Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS risk_profiles (
+            conid TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            atr_value REAL NOT NULL,
+            stop_type TEXT NOT NULL,
+            highest_sl REAL DEFAULT 0.0,
+            status TEXT DEFAULT 'ACTIVE',
+            start_date TEXT,
+            end_date TEXT
+        )
+    """)
+
+    # 3. Ticker Info Table (Asset Master - Single Source of Truth for Metadata)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ticker_info (
             conid TEXT PRIMARY KEY,
             ticker_ibkr TEXT NOT NULL,
-            ticker_yfinance TEXT NOT NULL,
+            ticker_yfinance TEXT,
             isin TEXT,
             asset_class TEXT,
             multiplier REAL DEFAULT 1.0,
+            description TEXT,
+            listing_exchange TEXT,
+            currency TEXT,
+            underlying_symbol TEXT,
             last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_ibkr ON ticker_info(ticker_ibkr)")
     
-    # Migrations...
-    cursor.execute("PRAGMA table_info(trades)")
-    columns = [info[1] for info in cursor.fetchall()]
-    
-    migrations = [
-        ('description', 'TEXT'),
-        ('conid', 'TEXT'),
-        ('listing_exchange', 'TEXT'),
-        ('currency', 'TEXT'),
-        ('underlying_symbol', 'TEXT'),
-        ('multiplier', 'REAL'),
-        ('isin', 'TEXT')
-    ]
-    
-    for col_name, col_type in migrations:
-        if col_name not in columns:
-            cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
-
-    # Legacy Migration: If old position_risk exists, move data to risk_profiles
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='position_risk'")
-    if cursor.fetchone():
-        cursor.execute("SELECT ticker, atr_value, stop_type, highest_sl FROM position_risk")
-        old_risks = cursor.fetchall()
-        for r in old_risks:
-            # We don't have conid for old risks easily here, so we'll use ticker as a placeholder
-            # or try to find it from trades. For simplicity in migration, use ticker.
-            cursor.execute("""
-                INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, highest_sl, status)
-                SELECT conid, ticker, ?, ?, ?, 'ACTIVE' FROM trades WHERE ticker = ? LIMIT 1
-            """, (r['atr_value'], r['stop_type'], r['highest_sl'], r['ticker']))
-        
-        cursor.execute("DROP TABLE position_risk")
-
     conn.commit()
     conn.close()
 
@@ -160,20 +138,16 @@ def trade_exists(external_id):
     conn.close()
     return exists
 
-def add_trade(date, ticker, side, quantity, price, asset_category="STK", 
-              multiplier=1.0, expiry=None, notes="", source="MANUAL", 
-              external_id=None, description=None, conid=None, 
-              listing_exchange=None, currency=None, underlying_symbol=None):
+def add_trade(date, ticker, side, quantity, price, conid, notes="", source="MANUAL", external_id=None):
+    """Inserts a trade execution or manual entry (Activity Only)."""
     conn = get_conn()
     try:
         conn.execute(
             """INSERT INTO trades 
-               (date, ticker, side, quantity, price, multiplier, asset_category, expiry, notes, 
-                source, external_id, description, conid, listing_exchange, currency, underlying_symbol) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (date, ticker, side, quantity, price, conid, notes, source, external_id) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, ticker.upper(), side.upper(), float(quantity), float(price), 
-             float(multiplier), asset_category, expiry, notes, source, external_id, description,
-             conid, listing_exchange, currency, underlying_symbol)
+             str(conid), notes, source, external_id)
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -240,20 +214,40 @@ def get_ticker_info(conid):
     conn.close()
     return row
 
-def save_ticker_info(conid, ticker_ibkr, ticker_yfinance, isin=None, asset_class=None, multiplier=1.0):
-    """Upserts ticker mapping and metadata."""
+def get_asset_details_from_trades(conid):
+    """
+    DEPRECATED: Metadata should now be retrieved from ticker_info.
+    This remains as a placeholder for migration if needed.
+    """
+    return get_ticker_info(conid)
+
+def save_ticker_info(conid, ticker_ibkr, ticker_yfinance=None, isin=None, asset_class=None, 
+                     multiplier=None, description=None, listing_exchange=None, 
+                     currency=None, underlying_symbol=None):
+    """Upserts asset metadata into the Asset Master (ticker_info)."""
     conn = get_conn()
+    # Ensure multiplier is float
+    m_val = float(multiplier) if multiplier is not None and str(multiplier).strip() != '' else 1.0
+    
+    # Use NULLIF to treat empty strings as NULL for COALESCE logic
     conn.execute("""
-        INSERT INTO ticker_info (conid, ticker_ibkr, ticker_yfinance, isin, asset_class, multiplier, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO ticker_info (conid, ticker_ibkr, ticker_yfinance, isin, asset_class, 
+                                multiplier, description, listing_exchange, currency, 
+                                underlying_symbol, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(conid) DO UPDATE SET
             ticker_ibkr = excluded.ticker_ibkr,
-            ticker_yfinance = excluded.ticker_yfinance,
-            isin = COALESCE(excluded.isin, ticker_info.isin),
-            asset_class = COALESCE(excluded.asset_class, ticker_info.asset_class),
-            multiplier = excluded.multiplier,
+            ticker_yfinance = COALESCE(NULLIF(excluded.ticker_yfinance, ''), ticker_info.ticker_yfinance),
+            isin = COALESCE(NULLIF(excluded.isin, ''), ticker_info.isin),
+            asset_class = COALESCE(NULLIF(excluded.asset_class, ''), ticker_info.asset_class),
+            multiplier = COALESCE(excluded.multiplier, ticker_info.multiplier),
+            description = COALESCE(NULLIF(excluded.description, ''), ticker_info.description),
+            listing_exchange = COALESCE(NULLIF(excluded.listing_exchange, ''), ticker_info.listing_exchange),
+            currency = COALESCE(NULLIF(excluded.currency, ''), ticker_info.currency),
+            underlying_symbol = COALESCE(NULLIF(excluded.underlying_symbol, ''), ticker_info.underlying_symbol),
             last_updated = CURRENT_TIMESTAMP
-    """, (str(conid), ticker_ibkr.upper(), ticker_yfinance, isin, asset_class, float(multiplier)))
+    """, (str(conid), ticker_ibkr.upper(), ticker_yfinance, isin, asset_class, 
+          m_val, description, listing_exchange, currency, underlying_symbol))
     conn.commit()
     conn.close()
 

@@ -3,7 +3,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
-from db import add_trade, trade_exists, delete_manual_duplicates
+import db
 from logger import logger
 
 class IBKRParser:
@@ -40,45 +40,44 @@ class IBKRParser:
                 if not ticker or side not in ['BUY', 'SELL'] or qty == 0:
                     continue
 
-                # 1. Fingerprint De-duplication: Delete manual entries that match this trade
-                deleted_count = delete_manual_duplicates(ticker, date_val, qty, side)
-                if deleted_count > 0:
-                    from logger import logger
-                    logger.info(f"Reconciled {deleted_count} manual entries for {ticker}")
-
-                # 2. Ingest Official Trade
-                price = float(row.get('Price', 0))
-                multiplier = float(row.get('Multiplier', 1.0))
-                asset_cat = str(row.get('AssetClass', 'STK')).upper()
-
-                # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
-                if asset_cat in ['BOND', 'BILL', 'FIXED']:
-                    qty = qty / 1000.0
-                    if multiplier == 1.0:
-                        multiplier = 10.0
-
+                # Normalize Conid
                 conid_raw = row.get('Conid')
                 try:
                     conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
                 except:
                     conid = str(conid_raw)
 
-                # Generate a unique ID if none exists
+                if not conid or conid == 'nan':
+                    conid = ticker # Fallback
+
+                # 1. Fingerprint De-duplication: Delete manual entries that match this trade
+                deleted_count = db.delete_manual_duplicates(ticker, date_val, qty, side)
+                if deleted_count > 0:
+                    logger.info(f"Reconciled {deleted_count} manual entries for {ticker}")
+
+                # 2. Update Asset Master (Metadata)
+                db.save_ticker_info(
+                    conid=conid,
+                    ticker_ibkr=ticker,
+                    isin=str(row.get('ISIN', '')),
+                    asset_class=asset_cat,
+                    multiplier=multiplier,
+                    description=row.get('Description', ''),
+                    listing_exchange=str(row.get('ListingExchange', '')),
+                    currency=str(row.get('CurrencyPrimary', '')),
+                    underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                )
+
+                # 3. Ingest Official Trade (Activity Only)
                 ib_id = row.get('TradeID') or row.get('ExecID')
                 ext_id = str(ib_id) if ib_id else f"CONF-{date_val}-{ticker}-{qty}"
 
-                if not trade_exists(ext_id):
-                    add_trade(
+                if not db.trade_exists(ext_id):
+                    db.add_trade(
                         date=date_val, ticker=ticker, side=side, 
-                        quantity=qty, price=price, multiplier=multiplier,
-                        asset_category=asset_cat, 
+                        quantity=qty, price=price, conid=conid,
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
-                        source="IBKR_CONFIRMATION", external_id=ext_id,
-                        description=row.get('Description', ''),
-                        conid=conid,
-                        listing_exchange=str(row.get('ListingExchange', '')),
-                        currency=str(row.get('CurrencyPrimary', '')),
-                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+                        source="IBKR_CONFIRMATION", external_id=ext_id
                     )
                     count += 1
             return count
@@ -119,12 +118,6 @@ class IBKRParser:
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
 
-                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
-                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
-                        qty = qty / 1000.0
-                        if multiplier == 1.0:
-                            multiplier = 10.0
-
                     # Normalize Conid
                     conid_raw = row.get('Conid')
                     try:
@@ -132,26 +125,37 @@ class IBKRParser:
                     except:
                         conid = str(conid_raw)
 
-                    ib_id = row.get('IBOrderID') or row.get('TradeID')
-                    ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
+                    if not conid or conid == 'nan':
+                        conid = ticker # Fallback to ticker if Conid is missing
 
-                    if trade_exists(ext_id):
-                        continue
-
-                    add_trade(
-                        date=date_str, ticker=ticker, side=side, 
-                        quantity=qty, price=price, multiplier=multiplier,
-                        asset_category=asset_cat, 
-                        notes=f"IBKR TRADES Import {datetime.now().date()}",
-                        source="IBKR_TRADES_CSV", external_id=ext_id,
-                        description=row.get('Description', ''),
+                    # 2. Update Asset Master (Metadata)
+                    db.save_ticker_info(
                         conid=conid,
+                        ticker_ibkr=ticker,
+                        isin=str(row.get('ISIN', '')),
+                        asset_class=asset_cat,
+                        multiplier=multiplier,
+                        description=row.get('Description', ''),
                         listing_exchange=str(row.get('ListingExchange', '')),
                         currency=str(row.get('CurrencyPrimary', '')),
                         underlying_symbol=str(row.get('UnderlyingSymbol', ''))
                     )
+
+                    # 3. Ingest Trade (Activity Only)
+                    ib_id = row.get('IBOrderID') or row.get('TradeID')
+                    ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
+
+                    if db.trade_exists(ext_id):
+                        continue
+
+                    db.add_trade(
+                        date=date_str, ticker=ticker, side=side, 
+                        quantity=qty, price=price, conid=conid,
+                        notes=f"IBKR TRADES Import {datetime.now().date()}",
+                        source="IBKR_TRADES_CSV", external_id=ext_id
+                    )
                     count += 1
-                except:
+                except Exception:
                     continue
             return count
         except Exception as e:
@@ -195,14 +199,6 @@ class IBKRParser:
                         if multiplier == 1.0:
                             multiplier = 10.0
                     
-                    price = (pos_amt / (qty * multiplier)) if (qty * multiplier) != 0 else 0
-
-                    side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
-                    ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
-
-                    if trade_exists(ext_id):
-                        continue
-
                     # Normalize Conid
                     conid_raw = row.get('Conid')
                     try:
@@ -210,21 +206,35 @@ class IBKRParser:
                     except:
                         conid = str(conid_raw)
 
-                    add_trade(
-                        date=date_str, ticker=ticker, side=side, 
-                        quantity=qty, price=price, 
-                        multiplier=multiplier,
-                        asset_category=asset_cat, 
-                        notes=f"IBKR TRANSFER Import ({row.get('Type')})",
-                        source="IBKR_TRANSFER_CSV", external_id=ext_id,
-                        description=row.get('Description', ''),
+                    if not conid or conid == 'nan':
+                        conid = ticker # Fallback
+
+                    # 2. Update Asset Master (Metadata)
+                    db.save_ticker_info(
                         conid=conid,
+                        ticker_ibkr=ticker,
+                        isin=str(row.get('ISIN', '')),
+                        asset_class=asset_cat,
+                        multiplier=multiplier,
+                        description=row.get('Description', ''),
                         listing_exchange=str(row.get('ListingExchange', '')),
                         currency=str(row.get('CurrencyPrimary', '')),
                         underlying_symbol=str(row.get('UnderlyingSymbol', ''))
                     )
-                    count += 1
-                except:
+
+                    # 3. Ingest Transfer (Activity Only)
+                    side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
+                    ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
+
+                    if not db.trade_exists(ext_id):
+                        db.add_trade(
+                            date=date_str, ticker=ticker, side=side, 
+                            quantity=qty, price=price, conid=conid,
+                            notes=f"IBKR TRANSFER Import ({row.get('Type')})",
+                            source="IBKR_TRANSFER_CSV", external_id=ext_id
+                        )
+                        count += 1
+                except Exception:
                     continue
             return count
         except Exception as e:
@@ -273,23 +283,26 @@ class IBKRParser:
                     except:
                         conid = str(conid_raw)
 
-                    # Splits change quantity but price in ledger is technically 0 
-                    # as it's an adjustment, not a new purchase.
+                    # 2. Update Asset Master (Metadata)
+                    db.save_ticker_info(
+                        conid=conid,
+                        ticker_ibkr=ticker,
+                        isin=str(row.get('ISIN', '')),
+                        asset_class=str(row.get('AssetClass', 'STK')).upper(),
+                        description=ticker # Fallback
+                    )
+
+                    # 3. Ingest Split (Activity Only)
                     ext_id = str(row.get('TransactionID')) if row.get('TransactionID') else f"CORP-{date_str}-{ticker}-{qty}"
 
-                    if trade_exists(ext_id):
-                        continue
-
-                    add_trade(
-                        date=date_str, ticker=ticker, side='SPLIT', 
-                        quantity=qty, price=0.0, 
-                        notes=f"IBKR CORP ACTION: {action_desc[:100]}",
-                        source="IBKR_CORP_CSV", external_id=ext_id,
-                        description=ticker, # Fallback
-                        conid=conid,
-                        asset_category=row.get('AssetClass', 'STK')
-                    )
-                    count += 1
+                    if not db.trade_exists(ext_id):
+                        db.add_trade(
+                            date=date_str, ticker=ticker, side='SPLIT', 
+                            quantity=qty, price=0.0, conid=conid,
+                            notes=f"IBKR CORP ACTION: {action_desc[:100]}",
+                            source="IBKR_CORP_CSV", external_id=ext_id
+                        )
+                        count += 1
                 except Exception as e:
                     continue
             return count

@@ -155,10 +155,12 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   Truth" will never drift. 
 
   ## Outstanding points
-  2. Confluence zones discovery - ATRs can also come close to EMAs, Bollinger Bands, Fibonacci, etc.
+  1. Create a Watch List. Put stocks there that you think are undervalued or battered. Then start monitoring for a good entry point. This is where the Confluence Zone Discovery Method should come in.
+  2. Confluence Zone Discovery:
+     1. Discover your ATR and this is where you should start searching for an entry price
+     2. Look for confluence of that price with EMAs, Bollinger Bands, Fibonacci, etc.
   3. Analyze volumes to discover bear and bull markets. Bull market volumes rise with the price, bear markets volums move oposite direction. Only with other markers though.
-  4. Refreshing doesn't work still.
-  5. ticker_info table in the db: bond multipliers should be x0.001; ISIN info should be taken from the trade tables, where you also take stock exchange, etc.
+  4. ticker_info table in the db: bond multipliers should be x0.001; ISIN info should be taken from the trade tables, where you also take stock exchange, etc.
 
 
 ✦ When you arrive at the office, you should run these three commands to ensure your office machine is
@@ -169,7 +171,6 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
 
    2. Pull the latest updates:
       git pull origin main
-
 
    3. Verify the sync:
       git log -n 1

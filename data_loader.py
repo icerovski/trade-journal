@@ -23,26 +23,39 @@ class DataLoader:
     @staticmethod
     def load_trades_from_db() -> pd.DataFrame:
         """
-        Loads all trades from the SQLite database as a cleaned DataFrame.
+        Loads all trades joined with ticker_info metadata.
         """
         conn = DataLoader.get_connection()
-        df = pd.read_sql_query("SELECT * FROM trades", conn)
+        query = """
+            SELECT 
+                t.date as TradeDate,
+                t.ticker as Symbol,
+                t.side as 'Buy/Sell',
+                t.quantity as Quantity,
+                t.price as Price,
+                t.conid as Conid,
+                t.source,
+                t.external_id,
+                t.notes,
+                i.multiplier as Multiplier,
+                i.asset_class as AssetClass,
+                i.description as Description,
+                i.listing_exchange as ListingExchange,
+                i.currency as CurrencyPrimary,
+                i.underlying_symbol as UnderlyingSymbol,
+                i.isin as ISIN
+            FROM trades t
+            LEFT JOIN ticker_info i ON t.conid = i.conid
+        """
+        df = pd.read_sql_query(query, conn)
         conn.close()
-        
-        rename_map = {
-            'date': 'TradeDate', 'ticker': 'Symbol', 'side': 'Buy/Sell',
-            'quantity': 'Quantity', 'price': 'Price', 'multiplier': 'Multiplier',
-            'asset_category': 'AssetClass', 'description': 'Description', 
-            'conid': 'Conid', 'listing_exchange': 'ListingExchange',
-            'currency': 'CurrencyPrimary', 'underlying_symbol': 'UnderlyingSymbol'
-        }
-        df = df.rename(columns=rename_map)
         return DataLoader.clean_trade_data(df)
 
     @classmethod
     def get_trades_as_models(cls) -> List[Trade]:
         """
         Loads trades from DB and returns them as a list of Trade dataclass objects.
+        Metadata is joined from ticker_info.
         """
         df = cls.load_trades_from_db()
         trades = []
@@ -54,12 +67,14 @@ class DataLoader:
                 quantity=row['Quantity'],
                 price=row['Price'],
                 conid=str(row['Conid']),
+                # These metadata fields now come from ticker_info via JOIN
                 multiplier=row.get('Multiplier', 1.0),
                 description=row.get('Description', ''),
                 asset_category=row.get('AssetClass', 'STK'),
                 listing_exchange=row.get('ListingExchange', ''),
                 currency=row.get('CurrencyPrimary', 'USD'),
                 underlying_symbol=row.get('UnderlyingSymbol', ''),
+                isin=row.get('ISIN', ''),
                 source=row.get('source', 'MANUAL'),
                 external_id=str(row.get('external_id', '')) if pd.notna(row.get('external_id')) else None,
                 notes=row.get('notes', '')
@@ -185,6 +200,19 @@ class DataLoader:
                 entry = group['CostBasisPrice'].iloc[0] if 'CostBasisPrice' in group.columns else 0
                 isin_val = group['ISIN'].iloc[0] if 'ISIN' in group.columns else np.nan
                 
+                # Update Asset Master during snapshot
+                db.save_ticker_info(
+                    conid=conid_str,
+                    ticker_ibkr=group['Symbol'].iloc[0],
+                    isin=str(isin_val),
+                    asset_class=asset_cat,
+                    multiplier=multiplier,
+                    description=group['Description'].iloc[0],
+                    listing_exchange=group['ListingExchange'].iloc[0],
+                    currency=group['CurrencyPrimary'].iloc[0],
+                    underlying_symbol=group['UnderlyingSymbol'].iloc[0]
+                )
+
                 broker_data[conid_str] = {
                     'Qty': qty, 
                     'Entry': entry,
