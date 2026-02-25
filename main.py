@@ -14,7 +14,7 @@ from services.ibkr import (
     fetch_trade_confirmations,
     process_confirmations
 )
-from dashboard import print_nav_table, print_rich_portfolio, run_live_dashboard, calculate_dashboard_data
+from dashboard import print_nav_table, run_live_dashboard
 from core.portfolio_manager import PortfolioManager
 from core.risk_engine import calculate_atr_metrics
 import sync_config
@@ -349,17 +349,6 @@ def handle_assign_risk():
         console.print(f"[green]SUCCESS: {ticker} assigned {atr} {s_type}[/green]")
     except Exception as e: console.print(f"[red]Error: {e}[/red]")
 
-def ask_asset_class():
-    console.print("\n[bold cyan]--- SELECT INSTRUMENTS ---[/bold cyan]")
-    print("1. ALL | 2. STOCKS | 3. OPTIONS | 4. BONDS | 5. TREASURIES")
-    choice = input("Choice: ").strip()
-    return {'2': 'STK', '3': 'OPT', '4': 'BOND', '5': 'BILL'}.get(choice)
-
-def ask_sort_by():
-    console.print("\n[bold cyan]--- SORT BY ---[/bold cyan]")
-    print("1. Ticker | 2. MarketValue | 3. P/L % | 4. P/L Abs | 5. Date")
-    return {'2': 'MarketValue', '3': 'Pct', '4': 'PL', '5': 'Date'}.get(input("Choice: ").strip(), 'Ticker')
-
 def handle_view_dashboard():
     """Fast-path dashboard with optional real-time refresh."""
     console.print("\n[bold cyan]--- VIEW DASHBOARD ---[/bold cyan]")
@@ -378,21 +367,17 @@ def handle_view_dashboard():
         process_confirmations()
         
     # 2. Layout & Calculation Defaults
-    console.print("\nDefaults: [bold]STOCKS[/bold], [bold]Ticker[/bold], [bold]Hybrid[/bold], [bold]Live (5min)[/bold]")
+    console.print("\nDefaults: [bold]Hybrid[/bold], [bold]Live (1min)[/bold]")
     fast_path = input("Use these layout defaults? [Y/n]: ").strip().lower()
     
     if fast_path in ['', 'y', 'yes']:
-        # Default now includes refresh_interval=60 (Live)
-        f, s, l, r = 'STK', 'Ticker', False, 60
+        l, r = False, 60
     else:
-        f = ask_asset_class()
-        s = ask_sort_by()
         l = (input("\nMethod: 1. Hybrid [default] | 2. Ledger: ").strip() == '2')
-        # If user chooses 1 (Live), interval is 60. If they choose 2 (Static), interval is None.
         r_choice = input("View: 1. Live (1min) [default] | 2. Static: ").strip()
         r = 60 if r_choice != '2' else None
         
-    run_live_dashboard(PortfolioManager(), asset_class_filter=f, sort_by=s, use_ledger=l, refresh_interval=r)
+    run_live_dashboard(PortfolioManager(), use_ledger=l, refresh_interval=r)
 
 def main():
     sync_config.smart_sync()

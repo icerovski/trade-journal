@@ -159,3 +159,27 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   3. Analyze volumes to discover bear and bull markets. Bull market volumes rise with the price, bear markets volums move oposite direction. Only with other markers though.
   4. Refreshing doesn't work still.
   5. ticker_info table in the db: bond multipliers should be x0.001; ISIN info should be taken from the trade tables, where you also take stock exchange, etc.
+
+
+✦ When you arrive at the office, you should run these three commands to ensure your office machine is
+  perfectly in sync with the work we just finished:
+
+   1. Switch to the main branch (if you aren't already there):
+      git checkout main
+
+   2. Pull the latest updates:
+      git pull origin main
+
+
+   3. Verify the sync:
+      git log -n 1
+      (You should see the commit: "merge: incorporate thread-safe dashboard updates...")
+
+
+  Why this is important:
+  This will bring all the thread-safety fixes, the 60-second refresh logic, and the Asset Master
+  database migration to your office machine. From that point forward, you can do all your work directly
+  on `main` to avoid the branch confusion we encountered today.
+
+  If you have any uncommitted changes at the office that you want to keep, you can run git stash before 
+  pulling, and git stash pop after pulling. Otherwise, the steps above will get you up to speed!  
