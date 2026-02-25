@@ -55,17 +55,13 @@ class PortfolioManager:
     def recon(self):
         return self._recon or ReconciliationService()
 
-    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, use_ledger=False, silent=False):
+    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, silent=False):
         """
         Enriches open positions with market data and risk metrics.
-        Uses batch fetching for price updates.
+        Uses Hybrid mode (Broker Snapshot + Manual Deltas).
         """
         risk_settings = get_all_risk_settings()
-        
-        if use_ledger:
-            positions = self.get_open_positions_ledger(asset_class_filter)
-        else:
-            positions = self.get_open_positions_hybrid(asset_class_filter)
+        positions = self.get_open_positions_hybrid(asset_class_filter)
             
         if not positions: return pd.DataFrame()
 

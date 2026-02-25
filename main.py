@@ -350,34 +350,22 @@ def handle_assign_risk():
     except Exception as e: console.print(f"[red]Error: {e}[/red]")
 
 def handle_view_dashboard():
-    """Fast-path dashboard with optional real-time refresh."""
+    """Direct-launch institutional dashboard."""
     console.print("\n[bold cyan]--- VIEW DASHBOARD ---[/bold cyan]")
     
-    # 1. Real-Time Refresh Prompt
-    refresh_broker = input("Refresh Latest Snapshot + Intraday Trades? [y/N]: ").strip().lower()
+    # 1. Real-Time Refresh Prompt (Broker Sync)
+    refresh_broker = input("Sync with IBKR (Fresh Snapshots + Intraday)? [y/N]: ").strip().lower()
     if refresh_broker in ['y', 'yes']:
-        console.print("[bold green]>>> Fetching Fresh Snapshots...[/bold green]")
+        console.print("[bold green]>>> Syncing broker data...[/bold green]")
         fetch_open_positions()
-        
         manager = PortfolioManager()
         print_nav_table(manager, force_download=True)
-        
-        console.print("[bold green]>>> Fetching Intraday Confirmations...[/bold green]")
         fetch_trade_confirmations()
         process_confirmations()
         
-    # 2. Layout & Calculation Defaults
-    console.print("\nDefaults: [bold]Hybrid[/bold], [bold]Live (1min)[/bold]")
-    fast_path = input("Use these layout defaults? [Y/n]: ").strip().lower()
-    
-    if fast_path in ['', 'y', 'yes']:
-        l, r = False, 60
-    else:
-        l = (input("\nMethod: 1. Hybrid [default] | 2. Ledger: ").strip() == '2')
-        r_choice = input("View: 1. Live (1min) [default] | 2. Static: ").strip()
-        r = 60 if r_choice != '2' else None
-        
-    run_live_dashboard(PortfolioManager(), use_ledger=l, refresh_interval=r)
+    # 2. Direct Launch (No more prompts for Layout/Method/View)
+    console.print("[cyan]Launching Trading Cockpit...[/cyan]")
+    run_live_dashboard(PortfolioManager())
 
 def main():
     sync_config.smart_sync()

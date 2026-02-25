@@ -124,12 +124,11 @@ MSFT,BUY,{current_year}-02-01,10,300,STK,Microsoft,456,NASDAQ,USD,MSFT
             
             # Mock NAV fetch
             with patch.object(portfolio_manager.PortfolioManager, 'fetch_nav_data', return_value=(5000.0, [], "2026-02-13")):
-                # Use Ledger mode for test since we don't have open_positions.csv mock
-                df, nav, report_date = dashboard.calculate_dashboard_data(pm, use_ledger=True)
+                # Test the core dashboard data extraction
+                df = pm.get_dashboard_df(total_nav=5000.0)
                 
                 # Assertions on Dashboard DataFrame
-                self.assertEqual(nav, 5000.0)
-                self.assertEqual(report_date, "2026-02-13")
+                self.assertEqual(len(df), 2)
                 
                 aapl_row = df[df['Ticker'] == 'AAPL'].iloc[0]
                 self.assertEqual(aapl_row['PL_Inc'], (200 - 170) * 5) # 150

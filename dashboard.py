@@ -15,7 +15,7 @@ from core.portfolio_manager import PortfolioManager
 class TradingCockpit(App):
     """
     Institutional-grade Trading Cockpit built with Textual.
-    Provides asynchronous, non-blocking market data refreshes.
+    Fixed on Hybrid data method with 60s background refresh.
     """
     TITLE = "PRIVATE EQUITY TRADING COCKPIT"
     SUB_TITLE = "Institutional Risk Management"
@@ -84,13 +84,11 @@ class TradingCockpit(App):
             self.report_date = report_date
             super().__init__()
 
-    def __init__(self, pm: PortfolioManager, asset_filter=None, sort_by="Ticker", use_ledger=False, refresh_interval=60):
+    def __init__(self, pm: PortfolioManager, asset_filter=None, sort_by="Ticker"):
         super().__init__()
         self.pm = pm
         self.asset_filter = asset_filter
         self.sort_by = sort_by
-        self.use_ledger = use_ledger
-        self.refresh_interval = refresh_interval
         self.df = pd.DataFrame()
         self.total_nav = 0.0
         self.report_date = "---"
@@ -138,15 +136,13 @@ class TradingCockpit(App):
             self.update_ui(df_view, self.total_nav, self.report_date)
 
     def refresh_loop(self) -> None:
-        """Background loop running in a dedicated thread."""
+        """Background loop running in a dedicated thread (60s heartbeat)."""
         while not self._exit_flag.is_set():
             self.fetch_data()
-            if not self.refresh_interval:
-                break
-            self._exit_flag.wait(timeout=self.refresh_interval)
+            self._exit_flag.wait(timeout=60) # Fixed institutional refresh interval
 
     def fetch_data(self) -> None:
-        """The actual heavy-lifting data fetch."""
+        """The actual heavy-lifting data fetch (Hybrid Method)."""
         try:
             self.update_status("[yellow]REFRESHING MARKET DATA...[/yellow]")
             disable_console_logging()
@@ -154,11 +150,10 @@ class TradingCockpit(App):
             nav_res = self.pm.fetch_nav_data(force_download=False)
             real_nav, _, r_date = nav_res if nav_res else (0.0, [], "---")
             
-            # Always fetch ALL to allow dynamic in-memory filtering
+            # Always fetch ALL to allow dynamic in-memory filtering.
             df = self.pm.get_dashboard_df(
                 asset_class_filter=None, 
                 total_nav=real_nav,
-                use_ledger=self.use_ledger,
                 silent=True
             )
             enable_console_logging()
@@ -187,7 +182,6 @@ class TradingCockpit(App):
     @on(DataRefreshed)
     def handle_data_refresh(self, message: DataRefreshed) -> None:
         """Update UI components using the new data."""
-        # Swift Swap assignment
         self.df = message.df
         self.total_nav = message.nav
         self.report_date = message.report_date
@@ -232,7 +226,6 @@ class TradingCockpit(App):
             if table.cursor_row < 0 or self.df.empty:
                 return
                 
-            # Use process_and_sort to get the record from the current filtered/sorted view
             df_view = self.process_and_sort(self.df)
             row_idx = table.cursor_row
             if row_idx < len(df_view):
@@ -280,15 +273,11 @@ class TradingCockpit(App):
         """Generalized logic supporting dynamic field selection AND filtering."""
         if df.empty: return df
         
-        # 1. Apply Filter
-        # Note: Textual passes arguments as strings, so "None" is literal.
         if self.asset_filter and str(self.asset_filter) != "None":
             target_class = str(self.asset_filter).upper()
-            # Map TREASURIES to BILL class
             if target_class == 'TREASURIES': target_class = 'BILL'
             df = df[df['AssetClass'].str.upper() == target_class]
 
-        # 2. Apply Sort
         field_map = {"Pct": "PL_Inc_Pct", "PL": "PL_Inc"}
         actual_field = field_map.get(self.sort_by, self.sort_by)
         ascending = actual_field in ["Ticker", "Date", "AssetClass"]
@@ -296,7 +285,6 @@ class TradingCockpit(App):
         if actual_field in df.columns:
             return df.sort_values(actual_field, ascending=ascending)
         
-        # Fallback
         sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
         return df.sort_values(sort_cols, ascending=True) if sort_cols else df
 
@@ -305,8 +293,9 @@ class TradingCockpit(App):
         self._exit_flag.set()
         self.exit()
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, refresh_interval=60, sort_by="Ticker", use_ledger=False):
-    app = TradingCockpit(portfolio_manager, asset_class_filter, sort_by, use_ledger, refresh_interval)
+def run_live_dashboard(portfolio_manager, asset_class_filter=None, sort_by="Ticker"):
+    """Launch the cockpit with hardcoded institutional defaults."""
+    app = TradingCockpit(portfolio_manager, asset_class_filter, sort_by)
     try:
         app.run()
     except KeyboardInterrupt:
