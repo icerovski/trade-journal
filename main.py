@@ -6,7 +6,6 @@ warnings.filterwarnings("ignore", module="yfinance")
 
 from db import init_db, get_manual_trades, delete_trade, add_trade, set_position_risk, wipe_trades_only
 from services.ibkr import (
-    download_trade_report, 
     process_local_csvs, 
     process_ytd_only, 
     fetch_trade_history, 
@@ -86,17 +85,14 @@ def handle_maintenance():
     while True:
         console.print("\n[bold magenta]--- SYSTEM MAINTENANCE ---[/bold magenta]")
         print("1. Rebuild Trades (Surgical wipe, preserve risk profiles)")
-        print("2. Fetch Historical Year (Download old IBKR CSVs)")
+        print("2. Sync Trade History (Fetch latest IBKR CSV)")
         print("3. Re-ingest ALL local CSVs (Full History Replay)")
         print("4. Sync Historical Prices (Manual)")
         print("0. Back")
         
         choice = input("\nChoice: ").strip()
         if choice == '1': handle_rebuild_db()
-        elif choice == '2':
-            year_input = input("Enter Year (e.g. 2024): ").strip()
-            year = int(year_input) if year_input else datetime.now().year - 1
-            download_trade_report(year=year, is_ytd=False)
+        elif choice == '2': fetch_trade_history()
         elif choice == '3': process_local_csvs()
         elif choice == '4': handle_sync_prices()
         elif choice == '0': break

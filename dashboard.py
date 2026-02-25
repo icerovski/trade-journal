@@ -234,8 +234,8 @@ class TradingCockpit(App):
                 # Risk Metrics Calculations
                 s_type = str(row.get('StopType', '---'))
                 atr_val = row.get('ATR', 0.0)
-                stop_base = row['MaxSinceEntry'] if s_type == 'TRAILING' else row['Entry']
-                sl_pct = (atr_val / stop_base * 100) if stop_base > 0 else 0
+                # Volatility relative to Cost Basis (Initial Entry)
+                atr_pct_cost = (atr_val / row['Entry'] * 100) if row['Entry'] > 0 else 0
 
                 details = (
                     f"[bold yellow]{row['Name']}[/bold yellow]\n"
@@ -247,7 +247,7 @@ class TradingCockpit(App):
                     f"Currency:   {row.get('CCY', '---')}\n\n"
                     
                     f"[bold cyan]RISK PARAMETERS[/bold cyan]\n"
-                    f"ATR (Standard): {atr_val:.2f} ({sl_pct:.1f}%)\n"
+                    f"ATR (% of cost): {atr_val:.2f} ({atr_pct_cost:.1f}%)\n"
                     f"Stop Type:      {s_type}\n"
                     f"Stop Price:     [bold red]{row['SL_Price']:,.2f}[/]\n"
                     f"P/L at Stop:    {self.color_fmt(row['Risk_Val'], ',.0f')}\n"
@@ -293,9 +293,9 @@ class TradingCockpit(App):
         self._exit_flag.set()
         self.exit()
 
-def run_live_dashboard(portfolio_manager, asset_class_filter=None, sort_by="Ticker"):
+def run_live_dashboard(portfolio_manager, sort_by="Ticker"):
     """Launch the cockpit with hardcoded institutional defaults."""
-    app = TradingCockpit(portfolio_manager, asset_class_filter, sort_by)
+    app = TradingCockpit(portfolio_manager, None, sort_by)
     try:
         app.run()
     except KeyboardInterrupt:

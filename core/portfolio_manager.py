@@ -126,17 +126,6 @@ class PortfolioManager:
             
         return open_list
 
-    def get_open_positions_ledger(self, asset_class_filter=None) -> list[Position]:
-        """
-        Ledger Mode: Full database replay.
-        """
-        all_trades = self.loader.get_trades_as_models()
-        if asset_class_filter:
-            filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
-            all_trades = [t for t in all_trades if t.asset_category.upper() in filters]
-            
-        return self.ledger.calculate_positions(all_trades)
-
     # --- Account / NAV Methods ---
     def fetch_nav_data(self, force_download=False):
         from config import IBKR_QUERY_ID_NAV, IBKR_NAV_CSV

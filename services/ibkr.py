@@ -84,11 +84,6 @@ def download_flex_report(query_id, output_path, force_download=False):
 
 # --- 2. WRAPPERS ---
 
-def sync_ibkr_trades():
-    """Main entry point for syncing - focusing on permanent history."""
-    fetch_trade_history()
-    process_local_csvs()
-
 def fetch_trade_history():
     from config import IBKR_QUERY_ID_TRADES
     return download_flex_report(IBKR_QUERY_ID_TRADES, IBKR_TRADES_CSV, force_download=True)
@@ -109,19 +104,6 @@ def process_confirmations():
         logger.info(f"Ingested {count} new confirmations.")
         return count
     return 0
-
-def download_trade_report(year=None, is_ytd=True):
-    from config import IBKR_QUERY_ID_TRADES
-    now = datetime.now()
-    year = year or now.year
-    
-    if is_ytd and year == now.year:
-        output_path = IBKR_TRADES_CSV  # trades_ytd.csv
-    else:
-        suffix = "YTD" if is_ytd else "FY"
-        output_path = DATA_DIR / f"{year}_{suffix}.csv"
-        
-    return download_flex_report(IBKR_QUERY_ID_TRADES, output_path, force_download=True)
 
 def process_local_csvs():
     """Incorporate all found CSVs from BASE_DATA_DIR into DB."""
