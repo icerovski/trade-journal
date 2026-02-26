@@ -24,6 +24,18 @@ class Trade:
     notes: str = ""
 
 @dataclass
+class ATRDiscoveryRow:
+    """Represents a single row in the ATR analysis table."""
+    label: str
+    atr_wilder: float
+    atr_sma: float
+    stop_price: float
+    atr_base_pct: float
+    pl_at_stop: float
+    buffer_pct: float
+    pl_pct_nav: float
+
+@dataclass
 class Position:
     """Represents an aggregated holding derived from trade history."""
     name: str

@@ -4,9 +4,10 @@ import yfinance as yf
 from rich.table import Table
 from rich.console import Console
 from rich import box
-from models import Position
+from models import Position, ATRDiscoveryRow
 from db import update_high_water_mark
 from services.price_service import PriceService
+from logger import logger
 
 console = Console()
 
@@ -69,30 +70,25 @@ class RiskEngine:
         
         return position
 
-def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
+def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
     """
-    Calculates ATR across multiple timeframes for visual analysis.
-    Prioritizes Wilder ATR with SMA in brackets for audit.
+    Returns raw ATR analysis data across multiple timeframes.
+    Used by the interactive RiskWorkspace.
     """
     from .portfolio_manager import PortfolioManager
     try:
-        # 1. Resolve Ticker
         manager = PortfolioManager()
         yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol, conid=conid)
         price_service = PriceService()
         
-        # 2. Fetch/Prepare Data
         if conid:
-            console.print(f"-> Resolved [bold]{ticker_symbol}[/bold] (conid:{conid}) to Yahoo Ticker: [bold cyan]{yf_ticker}[/bold cyan]")
             df_daily = price_service.fetch_and_store(conid, yf_ticker)
         else:
-            console.print(f"-> [yellow]Warning:[/yellow] No conid provided for {ticker_symbol}. Using direct Yahoo fetch.")
             df_daily = yf.Ticker(yf_ticker).history(period="3y")
         
         if df_daily.empty:
-            return f"[red]Error: No data found for {yf_ticker}[/red]", {}
+            return None
 
-        # 3. Handle Max Price since Entry Date
         if conid:
             max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
         else:
@@ -104,42 +100,21 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                 max_price = entry_price
         
         max_price = max(entry_price, max_price)
+        base_price = max_price if stop_type.upper() == 'TRAILING' else entry_price
+        current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
 
-        # 4. Define Timeframes (Added Weekly 12)
         intervals = [
             ("14d", 14, 'daily'),
             ("12w", 12, 'weekly'),
             ("12m", 12, 'monthly'),
             ("8q", 8, 'quarterly')
         ]
-        raw_values = {}
-
-        # 5. Build Table
-        stop_type = stop_type.upper()
-        mode_str = "TRAILING" if stop_type == 'TRAILING' else "FIXED"
-        base_price = max_price if stop_type == 'TRAILING' else entry_price
         
-        title = f"ATR Gauge for {ticker_symbol} ({mode_str} Stop)"
-        if multiplier != 1.0: title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
-            
-        table = Table(title=title, header_style="bold cyan", box=None, 
-                      caption=f"\n[dim]Base Price for {mode_str}: {base_price:,.2f} | Entry: {entry_price:,.2f} | Max since entry: {max_price:,.2f}[/dim]")
-        table.add_column("Label", style="bold")
-        table.add_column(f"ATR Wilder (SMA) @{multiplier}x", justify="right", style="yellow")
-        table.add_column("Stop Price", justify="right", style="magenta" if stop_type == 'TRAILING' else "green")
-        table.add_column("ATR/Base %", justify="right", style="dim")
-        table.add_column("P/L at Stop", justify="right", style="bold")
-        table.add_column("Buffer (%)", justify="right", style="cyan")
-        table.add_column("% of NAV", justify="right", style="dim")
-
-        # 6. Process each frequency
-        current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
-        
+        results = []
         for label, window, tf in intervals:
             if conid:
                 df = price_service.get_prices(conid, timeframe=tf)
             else:
-                # Map timeframe to yfinance periods/intervals
                 yf_period = "3y" if tf == 'daily' else ("5y" if tf == 'weekly' else ("10y" if tf == 'monthly' else "max"))
                 yf_interval = "1d" if tf == 'daily' else ("1wk" if tf == 'weekly' else ("1mo" if tf == 'monthly' else "3mo"))
                 df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
@@ -151,35 +126,73 @@ def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier
                         np.maximum(abs(df['High'] - df['PrevClose']), 
                                    abs(df['Low'] - df['PrevClose'])))
 
-            # 1. Calculate Wilder (Primary) and SMA (Audit)
             atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
             atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
 
-            # 2. Store Wilder for assignment options
-            raw_values[label] = atr_wilder * multiplier
-            
-            # 3. Calculations for Table (Using Wilder as base)
-            final_val_wilder = atr_wilder * multiplier
-            final_val_sma = atr_sma * multiplier
-            
-            stop_price = base_price - final_val_wilder
-            atr_pct = (final_val_wilder / base_price * 100) if base_price > 0 else 0
+            final_wilder = atr_wilder * multiplier
+            stop_price = base_price - final_wilder
+            atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
             pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
-            pl_color = "green" if pl_at_stop >= 0 else "red"
             pl_pct_nav = (pl_at_stop / total_nav * 100) if total_nav > 0 else 0
             buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0
             
-            table.add_row(
-                label, 
-                f"{final_val_wilder:.2f} ({final_val_sma:.2f})", 
-                f"{stop_price:,.2f}", 
-                f"{atr_pct:.1f}%",
-                f"[{pl_color}]{pl_at_stop:,.0f}[/{pl_color}]", 
-                f"{buffer_pct:.1f}%", 
-                f"{pl_pct_nav:.2f}%"
-            )
+            results.append(ATRDiscoveryRow(
+                label=label,
+                atr_wilder=final_wilder,
+                atr_sma=atr_sma * multiplier,
+                stop_price=stop_price,
+                atr_base_pct=atr_pct,
+                pl_at_stop=pl_at_stop,
+                buffer_pct=buffer_pct,
+                pl_pct_nav=pl_pct_nav
+            ))
             
-        return table, raw_values
-
+        return {
+            'ticker': ticker_symbol,
+            'base_price': base_price,
+            'entry_price': entry_price,
+            'max_price': max_price,
+            'current_price': current_price,
+            'rows': results
+        }
     except Exception as e:
-        return f"[red]Error calculating ATR: {e}[/red]", {}
+        logger.error(f"ATR Discovery Data Error: {e}")
+        return None
+
+def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
+    """
+    Legacy wrapper for CLI that returns a Rich Table.
+    """
+    data = get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier, conid, stop_type, qty, inst_multiplier, total_nav)
+    if not data:
+        return f"[red]Error: No data found for {ticker_symbol}[/red]", {}
+
+    mode_str = "TRAILING" if stop_type.upper() == 'TRAILING' else "FIXED"
+    title = f"ATR Gauge for {ticker_symbol} ({mode_str} Stop)"
+    if multiplier != 1.0: title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
+        
+    table = Table(title=title, header_style="bold cyan", box=None, 
+                  caption=f"\n[dim]Base Price for {mode_str}: {data['base_price']:,.2f} | Entry: {data['entry_price']:,.2f} | Max since entry: {data['max_price']:,.2f}[/dim]")
+    table.add_column("Label", style="bold")
+    table.add_column(f"ATR Wilder (SMA) @{multiplier}x", justify="right", style="yellow")
+    table.add_column("Stop Price", justify="right", style="magenta" if mode_str == 'TRAILING' else "green")
+    table.add_column("ATR/Base %", justify="right", style="dim")
+    table.add_column("P/L at Stop", justify="right", style="bold")
+    table.add_column("Buffer (%)", justify="right", style="cyan")
+    table.add_column("% of NAV", justify="right", style="dim")
+
+    raw_values = {}
+    for row in data['rows']:
+        pl_color = "green" if row.pl_at_stop >= 0 else "red"
+        table.add_row(
+            row.label, 
+            f"{row.atr_wilder:.2f} ({row.atr_sma:.2f})", 
+            f"{row.stop_price:,.2f}", 
+            f"{row.atr_base_pct:.1f}%",
+            f"[{pl_color}]{row.pl_at_stop:,.0f}[/{pl_color}]", 
+            f"{row.buffer_pct:.1f}%", 
+            f"{row.pl_pct_nav:.2f}%"
+        )
+        raw_values[row.label] = row.atr_wilder
+        
+    return table, raw_values
