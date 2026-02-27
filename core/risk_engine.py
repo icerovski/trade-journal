@@ -64,16 +64,18 @@ class RiskEngine:
             else:
                 position.rr_ratio = 0.0
             
-            # ATR as % of Stop Base
-            atr_base_pct = (atr / stop_base * 100) if stop_base > 0 else 0
-            position.atr_display = f"{s_type}|{atr:.2f}|{atr_base_pct:.1f}%"
+            # 7. SL % (Distance from Base)
+            position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
+            
+            # ATR as % of Stop Base (Legacy Display field)
+            position.atr_display = f"{s_type}|{atr:.2f}|{position.sl_pct_base:.1f}%"
         
         return position
 
-def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
+def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, qty=0.0, inst_multiplier=1.0, total_nav=0.0):
     """
-    Returns raw ATR analysis data across multiple timeframes.
-    Used by the interactive RiskWorkspace.
+    Returns raw ATR analysis data for both FIXED and TRAILING stop types.
+    Calculates Risk % of NAV (R) for each scenario.
     """
     from .portfolio_manager import PortfolioManager
     try:
@@ -100,7 +102,6 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                 max_price = entry_price
         
         max_price = max(entry_price, max_price)
-        base_price = max_price if stop_type.upper() == 'TRAILING' else entry_price
         current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
 
         intervals = [
@@ -128,28 +129,38 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
 
             atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
             atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
-
             final_wilder = atr_wilder * multiplier
-            stop_price = base_price - final_wilder
-            atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
-            pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
-            pl_pct_nav = (pl_at_stop / total_nav * 100) if total_nav > 0 else 0
-            buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0
-            
-            results.append(ATRDiscoveryRow(
-                label=label,
-                atr_wilder=final_wilder,
-                atr_sma=atr_sma * multiplier,
-                stop_price=stop_price,
-                atr_base_pct=atr_pct,
-                pl_at_stop=pl_at_stop,
-                buffer_pct=buffer_pct,
-                pl_pct_nav=pl_pct_nav
-            ))
+
+            # Calculate for both types
+            for s_type in ['FIXED', 'TRAILING']:
+                base_price = max_price if s_type == 'TRAILING' else entry_price
+                stop_price = base_price - final_wilder
+                atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
+                
+                # P/L at Stop (Total profit/loss from entry)
+                pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
+                
+                # R (Risk % of NAV) = Potential Loss relative to Entry / Total NAV
+                # Formula: (Entry - Stop) * Qty / NAV
+                risk_amt = (entry_price - stop_price) * qty * inst_multiplier
+                pl_pct_nav = (risk_amt / total_nav * 100) if total_nav > 0 else 0
+                
+                buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0
+                
+                results.append(ATRDiscoveryRow(
+                    label=label,
+                    stop_type=s_type,
+                    atr_wilder=final_wilder,
+                    atr_sma=atr_sma * multiplier,
+                    stop_price=stop_price,
+                    atr_base_pct=atr_pct,
+                    pl_at_stop=pl_at_stop,
+                    buffer_pct=buffer_pct,
+                    pl_pct_nav=pl_pct_nav
+                ))
             
         return {
             'ticker': ticker_symbol,
-            'base_price': base_price,
             'entry_price': entry_price,
             'max_price': max_price,
             'current_price': current_price,
@@ -162,34 +173,36 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
 def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
     """
     Legacy wrapper for CLI that returns a Rich Table.
+    Filters the results to only show the requested stop_type.
     """
-    data = get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier, conid, stop_type, qty, inst_multiplier, total_nav)
+    data = get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier, conid, qty, inst_multiplier, total_nav)
     if not data:
         return f"[red]Error: No data found for {ticker_symbol}[/red]", {}
 
-    mode_str = "TRAILING" if stop_type.upper() == 'TRAILING' else "FIXED"
+    mode_str = stop_type.upper()
     title = f"ATR Gauge for {ticker_symbol} ({mode_str} Stop)"
     if multiplier != 1.0: title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
         
     table = Table(title=title, header_style="bold cyan", box=None, 
-                  caption=f"\n[dim]Base Price for {mode_str}: {data['base_price']:,.2f} | Entry: {data['entry_price']:,.2f} | Max since entry: {data['max_price']:,.2f}[/dim]")
+                  caption=f"\n[dim]Entry: {data['entry_price']:,.2f} | Max since entry: {data['max_price']:,.2f}[/dim]")
     table.add_column("Label", style="bold")
     table.add_column(f"ATR Wilder (SMA) @{multiplier}x", justify="right", style="yellow")
     table.add_column("Stop Price", justify="right", style="magenta" if mode_str == 'TRAILING' else "green")
     table.add_column("ATR/Base %", justify="right", style="dim")
     table.add_column("P/L at Stop", justify="right", style="bold")
     table.add_column("Buffer (%)", justify="right", style="cyan")
-    table.add_column("% of NAV", justify="right", style="dim")
+    table.add_column("R (% NAV)", justify="right", style="dim")
 
     raw_values = {}
     for row in data['rows']:
+        if row.stop_type != mode_str: continue
         pl_color = "green" if row.pl_at_stop >= 0 else "red"
         table.add_row(
             row.label, 
             f"{row.atr_wilder:.2f} ({row.atr_sma:.2f})", 
             f"{row.stop_price:,.2f}", 
             f"{row.atr_base_pct:.1f}%",
-            f"[{pl_color}]{row.pl_at_stop:,.0f}[/{pl_color}]", 
+            f"[{pl_color}]{row.pl_at_stop:,.0f}[//{pl_color}]", 
             f"{row.buffer_pct:.1f}%", 
             f"{row.pl_pct_nav:.2f}%"
         )

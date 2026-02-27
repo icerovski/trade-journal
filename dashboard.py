@@ -4,7 +4,7 @@ import threading
 from datetime import datetime
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, Static, Label
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, Container
 from textual.binding import Binding
 from textual.message import Message
 from textual import on
@@ -18,7 +18,7 @@ class TradingCockpit(App):
     Fixed on Hybrid data method with 60s background refresh.
     """
     TITLE = "PRIVATE EQUITY TRADING COCKPIT"
-    SUB_TITLE = "Institutional Risk Management"
+    SUB_TITLE = "Institutional Risk Management | [F1] Help"
     
     CSS = """
     Screen {
@@ -53,6 +53,15 @@ class TradingCockpit(App):
         color: $accent;
         margin-bottom: 1;
     }
+    #help-panel {
+        background: $surface-darken-2;
+        color: $text-muted;
+        padding: 1 2;
+        height: auto;
+        border-top: tall $primary;
+        font-size: 0.9em;
+        display: none;
+    }
     """
 
     BINDINGS = [
@@ -67,6 +76,7 @@ class TradingCockpit(App):
         Binding("o", "filter('OPT')", "Options"),
         Binding("b", "filter('BOND')", "Bonds"),
         Binding("t", "filter('BILL')", "Treasuries"),
+        Binding("f1", "toggle_help", "Help"),
     ]
 
     @staticmethod
@@ -102,7 +112,22 @@ class TradingCockpit(App):
                 yield Label("POSITION DETAILS", classes="bold-header")
                 yield Static("Select a ticker to see analysis...", id="details-text")
         yield Label("Initializing...", id="status-bar", classes="status-bar")
+        yield Static(self.get_help_text(), id="help-panel")
         yield Footer()
+
+    def get_help_text(self) -> str:
+        return (
+            "[bold white]TRADING COCKPIT LEGEND[/]\n"
+            "• [bold]Sort Keys:[/] [1]Ticker | [2]Daily P/L % | [3]Unrealized % | [4]Market Value\n"
+            "• [bold]Filter Keys:[/] [A]ll | [S]tocks | [O]ptions | [B]onds | [T]reasuries\n"
+            "• [bold]Indicators:[/] 🔴 Stop Breached | 🟢 Target Price Reached\n"
+            "• [bold]AAGR:[/] Annualized Aggregate Growth Rate (Compound Annual Growth)\n"
+            "• [bold]R (% NAV):[/] Total risk of current stop loss as a percentage of total Portfolio NAV."
+        )
+
+    def action_toggle_help(self) -> None:
+        panel = self.query_one("#help-panel")
+        panel.display = not panel.display
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
@@ -259,11 +284,11 @@ class TradingCockpit(App):
                     f"Buffer to Tgt:  {self.color_fmt(row['Up_Pct'], '.1f', '%')}\n\n"
                     
                     f"[bold magenta]PERFORMANCE[/bold magenta]\n"
-                    f"Date of first entry: {row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else '---'}\n"
-                    f"Avg Cost:            {row['Entry']:,.2f}\n"
-                    f"High achieved:       {row['MaxSinceEntry']:,.2f}\n"
-                    f"AAGR (Growth):       {self.color_fmt(row['AAGR'], '.1f', '%')}\n"
-                    f"Holding Age:         {row['Age_Days']} days"
+                    f"First Entry:      {row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else '---'}\n"
+                    f"Avg Cost:         {row['Entry']:,.2f}\n"
+                    f"High achieved:    {row['MaxSinceEntry']:,.2f}\n"
+                    f"AAGR (Growth):    {self.color_fmt(row['AAGR'], '.1f', '%')}\n"
+                    f"Holding Age:      {row['Age_Days']} days"
                 )
                 self.query_one("#details-text").update(details)
         except Exception as e:

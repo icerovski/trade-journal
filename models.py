@@ -27,6 +27,7 @@ class Trade:
 class ATRDiscoveryRow:
     """Represents a single row in the ATR analysis table."""
     label: str
+    stop_type: str  # FIXED / TRAILING
     atr_wilder: float
     atr_sma: float
     stop_price: float
@@ -63,7 +64,7 @@ class Position:
     daily_pl: float = 0.0
     daily_pl_pct: float = 0.0
     aagr: float = 0.0
-    nav_pct: float = 0.0
+    nav_pct: float = 0.0  # Exposure % of NAV
     age_days: int = 0
     
     # Risk Metrics
@@ -77,12 +78,15 @@ class Position:
     risk_val: float = 0.0
     reward_val: float = 0.0
     rr_ratio: float = 0.0
+    sl_pct_base: float = 0.0
+    risk_pct_nav: float = 0.0  # R (% of NAV)
 
     def to_dict(self):
         """Converts to a dictionary for DataFrame compatibility."""
         return {
             'Name': self.name,
             'Ticker': self.ticker,
+            'conid': self.conid,
             'Date': self.date_entry,
             'Qty': self.qty,
             'Multiplier': self.multiplier,
@@ -108,6 +112,8 @@ class Position:
             'Risk_Val': self.risk_val,
             'Reward_Val': self.reward_val,
             'RR_Ratio': self.rr_ratio,
+            'sl_pct_base': self.sl_pct_base,
+            'risk_pct_nav': self.risk_pct_nav,
             'MaxSinceEntry': self.max_since_entry,
             'NavPct': self.nav_pct,
             'ListingExchange': self.listing_exchange,

@@ -99,6 +99,12 @@ class PortfolioManager:
         denominator = total_nav if (total_nav and total_nav > 0) else total_mv
         for p in enriched_positions:
             p.nav_pct = (p.market_value / denominator) * 100
+            # Calculate R (% of NAV)
+            if p.entry_price > 0 and p.sl_price:
+                risk_amt = (p.entry_price - p.sl_price) * p.qty * p.multiplier
+                p.risk_pct_nav = (risk_amt / denominator) * 100
+            else:
+                p.risk_pct_nav = 0.0
 
         # Convert list of objects back to DataFrame for the View layer
         return pd.DataFrame([p.to_dict() for p in enriched_positions])

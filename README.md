@@ -161,7 +161,8 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
      2. Look for confluence of that price with EMAs, Bollinger Bands, Fibonacci, etc.
   3. Analyze volumes to discover bear and bull markets. Bull market volumes rise with the price, bear markets volums move oposite direction. Only with other markers though.
   4. ticker_info table in the db: bond multipliers should be x0.001; ISIN info should be taken from the trade tables, where you also take stock exchange, etc.
-
+  5. Risk Workspace: Assess the de-risking of the position. Start with initial risk for the position and the path of de-risking it through dividends, selling covered calls and moving the Stop Loss with the price. IMPORTANT!
+  6. Definitions is very important. I need to figure out where to hold them and update them. Maybe directly in the code, or from the UI. Need to assess.
 
 ✦ When you arrive at the office, you should run these three commands to ensure your office machine is
   perfectly in sync with the work we just finished:
