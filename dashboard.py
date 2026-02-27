@@ -259,11 +259,11 @@ class TradingCockpit(App):
                     f"Buffer to Tgt:  {self.color_fmt(row['Up_Pct'], '.1f', '%')}\n\n"
                     
                     f"[bold magenta]PERFORMANCE[/bold magenta]\n"
-                    f"First Entry:    {row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else '---'}\n"
-                    f"Avg Cost:       {row['Entry']:,.2f}\n"
-                    f"High achieved:  {row['MaxSinceEntry']:,.2f}\n"
-                    f"AAGR (Growth):  {self.color_fmt(row['AAGR'], '.1f', '%')}\n"
-                    f"Holding Age:    {row['Age_Days']} days"
+                    f"Date of first entry: {row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else '---'}\n"
+                    f"Avg Cost:            {row['Entry']:,.2f}\n"
+                    f"High achieved:       {row['MaxSinceEntry']:,.2f}\n"
+                    f"AAGR (Growth):       {self.color_fmt(row['AAGR'], '.1f', '%')}\n"
+                    f"Holding Age:         {row['Age_Days']} days"
                 )
                 self.query_one("#details-text").update(details)
         except Exception as e:
