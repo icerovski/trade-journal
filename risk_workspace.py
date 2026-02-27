@@ -33,11 +33,12 @@ class RiskWorkspace(App):
         width: 60%;
         height: 1fr;
         border-right: tall $primary;
+        padding-right: 1;
     }
     #right-pane {
         width: 40%;
         height: 1fr;
-        padding: 0 1;
+        padding-left: 1;
     }
     #discovery-layout {
         layout: vertical;
@@ -148,6 +149,17 @@ class RiskWorkspace(App):
             with Vertical(id="left-pane"):
                 yield Label("PORTFOLIO RISK STATUS", classes="panel-header")
                 yield DataTable(id="portfolio-table")
+                
+                with Vertical(id="input-container"):
+                    yield Label("ASSIGN RISK STRATEGY", classes="panel-header")
+                    with Horizontal():
+                        yield Input(placeholder="Mult (1.5) or % (10%)", id="atr-input")
+                        yield Select(
+                            options=[("T", "TRAILING"), ("F", "FIXED")],
+                            value="TRAILING",
+                            id="stop-type-select"
+                        )
+                    yield Label("", id="preview-label")
             
             with Vertical(id="right-pane"):
                 yield Label("ASSET CONTEXT", classes="panel-header")
@@ -166,17 +178,6 @@ class RiskWorkspace(App):
                         dt_trail = DataTable(id="trailing-table", classes="discovery-table")
                         dt_trail.can_focus = False
                         yield dt_trail
-                
-                with Vertical(id="input-container"):
-                    yield Label("ASSIGN RISK STRATEGY", classes="panel-header")
-                    with Horizontal():
-                        yield Input(placeholder="Mult (1.5) or % (10%)", id="atr-input")
-                        yield Select(
-                            options=[("T", "TRAILING"), ("F", "FIXED")],
-                            value="TRAILING",
-                            id="stop-type-select"
-                        )
-                    yield Label("", id="preview-label")
                 
                 yield Static(self.get_definitions_text(), id="help-panel")
         yield Footer()
