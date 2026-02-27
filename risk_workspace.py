@@ -67,7 +67,7 @@ class RiskWorkspace(App):
     .panel-header {
         text-style: bold;
         color: $accent;
-        margin-bottom: 0;
+        margin-bottom: 1;
         text-align: center;
         background: $surface-darken-1;
         height: 1;
@@ -81,16 +81,15 @@ class RiskWorkspace(App):
         color: $text;
     }
     #input-container {
-        border: tall $accent;
-        padding: 0 1;
+        border-top: solid $accent;
+        padding: 0;
         background: $surface-lighten-1;
         height: auto;
-        min-height: 7;
-        margin-top: 1;
+        margin-top: 0;
     }
     #input-container Horizontal {
         height: 3;
-        margin-top: 1;
+        margin: 0;
     }
     #help-panel {
         background: $surface-darken-2;
