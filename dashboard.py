@@ -59,7 +59,7 @@ class TradingCockpit(App):
         padding: 1 2;
         height: auto;
         border-top: tall $primary;
-        font-size: 0.9em;
+        # font-size: 0.9em;
         display: none;
     }
     """
