@@ -43,6 +43,7 @@ class ReconciliationService:
         for conid, v in broker_snapshot.items():
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
             multiplier = v.get('Multiplier', 1.0)
+            inception_price = 0.0
             
             # Enrich with ledger history if available
             if conid in ledger_positions:
@@ -51,6 +52,7 @@ class ReconciliationService:
                     entry = lp.entry_price
                 first_date = lp.date_entry
                 multiplier = lp.multiplier
+                inception_price = lp.inception_price
 
             # 4. Apply 'Delta' (Pending Adjustments)
             adjustments = [t for t in pending_deltas if t.conid == conid]
@@ -62,11 +64,13 @@ class ReconciliationService:
                     entry = ((qty * entry * multiplier) + (q * p * m)) / (new_qty * m) if (new_qty * m) != 0 else 0
                     qty = new_qty
                     multiplier = m
-                    if not first_date: first_date = t.date
+                    if not first_date: 
+                        first_date = t.date
+                        inception_price = p
                 elif side in ['SELL', 'TRANSFER_OUT']:
                     qty = max(0, qty - q)
                     if qty <= 0: 
-                        qty, entry, first_date = 0, 0, None
+                        qty, entry, first_date, inception_price = 0, 0, None, 0.0
                 elif side == 'SPLIT':
                     qty += q
 
@@ -76,6 +80,7 @@ class ReconciliationService:
                     listing_exchange=v['ListingExchange'], asset_class=v['AssetClass'],
                     underlying_symbol=v['UnderlyingSymbol'], ccy=v['Currency'], isin=str(v.get('ISIN', '')),
                     date_entry=pd.to_datetime(first_date), qty=qty, entry_price=entry, 
+                    inception_price=inception_price,
                     multiplier=multiplier, mark_price=v['MarkPrice']
                 ))
             matched_conids.add(str(conid))

@@ -184,4 +184,77 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   on `main` to avoid the branch confusion we encountered today.
 
   If you have any uncommitted changes at the office that you want to keep, you can run git stash before 
-  pulling, and git stash pop after pulling. Otherwise, the steps above will get you up to speed!  
+  pulling, and git stash pop after pulling. Otherwise, the steps above will get you up to speed!
+
+
+  ## Important pieces of chat
+  #### Target Quantity shares
+  I have implemented the full financial target tracking for both strategies.
+  The Asset Context panel now provides a detailed breakdown of your capital
+  requirements.
+
+
+  1. For Scale-In Strategies (S flag)
+  The system now calculates the Scale-In Target Outlay by summing the cost
+  of all three tranches at their respective roadmap prices:
+   * Tranche 1: Inception Price * 1/3 Target
+   * Tranche 2: Stage 2 Price * 1/3 Target
+   * Tranche 3: Stage 3 Price * 1/3 Target
+
+
+  2. For Single Purchase Strategies
+  The system calculates the Full Target Outlay based on the capital required
+  to reach a 1% NAV risk unit at the current market price.
+
+
+  3. Universal "Remaining Capital" Tracking
+  Regardless of the strategy, the panel now displays:
+   * Current Holding: Your actual shares and their average cost.
+   * Target Outlay: The total cash needed for a full institutional unit
+     (sized for 1% risk).
+   * Remaining Cap: The specific amount of cash still needed to "complete"
+     the position.
+
+  Example Roadmap:
+
+
+   1 POSITION ROADMAP: [STAGE 1/3 ACTIVE]
+   2   - Current:   150 sh (@ 293.60)
+   3   - Stage 2 @: 335.09 (Add +110 sh)
+   4   - Stage 3 @: 358.58 (Add +130 sh)
+   5   - Target Outlay: 135,402 USD
+   6   - Remaining Cap: 91,362 USD
+   7   - Pilot Stop: 264.64 (assigned ATR)
+
+
+  You can now see exactly how much capital is required to fulfill your risk
+  plan for every asset!
+
+  ---------------------------
+
+  I have updated the Target Quantity calculation to respect both of your
+  institutional hard limits.
+
+
+  The full_target_qty is now dynamically calculated as the minimum of:
+   1. Risk Limit (1.0%): Total shares allowed based on the distance from
+      entry to stop.
+   2. Exposure Limit (5.0%): Total shares allowed based on current market
+      price as a percentage of NAV.
+
+
+  What this means for the Roadmap:
+   * Safety First: If an asset is highly volatile (wide ATR), the Risk Limit
+     will restrict the quantity.
+   * Concentration Control: If an asset is low volatility (tight ATR), the
+     Exposure Limit will step in to prevent you from owning more than 5.0%
+     of your NAV in a single ticker.
+   * Outlay & Remaining Cap: These financial figures now reflect the
+     "Dual-Constraint" reality. They show the capital needed to reach the
+     smaller of the two targets, ensuring you don't over-allocate capital
+     beyond your exposure ceiling.
+
+
+  You can see this in action in the Asset Context & Risk Audit panel. If the
+  Exposure limit is the bottleneck, you will notice the "Full Target"
+  quantity is capped at exactly 5% of your total NAV.

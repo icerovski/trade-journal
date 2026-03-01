@@ -47,6 +47,7 @@ class Position:
     date_entry: datetime
     qty: float
     entry_price: float
+    inception_price: float = 0.0
     multiplier: float = 1.0
     mark_price: float = 0.0
     isin: str = ""
@@ -70,7 +71,7 @@ class Position:
     # Risk Metrics
     atr: float = 0.0
     stop_type: str = "FIXED"
-    atr_display: str = "---"
+    entry_type: str = "SINGLE"
     sl_price: Optional[float] = None
     tp_price: Optional[float] = None
     down_pct: float = 0.0
@@ -91,6 +92,7 @@ class Position:
             'Qty': self.qty,
             'Multiplier': self.multiplier,
             'Entry': self.entry_price,
+            'Inception': self.inception_price,
             'Price': self.current_price or self.mark_price,
             'MarketValue': self.market_value,
             'CostBasis': self.entry_price * self.qty * self.multiplier,
@@ -104,7 +106,7 @@ class Position:
             'AssetClass': self.asset_class,
             'ATR': self.atr,
             'StopType': self.stop_type,
-            'ATR_Disp': self.atr_display,
+            'EntryType': self.entry_type,
             'SL_Price': self.sl_price,
             'TP_Price': self.tp_price,
             'Down_Pct': self.down_pct,

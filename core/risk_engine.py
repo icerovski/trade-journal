@@ -17,13 +17,102 @@ class RiskEngine:
     """
 
     @staticmethod
+    def audit_position_risk(current_price: float, stop: float, entry_price: float, qty: float, multiplier: float, nav: float) -> dict:
+        """
+        Evaluate a position against two hard limits: 1.0% Risk-at-Stop and 5% Total Market Exposure.
+        Risk is calculated relative to the Entry Price: (Entry - Stop) * Qty * Multiplier.
+        Exposure is calculated as: Current Price * Qty * Multiplier.
+        """
+        if nav <= 0:
+            return {
+                "status_color": "RED",
+                "current_risk_pct": 0.0,
+                "current_exposure_pct": 0.0,
+                "max_shares": 0.0,
+                "adjustment": -qty,
+                "is_breached": False
+            }
+
+        risk_val = (entry_price - stop) * qty * multiplier
+        exposure_val = current_price * qty * multiplier
+
+        risk_pct = (risk_val / nav) * 100
+        exposure_pct = (exposure_val / nav) * 100
+        
+        is_breached = current_price <= stop
+
+        if is_breached or risk_pct > 1.5 or exposure_pct > 5.5:
+            status_color = "RED"
+        elif risk_pct > 1.0 or exposure_pct > 5.0:
+            status_color = "YELLOW"
+        else:
+            status_color = "GREEN"
+
+        risk_dist = (entry_price - stop) * multiplier
+        max_shares_risk = (nav * 0.01) / risk_dist if risk_dist > 0 else float('inf')
+        max_shares_exposure = (nav * 0.05) / (current_price * multiplier) if current_price > 0 else float('inf')
+
+        max_shares = min(max_shares_risk, max_shares_exposure)
+        adjustment = max_shares - qty
+
+        return {
+            "status_color": status_color,
+            "current_risk_pct": risk_pct,
+            "current_exposure_pct": exposure_pct,
+            "max_shares": max_shares,
+            "adjustment": adjustment,
+            "is_breached": is_breached
+        }
+
+    @staticmethod
+    def calculate_pilot_entry(current_price: float, atr: float, nav: float, multiplier: float, entry_price: float) -> dict:
+        """
+        Calculates the Pilot Entry roadmap based on Entry Price and ATR.
+        Includes total financial outlay targets for scaling and single purchases.
+        Target Qty is the minimum of 1% Risk Limit and 5% Exposure Limit.
+        """
+        if nav <= 0 or current_price <= 0 or atr <= 0:
+            return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
+            
+        # 1. Dual-Constraint Target Calculation
+        qty_by_risk = (nav * 0.01) / (atr * multiplier)
+        qty_by_exposure = (nav * 0.05) / (current_price * multiplier)
+        
+        full_target_qty = int(min(qty_by_risk, qty_by_exposure))
+        unit_shares = int(full_target_qty / 3.0)
+        
+        stop_dist = atr
+        
+        # 2. Financial Milestones
+        s2_p = entry_price + (0.5 * atr)
+        s3_p = entry_price + (1.0 * atr)
+        
+        # Scale-In Total Outlay: Sum of 3 tranches at their respective prices
+        tranche = full_target_qty / 3.0
+        scale_in_outlay = (entry_price * tranche * multiplier) + (s2_p * tranche * multiplier) + (s3_p * tranche * multiplier)
+        
+        # Single Purchase Outlay: Full target at current market price
+        single_outlay = current_price * full_target_qty * multiplier
+        
+        return {
+            "shares": unit_shares,
+            "stop": current_price - stop_dist,
+            "risk_pct": 0.33,
+            "stage2_price": s2_p,
+            "stage3_price": s3_p,
+            "full_target_qty": full_target_qty,
+            "scale_in_outlay": scale_in_outlay,
+            "single_outlay": single_outlay
+        }
+
+    @staticmethod
     def calculate_position_risk(position: Position, risk_settings: dict):
         """
         Enriches a Position object with risk metrics based on provided settings.
         Implements the 'Ratchet' rule: Stop Loss only moves in the trader's favor.
         """
         if str(position.conid) in risk_settings:
-            atr, s_type, highest_sl = risk_settings[str(position.conid)]
+            atr, s_type, highest_sl, e_type = risk_settings[str(position.conid)]
             
             # 1. Base Stop Loss Calculation
             # Stop Base is Entry Price (Fixed) or Max Price Since Entry (Trailing)
@@ -33,6 +122,7 @@ class RiskEngine:
             # Populate raw fields for easier dashboard access
             position.atr = atr
             position.stop_type = s_type
+            position.entry_type = e_type
             
             # 2. Ratchet Rule (High-Water Mark)
             final_sl = max(calculated_sl, highest_sl)
@@ -66,9 +156,6 @@ class RiskEngine:
             
             # 7. SL % (Distance from Base)
             position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
-            
-            # ATR as % of Stop Base (Legacy Display field)
-            position.atr_display = f"{s_type}|{atr:.2f}|{position.sl_pct_base:.1f}%"
         
         return position
 
@@ -169,43 +256,3 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
     except Exception as e:
         logger.error(f"ATR Discovery Data Error: {e}")
         return None
-
-def calculate_atr_metrics(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, stop_type='TRAILING', qty=0.0, inst_multiplier=1.0, total_nav=0.0):
-    """
-    Legacy wrapper for CLI that returns a Rich Table.
-    Filters the results to only show the requested stop_type.
-    """
-    data = get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier, conid, qty, inst_multiplier, total_nav)
-    if not data:
-        return f"[red]Error: No data found for {ticker_symbol}[/red]", {}
-
-    mode_str = stop_type.upper()
-    title = f"ATR Gauge for {ticker_symbol} ({mode_str} Stop)"
-    if multiplier != 1.0: title += f" [bold yellow](Buffer: {multiplier}x)[/bold yellow]"
-        
-    table = Table(title=title, header_style="bold cyan", box=None, 
-                  caption=f"\n[dim]Entry: {data['entry_price']:,.2f} | Max since entry: {data['max_price']:,.2f}[/dim]")
-    table.add_column("Label", style="bold")
-    table.add_column(f"ATR Wilder (SMA) @{multiplier}x", justify="right", style="yellow")
-    table.add_column("Stop Price", justify="right", style="magenta" if mode_str == 'TRAILING' else "green")
-    table.add_column("ATR/Base %", justify="right", style="dim")
-    table.add_column("P/L at Stop", justify="right", style="bold")
-    table.add_column("Buffer (%)", justify="right", style="cyan")
-    table.add_column("R (% NAV)", justify="right", style="dim")
-
-    raw_values = {}
-    for row in data['rows']:
-        if row.stop_type != mode_str: continue
-        pl_color = "green" if row.pl_at_stop >= 0 else "red"
-        table.add_row(
-            row.label, 
-            f"{row.atr_wilder:.2f} ({row.atr_sma:.2f})", 
-            f"{row.stop_price:,.2f}", 
-            f"{row.atr_base_pct:.1f}%",
-            f"[{pl_color}]{row.pl_at_stop:,.0f}[//{pl_color}]", 
-            f"{row.buffer_pct:.1f}%", 
-            f"{row.pl_pct_nav:.2f}%"
-        )
-        raw_values[row.label] = row.atr_wilder
-        
-    return table, raw_values

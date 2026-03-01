@@ -30,16 +30,22 @@ def init_db():
     # 2. Risk Profiles Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS risk_profiles (
-            conid TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conid TEXT NOT NULL,
             ticker TEXT NOT NULL,
             atr_value REAL NOT NULL,
             stop_type TEXT NOT NULL,
+            entry_type TEXT DEFAULT 'SINGLE',
             highest_sl REAL DEFAULT 0.0,
             status TEXT DEFAULT 'ACTIVE',
             start_date TEXT,
             end_date TEXT
         )
     """)
+    
+    # Ensure conid unique for ACTIVE profiles
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
+
 
     # 3. Ticker Info Table (Asset Master - Single Source of Truth for Metadata)
     cursor.execute("""
@@ -70,7 +76,7 @@ def wipe_trades_only():
     conn.close()
     init_db()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True, entry_type='SINGLE'):
     """Saves or updates the ACTIVE risk profile for a conid."""
     conn = get_conn()
     conid = str(conid)
@@ -83,20 +89,20 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=T
         if reset_sl:
             conn.execute("""
                 UPDATE risk_profiles SET 
-                    atr_value = ?, stop_type = ?, highest_sl = 0.0, ticker = ?
+                    atr_value = ?, stop_type = ?, entry_type = ?, highest_sl = 0.0, ticker = ?
                 WHERE id = ?
-            """, (float(atr), stop_type.upper(), ticker.upper(), existing['id']))
+            """, (float(atr), stop_type.upper(), entry_type.upper(), ticker.upper(), existing['id']))
         else:
             conn.execute("""
                 UPDATE risk_profiles SET 
-                    atr_value = ?, stop_type = ?, ticker = ?
+                    atr_value = ?, stop_type = ?, entry_type = ?, ticker = ?
                 WHERE id = ?
-            """, (float(atr), stop_type.upper(), ticker.upper(), existing['id']))
+            """, (float(atr), stop_type.upper(), entry_type.upper(), ticker.upper(), existing['id']))
     else:
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, start_date, status) 
-            VALUES (?, ?, ?, ?, ?, 'ACTIVE')
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), start_date))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, start_date, status) 
+            VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), start_date))
     
     conn.commit()
     conn.close()
@@ -123,12 +129,12 @@ def update_high_water_mark(conid, sl_price):
     conn.close()
 
 def get_all_risk_settings():
-    """Returns all ACTIVE risk settings as a dict {conid: (atr, type, highest_sl)}."""
+    """Returns all ACTIVE risk settings as a dict {conid: (atr, type, highest_sl, entry_type)}."""
     conn = get_conn()
-    cursor = conn.execute("SELECT conid, atr_value, stop_type, highest_sl FROM risk_profiles WHERE status = 'ACTIVE'")
+    cursor = conn.execute("SELECT conid, atr_value, stop_type, highest_sl, entry_type FROM risk_profiles WHERE status = 'ACTIVE'")
     rows = cursor.fetchall()
     conn.close()
-    return {r['conid']: (r['atr_value'], r['stop_type'], r['highest_sl']) for r in rows}
+    return {r['conid']: (r['atr_value'], r['stop_type'], r['highest_sl'], r['entry_type']) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False
@@ -213,13 +219,6 @@ def get_ticker_info(conid):
     row = cursor.fetchone()
     conn.close()
     return row
-
-def get_asset_details_from_trades(conid):
-    """
-    DEPRECATED: Metadata should now be retrieved from ticker_info.
-    This remains as a placeholder for migration if needed.
-    """
-    return get_ticker_info(conid)
 
 def save_ticker_info(conid, ticker_ibkr, ticker_yfinance=None, isin=None, asset_class=None, 
                      multiplier=None, description=None, listing_exchange=None, 

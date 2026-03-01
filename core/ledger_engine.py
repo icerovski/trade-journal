@@ -32,7 +32,7 @@ class LedgerEngine:
             # Sort by date
             group.sort(key=lambda x: x.date)
             
-            qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
+            qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
             
             for t in group:
                 side = t.side.strip().upper()
@@ -42,13 +42,14 @@ class LedgerEngine:
                 
                 # Special handling for opening balance reset
                 if 'OPENING_BALANCE' in t.source.upper():
-                    qty, total_cost, first_date, multiplier = q, q * p * m, t.date, m
+                    qty, total_cost, first_date, first_price, multiplier = q, q * p * m, t.date, p, m
                     continue
                 
                 if side in ['BUY', 'TRANSFER_IN']:
                     # Reset point: if we were flat, this is a new inception
                     if qty <= 0.0001:
                         first_date = t.date
+                        first_price = p
                         multiplier = m
                     total_cost += q * p * m
                     qty += q
@@ -58,7 +59,7 @@ class LedgerEngine:
                     qty -= q
                     # Reset point: if we hit zero, wipe history
                     if qty <= 0.0001:
-                        qty, total_cost, first_date, multiplier = 0.0, 0.0, None, 1.0
+                        qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
                 elif side == 'SPLIT':
                     # A split changes quantity but keeps total_cost the same.
                     qty += q
@@ -73,8 +74,9 @@ class LedgerEngine:
                     ccy=latest.currency,
                     date_entry=pd.to_datetime(first_date),
                     qty=qty,
-                    multiplier=multiplier,
                     entry_price=total_cost / (qty * multiplier) if (qty * multiplier) != 0 else 0,
+                    inception_price=first_price,
+                    multiplier=multiplier,
                     mark_price=0.0, # Will be filled by market data or snapshot
                     isin="", 
                     listing_exchange=latest.listing_exchange,

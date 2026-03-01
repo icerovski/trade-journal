@@ -15,7 +15,6 @@ from services.ibkr import (
 )
 from dashboard import print_nav_table, run_live_dashboard
 from core.portfolio_manager import PortfolioManager
-from core.risk_engine import calculate_atr_metrics
 import sync_config
 import pandas as pd
 import os
@@ -70,15 +69,13 @@ def handle_sync_all():
 def handle_manage_positions():
     while True:
         console.print("\n[bold yellow]--- MANAGE POSITIONS & RISK ---[/bold yellow]")
-        print("1. ATR Discovery & Analysis (Calculator)")
-        print("2. Quick Assign Strategy (Direct Entry)")
-        print("3. Manual Trade Entries (Ledger)")
+        print("1. ATR Discovery & Analysis (Workspace)")
+        print("2. Manual Trade Entries (Ledger)")
         print("0. Back")
         
         choice = input("\nChoice: ").strip()
         if choice == '1': handle_atr_calculator()
-        elif choice == '2': handle_assign_risk()
-        elif choice == '3': handle_manual_trades()
+        elif choice == '2': handle_manual_trades()
         elif choice == '0': break
 
 def handle_maintenance():
@@ -195,19 +192,6 @@ def handle_atr_calculator():
     """Launch the interactive Risk Assignment Workspace."""
     from risk_workspace import run_risk_workspace
     run_risk_workspace()
-
-def handle_assign_risk():
-    """Simple direct risk assignment."""
-    console.print("\n[bold yellow]--- ASSIGN RISK STRATEGY ---[/bold yellow]")
-    print("Format: Ticker, Conid, ATR, Type (Fixed/Trailing)")
-    line = input("Input: ").strip()
-    if not line: return
-    try:
-        parts = [p.strip() for p in line.split(',')]
-        ticker, conid, atr, s_type = parts[0].upper(), parts[1], float(parts[2]), parts[3].upper()
-        set_position_risk(conid, ticker, atr, s_type)
-        console.print(f"[green]SUCCESS: {ticker} assigned {atr} {s_type}[/green]")
-    except Exception as e: console.print(f"[red]Error: {e}[/red]")
 
 def handle_view_dashboard():
     """Direct-launch institutional dashboard."""
