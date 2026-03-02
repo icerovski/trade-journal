@@ -3,7 +3,7 @@ import threading
 import re
 from typing import Dict, Optional
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, DataTable, Static, Label, Input
+from textual.widgets import Header, Footer, DataTable, Static, Label, Input, TabbedContent, TabPane
 from textual.containers import Horizontal, Vertical, Container
 from textual.binding import Binding
 from textual.message import Message
@@ -23,36 +23,64 @@ class HelpScreen(ModalScreen):
     BINDINGS = [Binding("escape,f1", "dismiss", "Close")]
 
     def compose(self) -> ComposeResult:
-        help_text = (
-            "[bold cyan]RISK WORKSPACE DEFINITIONS[/]\n\n"
-            "• [b][T/F/-] Ticker:[/] T=Trailing, F=Fixed, -=No Strategy Assigned.\n"
-            "• [b]Stop Base:[/] Reference point (Avg Cost for Fixed | Max High for Trailing).\n"
-            "• [b]Stop P:[/] The absolute exit price (Base - ATR).\n"
-            "• [b]SL %:[/] Percentage decrease from [bold]BASE[/] needed to hit stop.\n"
-            "• [b]P/L Stop:[/] Total expected P/L from entry if triggered.\n"
-            "• [b]Cur P:[/] Current Market Price. [on red]Red[/] if below Stop P.\n"
-            "• [b]% NAV:[/] Exposure (Market Value as % of total portfolio NAV).\n"
-            "• [bold cyan]R (% NAV):[/] Risk at Stop (Potential loss as % of NAV).\n"
-            "• [bold cyan]RR (Efficiency):[/] Reward-to-Risk Ratio. (TP - Price) / (Price - Stop).\n"
-            "  - [green]> 3.0:[/] Highly Efficient. [yellow]1.0-2.0:[/] Moderate. [red]< 1.0:[/] Inefficient.\n\n"
-            "[bold cyan]DUAL-CONSTRAINT AUDIT[/]\n\n"
-            "• [b]Risk Limit (1.0%):[/] Evaluates if Potential Loss from Entry to Stop exceeds 1.0% of NAV.\n"
-            "• [b]Exposure Limit (5.0%):[/] Evaluates if Current Position Value exceeds 5.0% of NAV.\n\n"
-            "[bold cyan]SCALE-IN STRATEGY (Pilot Entry)[/]\n\n"
-            "• [b]Stage 1 (Pilot):[/] Entry with 1/3rd Risk (0.33%) and ATR Stop.\n"
-            "• [b]Stage 2 (Confirm):[/] Add 1/3rd when Price moves +0.5 ATR.\n"
-            "• [b]Stage 3 (Full):[/] Add final 1/3rd when Price moves +1.0 ATR. Total risk = 1.0%.\n"
-            "• [b]Switching to Scale-In:[/] Highlight ticker, type [b]ATR [F/T] S[/] (e.g. '1.0 T S') and Ctrl+Enter.\n"
-            "  The system uses the [i]original trade date[/] to anchor trailing stops.\n\n"
-            "[bold yellow]STRATEGY LAB SHORTCUTS[/]\n"
-            "• [bold]TYPE:[/] [Value/%] [F/T] (e.g. '1.5 T' or '10% F').\n"
-            "• [bold]ENTER:[/] Model hypothetically in the Lab and Grid.\n"
-            "• [bold]CTRL+ENTER:[/] Save permanently to Database.\n\n"
-            "[dim]Press ESC or F1 to return to Workspace[/]"
-        )
         with Vertical(id="help-modal"):
-            yield Static(help_text)
-            yield Label("Press ESC to Close", id="close-hint")
+            yield Label("HELP DESK & GLOSSARY", classes="panel-header")
+            with TabbedContent(initial="tab-visuals"):
+                with TabPane("Visual Glossary", id="tab-visuals"):
+                    yield Static(
+                        "[bold cyan]TABLE ICONS[/]\n"
+                        "• [b][T/F/-][/]: Stop type (Trailing, Fixed, None)\n"
+                        "• [b]\\[/S][/]: Scale-In Strategy is active\n"
+                        "• [b][bold yellow]*[/][/]: Unsaved draft in the Sandbox\n\n"
+                        "[bold cyan]ACTION TRIGGERS[/]\n"
+                        "• [b][on red] Price [/][/]: [bold red]EMERGENCY.[/] Stop breached. Exit position.\n"
+                        "• [b][bold cyan]★[/][/]: [bold cyan]TAKE PROFIT HIT.[/] Price reached 3x ATR target. Trim/Exit.\n"
+                        "• [b][bold green]⬆[/][/]: [bold green]SCALE-IN TRIGGERED.[/] Add shares to reach next stage.\n\n"
+                        "[bold cyan]ROADMAP STATUS[/]\n"
+                        "• [b][dim green]✓[/][/]: Stage is filled (shares acquired).\n"
+                        "• [b][bold yellow]![/][/]: Stage target hit, waiting for you to buy shares.\n\n"
+                        "[bold cyan]COLOR METRICS[/]\n"
+                        "• [b]Risk (% NAV):[/] [green]< 1.0%[/] | [yellow]1.0% - 1.5%[/] | [red]> 1.5%[/]\n"
+                        "• [b]RR (Efficiency):[/] [green]> 3.0[/] | [yellow]1.0 - 3.0[/] | [red]< 1.0[/]\n"
+                    )
+                with TabPane("Metrics & Audit", id="tab-metrics"):
+                    yield Static(
+                        "[bold cyan]RISK DEFINITIONS[/]\n"
+                        "• [b]Stop Base:[/] Reference point (Avg Cost for Fixed | Max High for Trailing).\n"
+                        "• [b]Stop P:[/] The absolute exit price (Base - ATR).\n"
+                        "• [b]SL %:[/] Percentage decrease from BASE needed to hit stop.\n"
+                        "• [b]R (% NAV):[/] Risk at Stop. Total potential loss as a % of your portfolio.\n"
+                        "• [b]RR (Efficiency):[/] Reward-to-Risk Ratio. (Target - Price) / (Price - Stop).\n\n"
+                        "[bold cyan]DUAL-CONSTRAINT AUDIT[/]\n"
+                        "• [b]Risk Limit (1.0%):[/] Evaluates if Potential Loss from Entry to Stop exceeds 1.0% of NAV.\n"
+                        "• [b]Exposure Limit (5.0%):[/] Evaluates if Current Position Value exceeds 5.0% of NAV.\n"
+                    )
+                with TabPane("Scale-In Guide", id="tab-scale"):
+                    yield Static(
+                        "[bold cyan]THE PILOT ENTRY STRATEGY[/]\n"
+                        "• [b]Stage 1 (Pilot):[/] Entry with 1/3rd Risk (0.33%) and ATR Stop.\n"
+                        "• [b]Stage 2 (Confirm):[/] Add 1/3rd when Price moves +0.5 ATR.\n"
+                        "• [b]Stage 3 (Full):[/] Add final 1/3rd when Price moves +1.0 ATR. Total risk = 1.0%.\n\n"
+                        "[bold cyan]HOW IT WORKS[/]\n"
+                        "The system calculates the 'Full Target' size by taking the minimum of the 1% Risk Limit "
+                        "and the 5% Exposure Limit. It then breaks that target into 3 tranches.\n\n"
+                        "Your original Trade Date anchors the Trailing Stop to ensure High-Water Marks remain accurate.\n"
+                    )
+                with TabPane("Strategy Lab", id="tab-syntax"):
+                    yield Static(
+                        "Format: [bold cyan]ATR_VALUE [F/T] [S] [Step][/]\n\n"
+                        "• [b]ATR_VALUE:[/] The width of your stop. Absolute dollar (e.g., '14.5') or percentage (e.g., '10%').\n"
+                        "• [b][F/T]:[/] Stop Type. 'F' = Fixed. 'T' = Trailing.\n"
+                        "• [b][S]:[/] (Optional) Scale-In Flag. Converts a SINGLE entry into a 3-Stage Pilot roadmap.\n"
+                        "• [b][Step]:[/] (Optional) Scale-In Multiplier (e.g., 0.5 or 1.0).\n\n"
+                        "[bold yellow]SMART DEFAULTS (If Step is omitted)[/]\n"
+                        "• [b]Macro ATRs (>1.2x 14d window):[/] Defaults to 0.5x step (faster compounding).\n"
+                        "• [b]Micro ATRs (<=1.2x 14d window):[/] Defaults to 1.0x step (prevents daily whipsaws).\n\n"
+                        "[bold yellow]CONTROLS[/]\n"
+                        "• [bold]ENTER:[/] Model hypothetically in the Lab and Grid.\n"
+                        "• [bold]CTRL+ENTER:[/] Save permanently to Database.\n"
+                    )
+            yield Label("Press ESC or F1 to Close", id="close-hint")
 
 # =============================================================================
 # 2. MAIN WORKSPACE APPLICATION
@@ -147,7 +175,7 @@ class RiskWorkspace(App):
                 with Vertical(id="strategy-lab"):
                     yield Label("ASSIGN RISK STRATEGY (Sandbox)", classes="panel-header")
                     with Horizontal(id="lab-inputs"):
-                        yield Input(placeholder="[Value/%] [F/T] [Enter: Model | Ctrl+Enter: Save]", id="atr-input")
+                        yield Input(placeholder="[Value/%] [F/T] [S] [Step] (Enter: Model | Ctrl+Enter: Save)", id="atr-input")
             
             # --- RIGHT PANE: Discovery Sidebar ---
             with Vertical(id="right-pane"):
@@ -213,12 +241,34 @@ class RiskWorkspace(App):
                 d_entry = "/S" if self.drafts[conid_str]['entry_type'] == 'SCALE_IN' else ""
                 ticker_display = f"[bold yellow]* [{d_type}{d_entry}] {row['Ticker']}"
 
-            # 2. Breach Signal (Cur P vs Stop P)
+            # 2. Breach Signal & Upside Targets
             cur_p_val = row['Price']
             sl_price_val = row['SL_Price']
+            tp_price_val = row.get('TP_Price', None)
             cur_p_display = f"{cur_p_val:,.2f}"
+            
             if has_risk and pd.notnull(sl_price_val) and cur_p_val <= sl_price_val:
                 cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
+            else:
+                upside_hit = False
+                # Check Take Profit
+                if has_risk and pd.notnull(tp_price_val) and cur_p_val >= tp_price_val:
+                    ticker_display += " [bold cyan]★[/]"
+                    upside_hit = True
+                
+                # Check Scale-In Targets if Take Profit wasn't hit
+                if not upside_hit and has_risk and row.get('EntryType') == 'SCALE_IN':
+                    inception_p = row.get('Inception', row['Entry'])
+                    pilot = RiskEngine.calculate_pilot_entry(cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), inception_p)
+                    current_qty = row['Qty']
+                    target_full = pilot['full_target_qty']
+                    
+                    # Check if we are due for an add
+                    if current_qty < target_full:
+                        if current_qty <= (target_full * 0.4) and cur_p_val >= pilot['stage2_price']:
+                            ticker_display += " [bold green]⬆[/]"
+                        elif current_qty <= (target_full * 0.75) and current_qty > (target_full * 0.4) and cur_p_val >= pilot['stage3_price']:
+                            ticker_display += " [bold green]⬆[/]"
 
             # 3. Risk & Exposure Format
             r_val = f"{row['risk_pct_nav']:.1f}%"
@@ -332,10 +382,21 @@ class RiskWorkspace(App):
                 
                 if metrics.get('EntryType') == 'SCALE_IN':
                     target_outlay = pilot['scale_in_outlay']
-                    remaining = max(0, target_outlay - current_outlay)
-                    
                     target_full = pilot['full_target_qty']
-                    target_unit = pilot['shares']
+                    current_qty = pos.qty
+                    
+                    # Quantity-driven remaining capital: only calculate if we are below target
+                    if current_qty < target_full:
+                        # Estimate cost of remaining shares at their projected roadmap prices
+                        s2_total = int(target_full * (2.0/3.0))
+                        s3_total = int(target_full)
+                        s2_add = max(0, s2_total - int(current_qty))
+                        s3_add = max(0, s3_total - (int(current_qty) + s2_add))
+                        
+                        # Remaining capital is the cost of the shares we still need to buy
+                        remaining = (s2_add * pilot['stage2_price'] * pos.multiplier) + (s3_add * pilot['stage3_price'] * pos.multiplier)
+                    else:
+                        remaining = 0
                     
                     if current_qty <= (target_full * 0.4): stage = 1
                     elif current_qty <= (target_full * 0.75): stage = 2
@@ -347,16 +408,41 @@ class RiskWorkspace(App):
                     s2_add = max(0, s2_total - int(current_qty))
                     s3_add = max(0, s3_total - (int(current_qty) + s2_add))
                     
+                    s2_hit = cur_p >= pilot['stage2_price']
+                    s3_hit = cur_p >= pilot['stage3_price']
+                    
+                    if s2_add == 0:
+                        s2_display = f"[dim green]✓ Stage 2 @:  {pilot['stage2_price']:,.2f} (Filled)[/]"
+                    elif s2_hit:
+                        s2_display = f"[bold yellow]! Stage 2 @:  {pilot['stage2_price']:,.2f} (Add +{s2_add} sh)[/]"
+                    else:
+                        s2_display = f"[b]Stage 2 @:  {pilot['stage2_price']:,.2f}[/] (Add +{s2_add} sh)"
+
+                    if s3_add == 0:
+                        s3_display = f"[dim green]✓ Stage 3 @:  {pilot['stage3_price']:,.2f} (Filled)[/]"
+                    elif s3_hit:
+                        s3_display = f"[bold yellow]! Stage 3 @:  {pilot['stage3_price']:,.2f} (Add +{s3_add} sh)[/]"
+                    else:
+                        s3_display = f"[b]Stage 3 @:  {pilot['stage3_price']:,.2f}[/] (Add +{s3_add} sh)"
+
                     roadmap_content = (
                         f"  - Current:   {int(current_qty)} sh (@ {pos.entry_price:,.2f})\n"
-                        f"  - [b]Stage 2 @:  {pilot['stage2_price']:,.2f}[/] (Add +{s2_add} sh)\n"
-                        f"  - [b]Stage 3 @:  {pilot['stage3_price']:,.2f}[/] (Add +{s3_add} sh)\n"
+                        f"  - {s2_display}\n"
+                        f"  - {s3_display}\n"
                         f"  - [cyan]Target Outlay: {target_outlay:,.0f} {pos.ccy}[/]\n"
                         f"  - [yellow]Remaining Cap: {remaining:,.0f} {pos.ccy}[/]"
                     )
                 else:
                     target_outlay = pilot['single_outlay']
-                    remaining = max(0, target_outlay - current_outlay)
+                    target_full = pilot['full_target_qty']
+                    current_qty = pos.qty
+                    
+                    # Quantity-driven remaining capital
+                    if current_qty < target_full:
+                        remaining = (target_full - current_qty) * cur_p * pos.multiplier
+                    else:
+                        remaining = 0
+                        
                     roadmap_content = (
                         f"  - Current:   {int(current_qty)} sh (@ {pos.entry_price:,.2f})\n"
                         f"  - Target:    {target_full} sh (Full 1% Unit)\n"
@@ -364,11 +450,13 @@ class RiskWorkspace(App):
                         f"  - [yellow]Remaining Cap: {remaining:,.0f} {pos.ccy}[/]"
                     )
 
+                step_val = metrics.get('ScaleStep', 0.5)
                 pilot_content = (
                     f"--------------------------------------\n"
                     f"POSITION ROADMAP:{stage_text}\n"
                     f"{roadmap_content}\n"
-                    f"  - Pilot Stop: [bold]{pilot['stop']:,.2f}[/] (assigned ATR)"
+                    f"  - Pilot Stop: [bold]{pilot['stop']:,.2f}[/] (assigned ATR)\n"
+                    f"  - Scale Step: [bold]{step_val}x ATR[/]"
                 )
         else:
             # Standalone exposure check if no stop exists yet
@@ -427,31 +515,46 @@ class RiskWorkspace(App):
             return
 
         try:
-            # Pattern: [Value/%] [F/T] [S]
-            match = re.match(r"([0-9\.%]+)\s*([FT]?)\s*([S]?)", raw_text)
+            # Pattern: [Value/%] [F/T] [S] [Step]
+            match = re.match(r"([0-9\.%]+)\s*([FT]?)\s*([S]?)\s*([0-9\.]*)", raw_text)
             if not match: return
-            val_part, type_char, scale_in_char = match.groups()
+            val_part, type_char, scale_in_char, step_char = match.groups()
             stop_type = "FIXED" if type_char == 'F' else "TRAILING"
             entry_type = "SCALE_IN" if scale_in_char == 'S' else "SINGLE"
-
+            
             pos_obj = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
             disc_data = self.discovery_cache.get(self.current_conid)
             if not pos_obj: return
 
             # Calculate Model
             final_atr = 0.0
+            daily_atr = 0.0
+            if disc_data and 'rows' in disc_data and disc_data['rows']:
+                daily_atr = next((r.atr_wilder for r in disc_data['rows'] if r.label == '14d'), disc_data['rows'][0].atr_wilder)
+
             if val_part.endswith('%'):
                 pct = float(val_part[:-1]) / 100
                 base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else pos_obj.entry_price
                 final_atr = base_p * pct
             else:
                 val = float(val_part)
-                if 0.1 <= val <= 5.0 and disc_data:
-                    daily_atr = next((r.atr_wilder for r in disc_data['rows'] if r.label == '14d'), disc_data['rows'][0].atr_wilder)
+                if 0.1 <= val <= 5.0 and daily_atr > 0:
                     final_atr = daily_atr * val
                 else: final_atr = val
 
             if final_atr <= 0: return
+
+            # Default scale step logic based on input value
+            scale_step = 0.5
+            if step_char:
+                try: scale_step = float(step_char)
+                except: pass
+            else:
+                # Auto-detect if no step provided: <= 1.2x 14d window -> 1.0x step, else 0.5x step
+                if daily_atr > 0:
+                    scale_step = 1.0 if final_atr <= (1.2 * daily_atr) else 0.5
+                else:
+                    scale_step = 0.5
 
             base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else pos_obj.entry_price
             sl_price = base_p - final_atr
@@ -493,7 +596,7 @@ class RiskWorkspace(App):
             # 2. Update Risk Audit Checklist with hypothetical stop
             self.refresh_risk_checklist(hypo_stop=sl_price)
 
-            self.drafts[self.current_conid] = {'atr': final_atr, 'type': stop_type, 'ticker': pos_obj.ticker, 'entry_type': entry_type}
+            self.drafts[self.current_conid] = {'atr': final_atr, 'type': stop_type, 'ticker': pos_obj.ticker, 'entry_type': entry_type, 'scale_step': scale_step}
         except: pass
 
     def on_key(self, event) -> None:
@@ -501,7 +604,7 @@ class RiskWorkspace(App):
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'])
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5))
                 self.notify(f"COMMITTED: {d['ticker']} @ {d['atr']:.2f} ({d['entry_type']})")
                 self.query_one("#atr-input").value = ""; self.load_portfolio()
                 self.query_one("#portfolio-table").focus()
@@ -509,7 +612,7 @@ class RiskWorkspace(App):
     def action_save_all(self) -> None:
         if not self.drafts: return
         for conid, draft in self.drafts.items(): 
-            set_position_risk(conid, draft['ticker'], draft['atr'], draft['type'], entry_type=draft['entry_type'])
+            set_position_risk(conid, draft['ticker'], draft['atr'], draft['type'], entry_type=draft['entry_type'], scale_step=draft.get('scale_step', 0.5))
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
         self.drafts.clear(); self.load_portfolio(); self.query_one("#atr-input").value = ""
 

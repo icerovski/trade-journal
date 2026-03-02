@@ -36,12 +36,18 @@ def init_db():
             atr_value REAL NOT NULL,
             stop_type TEXT NOT NULL,
             entry_type TEXT DEFAULT 'SINGLE',
+            scale_step REAL DEFAULT 0.5,
             highest_sl REAL DEFAULT 0.0,
             status TEXT DEFAULT 'ACTIVE',
             start_date TEXT,
             end_date TEXT
         )
     """)
+    # Migration: Add scale_step if it doesn't exist
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN scale_step REAL DEFAULT 0.5")
+    except:
+        pass
     
     # Ensure conid unique for ACTIVE profiles
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
@@ -76,7 +82,7 @@ def wipe_trades_only():
     conn.close()
     init_db()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True, entry_type='SINGLE'):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True, entry_type='SINGLE', scale_step=0.5):
     """Saves or updates the ACTIVE risk profile for a conid."""
     conn = get_conn()
     conid = str(conid)
@@ -89,20 +95,20 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=T
         if reset_sl:
             conn.execute("""
                 UPDATE risk_profiles SET 
-                    atr_value = ?, stop_type = ?, entry_type = ?, highest_sl = 0.0, ticker = ?
+                    atr_value = ?, stop_type = ?, entry_type = ?, scale_step = ?, highest_sl = 0.0, ticker = ?
                 WHERE id = ?
-            """, (float(atr), stop_type.upper(), entry_type.upper(), ticker.upper(), existing['id']))
+            """, (float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), ticker.upper(), existing['id']))
         else:
             conn.execute("""
                 UPDATE risk_profiles SET 
-                    atr_value = ?, stop_type = ?, entry_type = ?, ticker = ?
+                    atr_value = ?, stop_type = ?, entry_type = ?, scale_step = ?, ticker = ?
                 WHERE id = ?
-            """, (float(atr), stop_type.upper(), entry_type.upper(), ticker.upper(), existing['id']))
+            """, (float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), ticker.upper(), existing['id']))
     else:
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, start_date, status) 
-            VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), start_date))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, start_date, status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), start_date))
     
     conn.commit()
     conn.close()

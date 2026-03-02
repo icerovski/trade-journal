@@ -112,7 +112,18 @@ class RiskEngine:
         Implements the 'Ratchet' rule: Stop Loss only moves in the trader's favor.
         """
         if str(position.conid) in risk_settings:
-            atr, s_type, highest_sl, e_type = risk_settings[str(position.conid)]
+            settings = risk_settings[str(position.conid)]
+            
+            # Handle tuple unpacking gracefully for backwards compatibility during session updates
+            if len(settings) == 5:
+                atr, s_type, highest_sl, e_type, scale_step = settings
+            elif len(settings) == 4:
+                atr, s_type, highest_sl, e_type = settings
+                scale_step = 0.5
+            else:
+                atr, s_type, highest_sl = settings[:3]
+                e_type = 'SINGLE'
+                scale_step = 0.5
             
             # 1. Base Stop Loss Calculation
             # Stop Base is Entry Price (Fixed) or Max Price Since Entry (Trailing)
@@ -123,6 +134,7 @@ class RiskEngine:
             position.atr = atr
             position.stop_type = s_type
             position.entry_type = e_type
+            position.scale_step = scale_step
             
             # 2. Ratchet Rule (High-Water Mark)
             final_sl = max(calculated_sl, highest_sl)

@@ -258,3 +258,23 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   You can see this in action in the Asset Context & Risk Audit panel. If the
   Exposure limit is the bottleneck, you will notice the "Full Target"
   quantity is capped at exactly 5% of your total NAV.
+
+#### ATR, Stop, Scale-In, Increments
+
+    1. Manual Override (Absolute Control)
+  You can now add a 4th parameter to your Strategy Lab command to dictate the exact
+  scale step.
+   * 49.5 T S 0.5 -> Trailing Stop, Scale-In, 0.5x increments.
+   * 14.5 T S 1.0 -> Trailing Stop, Scale-In, 1.0x increments.
+   * 10% T S 0.75 -> Trailing Stop, Scale-In, 0.75x increments.
+
+
+  2. The "Smart Default" (If you forget to type the step)
+  If you simply type 49.5 T S (omitting the step size), the system automatically
+  analyzes the "width" of your ATR to deduce your timeframe:
+   * It calculates your assigned ATR as a percentage of the current stock price.
+   * Macro Trend ( > 15% of Price): If your ATR is massive (like an 8q window), the
+     system automatically sets the scale step to 0.5x.
+   * Micro Trend ( <= 15% of Price): If your ATR is small (like a 14d window), the
+     system automatically sets the scale step to 1.0x to prevent you from getting
+     whipsawed by daily noise.

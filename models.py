@@ -72,6 +72,7 @@ class Position:
     atr: float = 0.0
     stop_type: str = "FIXED"
     entry_type: str = "SINGLE"
+    scale_step: float = 0.5
     sl_price: Optional[float] = None
     tp_price: Optional[float] = None
     down_pct: float = 0.0
@@ -107,6 +108,7 @@ class Position:
             'ATR': self.atr,
             'StopType': self.stop_type,
             'EntryType': self.entry_type,
+            'ScaleStep': self.scale_step,
             'SL_Price': self.sl_price,
             'TP_Price': self.tp_price,
             'Down_Pct': self.down_pct,
