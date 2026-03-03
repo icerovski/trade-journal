@@ -40,6 +40,15 @@ class IBKRParser:
                 if not ticker or side not in ['BUY', 'SELL'] or qty == 0:
                     continue
 
+                try:
+                    date_normalized = pd.to_datetime(date_val).strftime("%Y-%m-%d")
+                    price = float(row.get('Price', row.get('TradePrice', 0)))
+                    multiplier = float(row.get('Multiplier', 1.0))
+                    asset_cat = str(row.get('AssetClass', 'STK')).upper()
+                except Exception as e:
+                    logger.warning(f"Skipping confirmation row for {ticker}: {e}")
+                    continue
+
                 # Normalize Conid
                 conid_raw = row.get('Conid')
                 try:
@@ -51,7 +60,7 @@ class IBKRParser:
                     conid = ticker # Fallback
 
                 # 1. Fingerprint De-duplication: Delete manual entries that match this trade
-                deleted_count = db.delete_manual_duplicates(ticker, date_val, qty, side)
+                deleted_count = db.delete_manual_duplicates(ticker, date_normalized, qty, side)
                 if deleted_count > 0:
                     logger.info(f"Reconciled {deleted_count} manual entries for {ticker}")
 
@@ -70,11 +79,11 @@ class IBKRParser:
 
                 # 3. Ingest Official Trade (Activity Only)
                 ib_id = row.get('TradeID') or row.get('ExecID')
-                ext_id = str(ib_id) if ib_id else f"CONF-{date_val}-{ticker}-{qty}"
+                ext_id = str(ib_id) if ib_id else f"CONF-{date_normalized}-{ticker}-{qty}"
 
                 if not db.trade_exists(ext_id):
                     db.add_trade(
-                        date=date_val, ticker=ticker, side=side, 
+                        date=date_normalized, ticker=ticker, side=side, 
                         quantity=qty, price=price, conid=conid,
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
                         source="IBKR_CONFIRMATION", external_id=ext_id
