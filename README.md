@@ -273,8 +273,36 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
   If you simply type 49.5 T S (omitting the step size), the system automatically
   analyzes the "width" of your ATR to deduce your timeframe:
    * It calculates your assigned ATR as a percentage of the current stock price.
-   * Macro Trend ( > 15% of Price): If your ATR is massive (like an 8q window), the
+   * Macro Trend ( > 15% of Price): If your ATR is massive (like a 12q window), the
      system automatically sets the scale step to 0.5x.
    * Micro Trend ( <= 15% of Price): If your ATR is small (like a 14d window), the
      system automatically sets the scale step to 1.0x to prevent you from getting
      whipsawed by daily noise.
+
+#### The Strategy Lab Logic:
+   1. Stop Loss: You now type your stop as a percentage by default (e.g., 15).
+   2. Scaling Unit: The "Step" (the 4th parameter) now explicitly uses the 14d ATR (Market Heartbeat) as its unit.
+
+  Examples:
+   * Legacy Play (BRK-B): 25 T S 0.5
+       * Stop is 25% below the high (Wide Moat).
+       * Add shares every 0.5x of the 14d ATR (Rapid building while it's trending).
+   * Tactical Play (META): 10 T S 1.0
+       * Stop is 10% below the high (Standard correction).
+       * Add shares every 1.0x of the 14d ATR (Slower, more confirmed entry).
+
+
+  1. Capital-First Audit
+  The "ASSET CONTEXT" section now leads with your available budget in your local currency:
+   * Risk Budget: Shows exactly how many Dollars/Euros you have left before you hit your 1.0% risk limit.
+   * Exp. Budget: Shows the remaining capital you can invest before hitting your 5.0% exposure cap.
+   * Action: Now says "Room for +X shares" based on the most restrictive of the two budgets.
+
+
+  2. Intelligent Roadmap (Catch-up Logic)
+  The 3-stage roadmap now analyzes your actual position relative to the current price:
+   * Price Awareness: If the price has reached the Stage 3 level, but you skipped Stage 2, the system will mark Stage 2 as "Skipped/Passed."
+   * Cumulative Sizing: It will then calculate exactly how many shares you need to add to reach the Stage 3 target from wherever you are now.
+   * Clear Visuals:
+       * ✓ (Filled): You have enough shares for this stage.
+       * ! (Action): Price hit the target, and you are missing shares. Shows exactly how many to buy to "catch up."

@@ -20,24 +20,30 @@ class RiskEngine:
     def audit_position_risk(current_price: float, stop: float, entry_price: float, qty: float, multiplier: float, nav: float) -> dict:
         """
         Evaluate a position against two hard limits: 1.0% Risk-at-Stop and 5% Total Market Exposure.
-        Risk is calculated relative to the Entry Price: (Entry - Stop) * Qty * Multiplier.
-        Exposure is calculated as: Current Price * Qty * Multiplier.
+        Returns the remaining capital budget for both constraints.
         """
         if nav <= 0:
             return {
                 "status_color": "RED",
-                "current_risk_pct": 0.0,
-                "current_exposure_pct": 0.0,
-                "max_shares": 0.0,
-                "adjustment": -qty,
+                "risk_budget_remaining": 0.0,
+                "exposure_budget_remaining": 0.0,
                 "is_breached": False
             }
 
+        # 1. Current State
         risk_val = (entry_price - stop) * qty * multiplier
         exposure_val = current_price * qty * multiplier
 
         risk_pct = (risk_val / nav) * 100
         exposure_pct = (exposure_val / nav) * 100
+        
+        # 2. Maximum Budget
+        max_risk_cap = nav * 0.01
+        max_exposure_cap = nav * 0.05
+
+        # 3. Remaining Budget (In Dollars/Euros)
+        risk_budget_rem = max_risk_cap - risk_val
+        exposure_budget_rem = max_exposure_cap - exposure_val
         
         is_breached = current_price <= stop
 
@@ -48,44 +54,39 @@ class RiskEngine:
         else:
             status_color = "GREEN"
 
-        risk_dist = (entry_price - stop) * multiplier
-        max_shares_risk = (nav * 0.01) / risk_dist if risk_dist > 0 else float('inf')
-        max_shares_exposure = (nav * 0.05) / (current_price * multiplier) if current_price > 0 else float('inf')
-
-        max_shares = min(max_shares_risk, max_shares_exposure)
-        adjustment = max_shares - qty
-
         return {
             "status_color": status_color,
             "current_risk_pct": risk_pct,
             "current_exposure_pct": exposure_pct,
-            "max_shares": max_shares,
-            "adjustment": adjustment,
+            "risk_budget_rem": risk_budget_rem,
+            "exposure_budget_rem": exposure_budget_rem,
             "is_breached": is_breached
         }
 
     @staticmethod
-    def calculate_pilot_entry(current_price: float, atr: float, nav: float, multiplier: float, entry_price: float) -> dict:
+    def calculate_pilot_entry(current_price: float, assigned_atr: float, nav: float, multiplier: float, 
+                              entry_price: float, daily_atr: float, scale_step: float = 0.5) -> dict:
         """
-        Calculates the Pilot Entry roadmap based on Entry Price and ATR.
-        Includes total financial outlay targets for scaling and single purchases.
-        Target Qty is the minimum of 1% Risk Limit and 5% Exposure Limit.
+        Calculates the Pilot Entry roadmap.
+        - assigned_atr: The width of the STOP LOSS (e.g. 15% of price).
+        - daily_atr: The 14d 'heartbeat' used for SCALING milestones.
+        - scale_step: Multiplier applied to daily_atr for each stage add.
         """
-        if nav <= 0 or current_price <= 0 or atr <= 0:
+        if nav <= 0 or current_price <= 0 or assigned_atr <= 0:
             return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
             
-        # 1. Dual-Constraint Target Calculation
-        qty_by_risk = (nav * 0.01) / (atr * multiplier)
-        qty_by_exposure = (nav * 0.05) / (current_price * multiplier)
+        # 1. Dual-Constraint Target Calculation (Matches Audit Logic)
+        risk_dist = assigned_atr * multiplier
+        qty_by_risk = (nav * 0.01) / risk_dist if risk_dist > 0 else 0
+        qty_by_exposure = (nav * 0.05) / (current_price * multiplier) if current_price > 0 else 0
         
         full_target_qty = int(min(qty_by_risk, qty_by_exposure))
         unit_shares = int(full_target_qty / 3.0)
         
-        stop_dist = atr
-        
-        # 2. Financial Milestones
-        s2_p = entry_price + (0.5 * atr)
-        s3_p = entry_price + (1.0 * atr)
+        # 2. Financial Milestones (Based on the 14d Daily ATR Heartbeat)
+        step_dist = daily_atr * scale_step
+        s2_p = entry_price + step_dist
+        s3_p = entry_price + (2 * step_dist)
         
         # Scale-In Total Outlay: Sum of 3 tranches at their respective prices
         tranche = full_target_qty / 3.0
@@ -96,7 +97,7 @@ class RiskEngine:
         
         return {
             "shares": unit_shares,
-            "stop": current_price - stop_dist,
+            "stop": current_price - assigned_atr,
             "risk_pct": 0.33,
             "stage2_price": s2_p,
             "stage3_price": s3_p,
@@ -207,7 +208,8 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             ("14d", 14, 'daily'),
             ("12w", 12, 'weekly'),
             ("12m", 12, 'monthly'),
-            ("8q", 8, 'quarterly')
+            ("12q", 12, 'quarterly'),
+            ("20q", 20, 'quarterly')
         ]
         
         results = []
@@ -215,8 +217,13 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             if conid:
                 df = price_service.get_prices(conid, timeframe=tf)
             else:
+                # Map timeframe to yfinance periods/intervals
                 yf_period = "3y" if tf == 'daily' else ("5y" if tf == 'weekly' else ("10y" if tf == 'monthly' else "max"))
                 yf_interval = "1d" if tf == 'daily' else ("1wk" if tf == 'weekly' else ("1mo" if tf == 'monthly' else "3mo"))
+                
+                # Quarterly needs max to ensure enough history for 20q
+                if tf == 'quarterly': yf_period = "max"
+                
                 df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
 
             if len(df) < window + 1: continue

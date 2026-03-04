@@ -68,17 +68,32 @@ class HelpScreen(ModalScreen):
                     )
                 with TabPane("Strategy Lab", id="tab-syntax"):
                     yield Static(
-                        "Format: [bold cyan]ATR_VALUE [F/T] [S] [Step][/]\n\n"
-                        "• [b]ATR_VALUE:[/] The width of your stop. Absolute dollar (e.g., '14.5') or percentage (e.g., '10%').\n"
+                        "Format: [bold cyan]VALUE [F/T] [S] [Step][/]\n\n"
+                        "• [b]VALUE:[/] Width of your stop. Numbers are treated as % by default (e.g., '15' = 15%).\n"
+                        "  - To use a dollar amount, prefix with '$' (e.g., '$45.2').\n"
                         "• [b][F/T]:[/] Stop Type. 'F' = Fixed. 'T' = Trailing.\n"
-                        "• [b][S]:[/] (Optional) Scale-In Flag. Converts a SINGLE entry into a 3-Stage Pilot roadmap.\n"
-                        "• [b][Step]:[/] (Optional) Scale-In Multiplier (e.g., 0.5 or 1.0).\n\n"
+                        "• [b][S]:[/] (Optional) Scale-In Flag. Activates the 3-Stage Pilot roadmap.\n"
+                        "• [b][Step]:[/] (Optional) The [bold green]scaling unit[/]. Multiplier applied to the standard 14d ATR.\n"
+                        "  - [i]Example:[/] '15 T S 1.0' = 15% stop, add shares every 1.0x daily volatility.\n\n"
                         "[bold yellow]SMART DEFAULTS (If Step is omitted)[/]\n"
-                        "• [b]Macro ATRs (>1.2x 14d window):[/] Defaults to 0.5x step (faster compounding).\n"
-                        "• [b]Micro ATRs (<=1.2x 14d window):[/] Defaults to 1.0x step (prevents daily whipsaws).\n\n"
+                        "• [b]Macro Stops (>15%):[/] Defaults to 0.5x step (fast build-up for long-term trends).\n"
+                        "• [b]Micro Stops (<=15%):[/] Defaults to 1.0x step (prevents whipsaws on tactical trades).\n\n"
                         "[bold yellow]CONTROLS[/]\n"
                         "• [bold]ENTER:[/] Model hypothetically in the Lab and Grid.\n"
                         "• [bold]CTRL+ENTER:[/] Save permanently to Database.\n"
+                    )
+                with TabPane("Conviction Tiers", id="tab-tiers"):
+                    yield Static(
+                        "[bold cyan]THE ATR DISCOVERY FRAMEWORK[/]\n"
+                        "Use the ATR Discovery tool to find the right 'heartbeat' for your position:\n\n"
+                        "• [b]14d (Tactical):[/] Market Noise. Use for short-term trades or tight management.\n"
+                        "• [b]12w (Quarterly):[/] Earnings Cycle. Captures the rolling quarterly average volatility.\n"
+                        "• [b]12m (Annual):[/] Business Cycle. One year of secular trend (Annualized Volatility).\n"
+                        "• [b]12q (Macro):[/] Market Cycle. 3-year lookback covering standard PE value creation cycles.\n"
+                        "• [b]20q (Strategic):[/] Structural Trend. 5-year 'Strategic Volatility' for core legacy assets.\n\n"
+                        "[bold yellow]IMPLEMENTATION GUIDE[/]\n"
+                        "Assign wider ATRs (12q/20q) to your [b]Tier 1 High-Conviction Holdings[/b] to ensure you aren't "
+                        "shaken out by standard market cycles. Use Tactical (14d) for speculative or momentum plays."
                     )
             yield Label("Press ESC or F1 to Close", id="close-hint")
 
@@ -175,7 +190,7 @@ class RiskWorkspace(App):
                 with Vertical(id="strategy-lab"):
                     yield Label("ASSIGN RISK STRATEGY (Sandbox)", classes="panel-header")
                     with Horizontal(id="lab-inputs"):
-                        yield Input(placeholder="[Value/%] [F/T] [S] [Step] (Enter: Model | Ctrl+Enter: Save)", id="atr-input")
+                        yield Input(placeholder="[SL %] [F/T] [S] [Step: 14d ATR Mult] (Enter: Model | Ctrl+Enter: Save)", id="atr-input")
             
             # --- RIGHT PANE: Discovery Sidebar ---
             with Vertical(id="right-pane"):
@@ -212,7 +227,7 @@ class RiskWorkspace(App):
         
         for table_id in ["#fixed-table", "#trailing-table"]:
             dt = self.query_one(table_id)
-            dt.add_columns("WIN", "ATR", "STOP", "SL%", "P/L", "R", "BUF%")
+            dt.add_columns("WIN", "ATR (SMA)", "STOP", "SL% (SMA)", "P/L", "R", "BUF%")
         
         self.load_portfolio()
 
@@ -259,7 +274,16 @@ class RiskWorkspace(App):
                 # Check Scale-In Targets if Take Profit wasn't hit
                 if not upside_hit and has_risk and row.get('EntryType') == 'SCALE_IN':
                     inception_p = row.get('Inception', row['Entry'])
-                    pilot = RiskEngine.calculate_pilot_entry(cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), inception_p)
+                    
+                    # Get daily ATR for the step logic
+                    daily_atr = row['ATR'] # Fallback
+                    disc_data = self.discovery_cache.get(conid_str)
+                    if disc_data and 'rows' in disc_data and disc_data['rows']:
+                        daily_atr = next((r.atr_wilder for r in disc_data['rows'] if r.label == '14d'), row['ATR'])
+                    
+                    scale_step = row.get('ScaleStep', 0.5)
+                    pilot = RiskEngine.calculate_pilot_entry(cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), 
+                                                             inception_p, daily_atr, scale_step)
                     current_qty = row['Qty']
                     target_full = pilot['full_target_qty']
                     
@@ -342,7 +366,8 @@ class RiskWorkspace(App):
             
             r_pct = res['current_risk_pct']
             e_pct = res['current_exposure_pct']
-            adj = res['adjustment']
+            r_budget = res['risk_budget_rem']
+            e_budget = res['exposure_budget_rem']
             
             # RR Efficiency
             dist_to_stop = (cur_p - stop_p)
@@ -352,17 +377,25 @@ class RiskWorkspace(App):
             
             if res['is_breached']:
                 action_text = "[bold red]STOP BREACHED. EXIT POSITION.[/]"
-            elif adj > 0:
-                action_text = f"Room to add [bold]+{int(adj)}[/] shares"
-            elif adj < 0:
-                action_text = f"Trim by [bold]{int(adj)}[/] shares"
             else:
-                action_text = "[bold]Max limit reached[/]"
+                # Calculate shares available based on the most restrictive budget
+                # For Risk: budget / (entry - stop)
+                # For Exposure: budget / current_price
+                risk_shares = r_budget / (abs(pos.entry_price - stop_p) * pos.multiplier) if abs(pos.entry_price - stop_p) > 0 else 0
+                exp_shares = e_budget / (cur_p * pos.multiplier) if cur_p > 0 else 0
+                adj = int(min(risk_shares, exp_shares))
+                
+                if adj > 0:
+                    action_text = f"Room for [bold]+{adj}[/] shares"
+                elif adj < 0:
+                    action_text = f"Over limit by [bold]{abs(adj)}[/] shares"
+                else:
+                    action_text = "[bold]Max limit reached[/]"
                 
             audit_content = (
                 f"STATUS: [bold {r_color}]{res['status_color']}[/]\n"
-                f"  - Risk: [bold {'red' if r_pct > 1.5 else ('yellow' if r_pct > 1.0 else 'green')}]{r_pct:.2f}%[/] (Lim: 1.0%)\n"
-                f"  - Exp:  [bold {'red' if e_pct > 5.5 else ('yellow' if e_pct >= 5.0 else 'green')}]{e_pct:.2f}%[/] (Lim: 5.0%)\n"
+                f"  - Risk Budget: {pos.ccy} {r_budget:,.0f} [dim]({r_pct:.2f}% of NAV)[/]\n"
+                f"  - Exp. Budget: {pos.ccy} {e_budget:,.0f} [dim]({e_pct:.2f}% of NAV)[/]\n"
                 f"  - Efficiency: [bold {rr_color}]{rr_val:.2f} RR[/]\n"
                 f"  - Action: {action_text}"
             )
@@ -370,67 +403,66 @@ class RiskWorkspace(App):
             # Scale-In Recommendation (Pilot)
             atr_val = metrics['ATR']
             if atr_val > 0:
+                # Get daily ATR for the step logic
+                daily_atr = atr_val # Fallback
+                disc_data = self.discovery_cache.get(self.current_conid)
+                if disc_data and 'rows' in disc_data and disc_data['rows']:
+                    daily_atr = next((r.atr_wilder for r in disc_data['rows'] if r.label == '14d'), atr_val)
+
                 # Use Inception Price for fixed milestones
                 inception_p = metrics.get('Inception', metrics['Entry'])
-                pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_val, self.total_nav, pos.multiplier, inception_p)
+                scale_step = metrics.get('ScaleStep', 0.5)
                 
-                # Financial Action Summary
-                target_full = pilot['full_target_qty']
+                pilot = RiskEngine.calculate_pilot_entry(
+                    cur_p, atr_val, self.total_nav, pos.multiplier, 
+                    inception_p, daily_atr, scale_step
+                )
+                
+                # Define current_qty first
                 current_qty = pos.qty
                 current_outlay = current_qty * pos.entry_price * pos.multiplier
                 stage_text = ""
                 
                 if metrics.get('EntryType') == 'SCALE_IN':
-                    target_outlay = pilot['scale_in_outlay']
                     target_full = pilot['full_target_qty']
-                    current_qty = pos.qty
-                    
-                    # Quantity-driven remaining capital: only calculate if we are below target
-                    if current_qty < target_full:
-                        # Estimate cost of remaining shares at their projected roadmap prices
-                        s2_total = int(target_full * (2.0/3.0))
-                        s3_total = int(target_full)
-                        s2_add = max(0, s2_total - int(current_qty))
-                        s3_add = max(0, s3_total - (int(current_qty) + s2_add))
-                        
-                        # Remaining capital is the cost of the shares we still need to buy
-                        remaining = (s2_add * pilot['stage2_price'] * pos.multiplier) + (s3_add * pilot['stage3_price'] * pos.multiplier)
-                    else:
-                        remaining = 0
-                    
-                    if current_qty <= (target_full * 0.4): stage = 1
-                    elif current_qty <= (target_full * 0.75): stage = 2
-                    else: stage = 3
-                    stage_text = f" [bold yellow](STAGE {stage}/3 ACTIVE)[/]"
-                    
-                    s2_total = int(target_full * (2.0/3.0))
-                    s3_total = int(target_full)
-                    s2_add = max(0, s2_total - int(current_qty))
-                    s3_add = max(0, s3_total - (int(current_qty) + s2_add))
+                    s2_target_qty = int(target_full * (2.0/3.0))
+                    s3_target_qty = int(target_full)
                     
                     s2_hit = cur_p >= pilot['stage2_price']
                     s3_hit = cur_p >= pilot['stage3_price']
                     
-                    if s2_add == 0:
-                        s2_display = f"[dim green]✓ Stage 2 @:  {pilot['stage2_price']:,.2f} (Filled)[/]"
+                    # CUMULATIVE ROADMAP LOGIC:
+                    # Stage 2 filled?
+                    s2_filled = current_qty >= (s2_target_qty * 0.95)
+                    s3_filled = current_qty >= (s3_target_qty * 0.95)
+                    
+                    # Required adds to catch up to current price level
+                    if s3_hit:
+                        current_stage = 3
+                        needed = max(0, s3_target_qty - int(current_qty))
+                        s2_display = f"[dim green]✓ Stage 2 @:  {pilot['stage2_price']:,.2f} (Skipped/Passed)[/]"
+                        s3_display = f"[bold yellow]! Stage 3 @:  {pilot['stage3_price']:,.2f} (Add +{needed} sh)[/]" if not s3_filled else f"[dim green]✓ Stage 3 @:  {pilot['stage3_price']:,.2f} (Filled)[/]"
                     elif s2_hit:
-                        s2_display = f"[bold yellow]! Stage 2 @:  {pilot['stage2_price']:,.2f} (Add +{s2_add} sh)[/]"
+                        current_stage = 2
+                        needed = max(0, s2_target_qty - int(current_qty))
+                        s2_display = f"[bold yellow]! Stage 2 @:  {pilot['stage2_price']:,.2f} (Add +{needed} sh)[/]" if not s2_filled else f"[dim green]✓ Stage 2 @:  {pilot['stage2_price']:,.2f} (Filled)[/]"
+                        s3_display = f"[b]Stage 3 @:  {pilot['stage3_price']:,.2f}[/] (Target: {s3_target_qty} sh)"
                     else:
-                        s2_display = f"[b]Stage 2 @:  {pilot['stage2_price']:,.2f}[/] (Add +{s2_add} sh)"
+                        current_stage = 1
+                        s2_display = f"[b]Stage 2 @:  {pilot['stage2_price']:,.2f}[/] (Target: {s2_target_qty} sh)"
+                        s3_display = f"[b]Stage 3 @:  {pilot['stage3_price']:,.2f}[/] (Target: {s3_target_qty} sh)"
 
-                    if s3_add == 0:
-                        s3_display = f"[dim green]✓ Stage 3 @:  {pilot['stage3_price']:,.2f} (Filled)[/]"
-                    elif s3_hit:
-                        s3_display = f"[bold yellow]! Stage 3 @:  {pilot['stage3_price']:,.2f} (Add +{s3_add} sh)[/]"
-                    else:
-                        s3_display = f"[b]Stage 3 @:  {pilot['stage3_price']:,.2f}[/] (Add +{s3_add} sh)"
+                    stage_text = f" [bold yellow](STAGE {current_stage}/3 ACTIVE)[/]"
+                    
+                    # Remaining capital to reach FULL target
+                    remaining = max(0, s3_target_qty - int(current_qty)) * cur_p * pos.multiplier
 
                     roadmap_content = (
                         f"  - Current:   {int(current_qty)} sh (@ {pos.entry_price:,.2f})\n"
                         f"  - {s2_display}\n"
                         f"  - {s3_display}\n"
-                        f"  - [cyan]Target Outlay: {target_outlay:,.0f} {pos.ccy}[/]\n"
-                        f"  - [yellow]Remaining Cap: {remaining:,.0f} {pos.ccy}[/]"
+                        f"  - [cyan]Full Target Outlay: {pilot['scale_in_outlay']:,.0f} {pos.ccy}[/]\n"
+                        f"  - [yellow]Capital to Full: {remaining:,.0f} {pos.ccy}[/]"
                     )
                 else:
                     target_outlay = pilot['single_outlay']
@@ -498,7 +530,14 @@ class RiskWorkspace(App):
         for row in data['rows']:
             r_color = "red" if row.pl_pct_nav > 1.5 else ("yellow" if row.pl_pct_nav > 1.0 else "white")
             pl_color = "green" if row.pl_at_stop >= 0 else "red"
-            row_vals = (row.label, f"{row.atr_wilder:.2f}", f"{row.stop_price:,.2f}", f"{row.atr_base_pct:.1f}%", 
+            atr_display = f"{row.atr_wilder:.2f} [dim]({row.atr_sma:.2f})[/]"
+            
+            # Calculate SMA-based SL %
+            base_p = data['max_price'] if row.stop_type == 'TRAILING' else data['entry_price']
+            sma_pct = (row.atr_sma / base_p * 100) if base_p > 0 else 0
+            sl_pct_display = f"{row.atr_base_pct:.1f}% [dim]({sma_pct:.1f}%)[/]"
+            
+            row_vals = (row.label, atr_display, f"{row.stop_price:,.2f}", sl_pct_display, 
                         f"[{pl_color}]{row.pl_at_stop:,.0f}[/]", f"[{r_color}]{row.pl_pct_nav:.1f}%[/]", f"{row.buffer_pct:.1f}%")
             if row.stop_type == "FIXED": fixed_table.add_row(*row_vals)
             else: trail_table.add_row(*row_vals)
@@ -532,15 +571,22 @@ class RiskWorkspace(App):
             if disc_data and 'rows' in disc_data and disc_data['rows']:
                 daily_atr = next((r.atr_wilder for r in disc_data['rows'] if r.label == '14d'), disc_data['rows'][0].atr_wilder)
 
-            if val_part.endswith('%'):
-                pct = float(val_part[:-1]) / 100
-                base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else pos_obj.entry_price
-                final_atr = base_p * pct
-            else:
-                val = float(val_part)
-                if 0.1 <= val <= 5.0 and daily_atr > 0:
-                    final_atr = daily_atr * val
-                else: final_atr = val
+            # --- SMART DEFAULT: PERCENTAGE (%) ---
+            # Treat all numeric inputs as percentages unless they specifically start with '$'
+            is_dollar = val_part.startswith('$')
+            clean_val = val_part[1:] if is_dollar else (val_part[:-1] if val_part.endswith('%') else val_part)
+            
+            try:
+                num_val = float(clean_val)
+                if is_dollar:
+                    final_atr = num_val
+                else:
+                    # Default to percentage behavior
+                    pct = num_val / 100
+                    base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else pos_obj.entry_price
+                    final_atr = base_p * pct
+            except ValueError:
+                return
 
             if final_atr <= 0: return
 
