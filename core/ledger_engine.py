@@ -20,15 +20,17 @@ class LedgerEngine:
         if not trades:
             return []
             
-        # Group trades by Conid manually since they are objects
-        trades_by_conid = {}
+        # Group trades by (Account, Conid) manually since they are objects
+        trades_by_key = {}
         for t in trades:
-            if t.conid not in trades_by_conid:
-                trades_by_conid[t.conid] = []
-            trades_by_conid[t.conid].append(t)
+            acct = getattr(t, 'account_id', 'U0000000')
+            key = (acct, t.conid)
+            if key not in trades_by_key:
+                trades_by_key[key] = []
+            trades_by_key[key].append(t)
 
         open_positions = []
-        for conid, group in trades_by_conid.items():
+        for (acct_id, conid), group in trades_by_key.items():
             # Sort by date
             group.sort(key=lambda x: x.date)
             
@@ -70,6 +72,7 @@ class LedgerEngine:
                     name=latest.description or latest.ticker,
                     ticker=latest.ticker,
                     conid=str(conid),
+                    account_id=str(acct_id),
                     asset_class=latest.asset_category,
                     ccy=latest.currency,
                     date_entry=pd.to_datetime(first_date),

@@ -37,17 +37,20 @@ class ReconciliationService:
 
         # 2. Pre-calculate ledger positions for cost-basis recovery
         # (The broker snapshot often lacks the original entry date/multiplier)
-        ledger_positions = {p.conid: p for p in ledger_engine.calculate_positions(all_trades)}
+        # Use (account_id, conid) as key to support multi-account isolation
+        ledger_positions = {f"{p.account_id}:{p.conid}": p for p in ledger_engine.calculate_positions(all_trades)}
 
         # 3. Process Broker Snapshot
-        for conid, v in broker_snapshot.items():
+        for key, v in broker_snapshot.items():
+            acct_id = v.get('account_id', 'U0000000')
+            conid = v.get('conid', key.split(':')[-1])
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
             multiplier = v.get('Multiplier', 1.0)
             inception_price = 0.0
             
             # Enrich with ledger history if available
-            if conid in ledger_positions:
-                lp = ledger_positions[conid]
+            if key in ledger_positions:
+                lp = ledger_positions[key]
                 if not entry or entry == 0:
                     entry = lp.entry_price
                 first_date = lp.date_entry
@@ -55,7 +58,8 @@ class ReconciliationService:
                 inception_price = lp.inception_price
 
             # 4. Apply 'Delta' (Pending Adjustments)
-            adjustments = [t for t in pending_deltas if t.conid == conid]
+            # Filter deltas for this specific (Account, Conid)
+            adjustments = [t for t in pending_deltas if str(t.conid) == str(conid) and getattr(t, 'account_id', 'U0000000') == acct_id]
             for t in adjustments:
                 side, q, p, m = t.side.upper(), t.quantity, t.price, t.multiplier
                 if side in ['BUY', 'TRANSFER_IN']:
@@ -77,16 +81,17 @@ class ReconciliationService:
             if qty > 0.0001:
                 open_list.append(Position(
                     name=v['Description'], ticker=ticker, conid=str(conid),
+                    account_id=acct_id,
                     listing_exchange=v['ListingExchange'], asset_class=v['AssetClass'],
                     underlying_symbol=v['UnderlyingSymbol'], ccy=v['Currency'], isin=str(v.get('ISIN', '')),
                     date_entry=pd.to_datetime(first_date), qty=qty, entry_price=entry, 
                     inception_price=inception_price,
                     multiplier=multiplier, mark_price=v['MarkPrice']
                 ))
-            matched_conids.add(str(conid))
+            matched_conids.add(key)
 
         # 5. Add delta trades for assets NOT in IBKR snapshot
-        remaining_delta = [t for t in pending_deltas if t.conid not in matched_conids]
+        remaining_delta = [t for t in pending_deltas if f"{getattr(t, 'account_id', 'U0000000')}:{t.conid}" not in matched_conids]
         if remaining_delta:
             open_list.extend(ledger_engine.calculate_positions(remaining_delta))
 

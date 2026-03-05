@@ -45,6 +45,7 @@ class IBKRParser:
                     price = float(row.get('Price', row.get('TradePrice', 0)))
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
+                    account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
                 except Exception as e:
                     logger.warning(f"Skipping confirmation row for {ticker}: {e}")
                     continue
@@ -85,9 +86,11 @@ class IBKRParser:
                     db.add_trade(
                         date=date_normalized, ticker=ticker, side=side, 
                         quantity=qty, price=price, conid=conid,
+                        account_id=account_id,
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
                         source="IBKR_CONFIRMATION", external_id=ext_id
                     )
+                    count += 1
                     count += 1
             return count
         except Exception as e:
@@ -126,6 +129,7 @@ class IBKRParser:
                     price = float(row.get('TradePrice', 0))
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
+                    account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
                     # Normalize Conid
                     conid_raw = row.get('Conid')
@@ -160,6 +164,7 @@ class IBKRParser:
                     db.add_trade(
                         date=date_str, ticker=ticker, side=side, 
                         quantity=qty, price=price, conid=conid,
+                        account_id=account_id,
                         notes=f"IBKR TRADES Import {datetime.now().date()}",
                         source="IBKR_TRADES_CSV", external_id=ext_id
                     )
@@ -198,6 +203,7 @@ class IBKRParser:
                     qty = abs(float(row.get('Quantity', 0)))
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
+                    account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
                     # Calculate price from PositionAmount (Cost Basis)
                     pos_amt = float(row.get('PositionAmount', 0))
@@ -239,6 +245,7 @@ class IBKRParser:
                         db.add_trade(
                             date=date_str, ticker=ticker, side=side, 
                             quantity=qty, price=price, conid=conid,
+                            account_id=account_id,
                             notes=f"IBKR TRANSFER Import ({row.get('Type')})",
                             source="IBKR_TRANSFER_CSV", external_id=ext_id
                         )
@@ -281,6 +288,7 @@ class IBKRParser:
                     raw_date = row.get('Report Date', row.get('Date'))
                     date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
                     qty = float(row.get('Quantity', 0))
+                    account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
                     
                     # Ensure qty is non-zero
                     if qty == 0: continue
@@ -308,6 +316,7 @@ class IBKRParser:
                         db.add_trade(
                             date=date_str, ticker=ticker, side='SPLIT', 
                             quantity=qty, price=0.0, conid=conid,
+                            account_id=account_id,
                             notes=f"IBKR CORP ACTION: {action_desc[:100]}",
                             source="IBKR_CORP_CSV", external_id=ext_id
                         )

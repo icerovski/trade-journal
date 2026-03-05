@@ -53,6 +53,7 @@ class Position:
     isin: str = ""
     listing_exchange: str = ""
     underlying_symbol: str = ""
+    account_id: str = "U0000000"
     
     # Market Data (Enriched later)
     current_price: float = 0.0
@@ -89,6 +90,7 @@ class Position:
             'Name': self.name,
             'Ticker': self.ticker,
             'conid': self.conid,
+            'account_id': self.account_id,
             'Date': self.date_entry,
             'Qty': self.qty,
             'Multiplier': self.multiplier,

@@ -52,3 +52,18 @@ IBKR_CONFIRMATIONS_CSV = LBD_DIR / "confirmations_today.csv"
 
 # Historical Ledger Files (within data_base)
 IBKR_TRADES_CSV = BASE_DATA_DIR / "trades_ytd.csv"
+
+# 6. Kids Fund Configuration
+KIDS_ACCOUNT_ID = "U21692599"
+KIDS_ASSETS = {
+    "GROWTH": {"ticker": "SXR8.DE", "currency": "EUR"}, 
+    "SAFETY": {"ticker": "IB01.L",  "currency": "USD"}   
+}
+KIDS_GLIDE_PATH = {
+    0:  0.00,
+    14: 0.00,
+    15: 0.20,
+    16: 0.40,
+    17: 0.60,
+    18: 1.00
+}

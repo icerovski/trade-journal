@@ -16,6 +16,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
+            account_id TEXT DEFAULT 'U0000000',
             conid TEXT NOT NULL,
             ticker TEXT NOT NULL,
             side TEXT NOT NULL,
@@ -26,6 +27,12 @@ def init_db():
             external_id TEXT UNIQUE
         )
     """)
+    # Migration: Add account_id if it doesn't exist
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN account_id TEXT DEFAULT 'U0000000'")
+    except:
+        pass
+
 
     # 2. Risk Profiles Table
     cursor.execute("""
@@ -70,6 +77,16 @@ def init_db():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_ibkr ON ticker_info(ticker_ibkr)")
+
+    # 4. Kids Fund Configuration
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kids_config (
+            name TEXT PRIMARY KEY,
+            birthdate TEXT NOT NULL,
+            base_units REAL NOT NULL,
+            base_date TEXT NOT NULL
+        )
+    """)
     
     conn.commit()
     conn.close()
@@ -150,15 +167,15 @@ def trade_exists(external_id):
     conn.close()
     return exists
 
-def add_trade(date, ticker, side, quantity, price, conid, notes="", source="MANUAL", external_id=None):
+def add_trade(date, ticker, side, quantity, price, conid, account_id='U0000000', notes="", source="MANUAL", external_id=None):
     """Inserts a trade execution or manual entry (Activity Only)."""
     conn = get_conn()
     try:
         conn.execute(
             """INSERT INTO trades 
-               (date, ticker, side, quantity, price, conid, notes, source, external_id) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (date, ticker.upper(), side.upper(), float(quantity), float(price), 
+               (date, account_id, ticker, side, quantity, price, conid, notes, source, external_id) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (date, account_id, ticker.upper(), side.upper(), float(quantity), float(price), 
              str(conid), notes, source, external_id)
         )
         conn.commit()
@@ -170,10 +187,24 @@ def add_trade(date, ticker, side, quantity, price, conid, notes="", source="MANU
 def get_manual_trades():
     """Returns all trades with source='MANUAL'."""
     conn = get_conn()
-    cursor = conn.execute("SELECT id, date, ticker, side, quantity, price FROM trades WHERE source = 'MANUAL' ORDER BY date DESC")
+    cursor = conn.execute("SELECT id, date, account_id, ticker, side, quantity, price FROM trades WHERE source = 'MANUAL' ORDER BY date DESC")
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+def seed_kids_fund():
+    """Initial seed of the kids fund configuration from the legacy JSON state."""
+    data = [
+        ("Angelina", "2016-01-18", 5430.3034, "2026-03-05"),
+        ("Ivan",     "2018-11-26", 3788.2800, "2026-03-05"),
+        ("Boris",    "2020-02-20", 3283.1760, "2026-03-05")
+    ]
+    conn = get_conn()
+    for name, dob, units, bdate in data:
+        conn.execute("INSERT OR IGNORE INTO kids_config (name, birthdate, base_units, base_date) VALUES (?, ?, ?, ?)",
+                     (name, dob, units, bdate))
+    conn.commit()
+    conn.close()
 
 def delete_manual_duplicates(ticker, date, quantity, side):
     """

@@ -41,7 +41,11 @@ def show_menu():
     menu_text.append("VIEW DASHBOARD   ", style="bold white")
     menu_text.append("(Performance & Risk Monitoring)\n", style="dim")
     
-    menu_text.append("[4] ", style="bold magenta")
+    menu_text.append("[4] ", style="bold yellow")
+    menu_text.append("KIDS FUND        ", style="bold white")
+    menu_text.append("(Private Wealth & Glide Path Audit)\n", style="dim")
+    
+    menu_text.append("[5] ", style="bold magenta")
     menu_text.append("MAINTENANCE      ", style="bold white")
     menu_text.append("(Surgical Rebuilds & System Tools)\n", style="dim")
     
@@ -211,6 +215,11 @@ def handle_view_dashboard():
     console.print("[cyan]Launching Trading Cockpit...[/cyan]")
     run_live_dashboard(PortfolioManager())
 
+def handle_kids_fund():
+    """Launch the Kids Fund Dashboard."""
+    from kids_fund_dashboard import run_kids_fund_dashboard
+    run_kids_fund_dashboard()
+
 def main():
     sync_config.smart_sync()
     init_db()
@@ -220,7 +229,8 @@ def main():
         if choice == '1': handle_sync_all()
         elif choice == '2': handle_manage_positions()
         elif choice == '3': handle_view_dashboard()
-        elif choice == '4': handle_maintenance()
+        elif choice == '4': handle_kids_fund()
+        elif choice == '5': handle_maintenance()
         elif choice == '0': sys.exit()
         else: console.print("[red]Invalid option.[/red]")
 

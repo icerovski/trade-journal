@@ -179,11 +179,18 @@ class DataLoader:
             report_date = pd.to_datetime(report_date_raw, errors='coerce')
             broker_data = {}
             
-            for conid_val, group in summaries.groupby('Conid'):
+            # Use ClientAccountID if available to support isolation
+            acct_col = next((c for c in ['ClientAccountID', 'AccountId'] if c in summaries.columns), 'AccountId')
+            if acct_col not in summaries.columns: summaries[acct_col] = 'U0000000'
+
+            for (acct_val, conid_val), group in summaries.groupby([acct_col, 'Conid']):
                 try:
                     conid_str = str(int(float(str(conid_val))))
                 except (ValueError, TypeError):
                     conid_str = str(conid_val)
+                
+                acct_str = str(acct_val)
+                key = f"{acct_str}:{conid_str}"
                     
                 qty = group['Quantity'].sum()
                 asset_cat = str(group['AssetClass'].iloc[0]).upper()
@@ -213,7 +220,9 @@ class DataLoader:
                     underlying_symbol=group['UnderlyingSymbol'].iloc[0]
                 )
 
-                broker_data[conid_str] = {
+                broker_data[key] = {
+                    'account_id': acct_str,
+                    'conid': conid_str,
                     'Qty': qty, 
                     'Entry': entry,
                     'Multiplier': multiplier,

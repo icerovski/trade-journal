@@ -55,13 +55,13 @@ class PortfolioManager:
     def recon(self):
         return self._recon or ReconciliationService()
 
-    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, silent=False):
+    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, silent=False, account_id=None):
         """
         Enriches open positions with market data and risk metrics.
         Uses Hybrid mode (Broker Snapshot + Manual Deltas).
         """
         risk_settings = get_all_risk_settings()
-        positions = self.get_open_positions_hybrid(asset_class_filter)
+        positions = self.get_open_positions_hybrid(asset_class_filter, account_id=account_id)
             
         if not positions: return pd.DataFrame()
 
@@ -109,7 +109,7 @@ class PortfolioManager:
         # Convert list of objects back to DataFrame for the View layer
         return pd.DataFrame([p.to_dict() for p in enriched_positions])
 
-    def get_open_positions_hybrid(self, asset_class_filter=None) -> list[Position]:
+    def get_open_positions_hybrid(self, asset_class_filter=None, account_id=None) -> list[Position]:
         """
         Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades/transfers.
         """
@@ -129,6 +129,9 @@ class PortfolioManager:
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
             open_list = [p for p in open_list if p.asset_class.upper() in filters]
+            
+        if account_id:
+            open_list = [p for p in open_list if p.account_id == account_id]
             
         return open_list
 
