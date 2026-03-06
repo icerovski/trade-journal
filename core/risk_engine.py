@@ -45,6 +45,18 @@ class RiskEngine:
         risk_budget_rem = max_risk_cap - risk_val
         exposure_budget_rem = max_exposure_cap - exposure_val
         
+        # 4. Share Adjustment (Quantity-First Auditing)
+        # Calculate how many shares we can ADD (+) or must TRIM (-) to hit the 1.0% / 5.0% limit.
+        # Use the most restrictive constraint.
+        risk_dist = abs(entry_price - stop) * multiplier
+        risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else 0
+        exp_adj = exposure_budget_rem / (current_price * multiplier) if current_price > 0 else 0
+        
+        # If budget is positive, we can add up to the MIN of both adjustments.
+        # If budget is negative (over limit), we must trim by the MAX (most negative) adjustment.
+        # Simplified: min() covers both cases correctly for institutional risk parity.
+        adjustment = min(risk_adj, exp_adj)
+
         is_breached = current_price <= stop
 
         if is_breached or risk_pct > 1.5 or exposure_pct > 5.5:
@@ -60,6 +72,7 @@ class RiskEngine:
             "current_exposure_pct": exposure_pct,
             "risk_budget_rem": risk_budget_rem,
             "exposure_budget_rem": exposure_budget_rem,
+            "adjustment": adjustment,
             "is_breached": is_breached
         }
 
@@ -129,6 +142,11 @@ class RiskEngine:
             # 1. Base Stop Loss Calculation
             # Stop Base is Entry Price (Fixed) or Max Price Since Entry (Trailing)
             stop_base = position.max_since_entry if s_type == 'TRAILING' else position.entry_price
+            
+            # Robust Fallback: If stop_base is 0 (missing entry), use mark_price or current_price as the floor
+            if not stop_base or stop_base == 0:
+                stop_base = position.mark_price or position.current_price
+            
             calculated_sl = stop_base - atr
             
             # Populate raw fields for easier dashboard access

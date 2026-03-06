@@ -112,6 +112,7 @@ class PortfolioManager:
     def get_open_positions_hybrid(self, asset_class_filter=None, account_id=None) -> list[Position]:
         """
         Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades/transfers.
+        Consolidates positions across accounts by default unless account_id is provided.
         """
         broker_snapshot, report_date = self.loader.get_broker_verified_snapshot()
         all_trades = self.loader.get_trades_as_models()
@@ -125,6 +126,31 @@ class PortfolioManager:
 
         if not open_list:
             logger.warning("No open positions found in Hybrid mode.")
+
+        # Consolidation Logic (Institutional View)
+        if not account_id:
+            consolidated = {}
+            for p in open_list:
+                c_id = str(p.conid) # Force string for robust mapping
+                if c_id not in consolidated:
+                    consolidated[c_id] = p
+                else:
+                    existing = consolidated[c_id]
+                    new_qty = existing.qty + p.qty
+                    if new_qty > 0:
+                        # Weighted Average Entry Price
+                        total_cost = (existing.entry_price * existing.qty * existing.multiplier) + \
+                                     (p.entry_price * p.qty * p.multiplier)
+                        existing.entry_price = total_cost / (new_qty * existing.multiplier)
+                    
+                    # Update metrics
+                    existing.qty = new_qty
+                    if p.date_entry < existing.date_entry:
+                        existing.date_entry = p.date_entry
+                        existing.inception_price = p.inception_price
+                    
+                    existing.account_id = "CONSOLIDATED"
+            open_list = list(consolidated.values())
 
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]

@@ -36,24 +36,33 @@ class ReconciliationService:
         matched_conids = set()
 
         # 2. Pre-calculate ledger positions for cost-basis recovery
-        # (The broker snapshot often lacks the original entry date/multiplier)
-        # Use (account_id, conid) as key to support multi-account isolation
-        ledger_positions = {f"{p.account_id}:{p.conid}": p for p in ledger_engine.calculate_positions(all_trades)}
+        # Stage 1: Map by exact Account:Conid
+        all_ledger_pos = ledger_engine.calculate_positions(all_trades)
+        ledger_by_key = {f"{p.account_id}:{p.conid}": p for p in all_ledger_pos}
+        
+        # Stage 2: Map by Conid only (Fallback for account-agnostic cost basis recovery)
+        # We take the most recent entry for that conid as the primary recovery source.
+        ledger_by_conid = {}
+        for p in sorted(all_ledger_pos, key=lambda x: x.date_entry):
+            ledger_by_conid[str(p.conid)] = p
 
         # 3. Process Broker Snapshot
         for key, v in broker_snapshot.items():
             acct_id = v.get('account_id', 'U0000000')
-            conid = v.get('conid', key.split(':')[-1])
+            conid = str(v.get('conid', key.split(':')[-1]))
             ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
             multiplier = v.get('Multiplier', 1.0)
             inception_price = 0.0
             
-            # Enrich with ledger history if available
-            if key in ledger_positions:
-                lp = ledger_positions[key]
+            # --- COST BASIS RECOVERY (HEALING) ---
+            # Try exact match first, then fall back to asset-level match
+            lp = ledger_by_key.get(key) or ledger_by_conid.get(conid)
+            
+            if lp:
                 if not entry or entry == 0:
                     entry = lp.entry_price
-                first_date = lp.date_entry
+                if not first_date or pd.isna(first_date):
+                    first_date = lp.date_entry
                 multiplier = lp.multiplier
                 inception_price = lp.inception_price
 
