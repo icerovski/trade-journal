@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from typing import List
-from config import DATA_DIR
 import db
 from models import Trade
 from logger import logger, log_system_milestone
@@ -107,7 +106,7 @@ class DataLoader:
                     if pd.isna(val) or str(val).strip() == '' or str(val).strip() == 'nan': 
                         return np.nan
                     return str(int(float(str(val))))
-                except:
+                except Exception:
                     return str(val).strip()
             
             df['Conid'] = df['Conid'].apply(normalize_conid)
@@ -181,7 +180,8 @@ class DataLoader:
             
             # Use ClientAccountID if available to support isolation
             acct_col = next((c for c in ['ClientAccountID', 'AccountId'] if c in summaries.columns), 'AccountId')
-            if acct_col not in summaries.columns: summaries[acct_col] = 'U0000000'
+            if acct_col not in summaries.columns:
+                summaries[acct_col] = 'U0000000'
 
             for (acct_val, conid_val), group in summaries.groupby([acct_col, 'Conid']):
                 try:
@@ -202,7 +202,8 @@ class DataLoader:
                     if multiplier == 1.0:
                         multiplier = 10.0
 
-                if abs(qty) < 0.0000001: continue
+                if abs(qty) < 0.0000001:
+                    continue
                 
                 entry = group['CostBasisPrice'].iloc[0] if 'CostBasisPrice' in group.columns else 0
                 isin_val = group['ISIN'].iloc[0] if 'ISIN' in group.columns else np.nan

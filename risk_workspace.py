@@ -1,5 +1,4 @@
 import pandas as pd
-import threading
 import re
 from typing import Dict, Optional
 from textual.app import App, ComposeResult
@@ -12,8 +11,7 @@ from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
 from core.risk_engine import get_atr_discovery_data, RiskEngine
-from db import get_all_risk_settings, set_position_risk
-from logger import logger
+from db import set_position_risk
 
 # =============================================================================
 # 1. HELP OVERLAY (The "F1" Pop-up)
@@ -23,6 +21,13 @@ class HelpScreen(ModalScreen):
     BINDINGS = [Binding("escape,f1", "dismiss", "Close")]
 
     def compose(self) -> ComposeResult:
+        # Load Technical Documentation
+        try:
+            with open("docs/TECHNICAL_DOCS.md", "r", encoding="utf-8") as f:
+                tech_docs = f.read()
+        except Exception:
+            tech_docs = "Documentation file not found."
+
         with Vertical(id="help-modal"):
             yield Label("HELP DESK & GLOSSARY", classes="panel-header")
             with TabbedContent(initial="tab-visuals"):
@@ -81,6 +86,8 @@ class HelpScreen(ModalScreen):
                         "• [bold]ENTER:[/] Model hypothetically in the Lab and Grid.\n"
                         "• [bold]CTRL+ENTER:[/] Save permanently to Database.\n"
                     )
+                with TabPane("Technical Documentation", id="tab-tech"):
+                    yield Static(tech_docs)
             yield Label("Press ESC or F1 to Close", id="close-hint")
 
 # =============================================================================
@@ -125,7 +132,8 @@ class RiskWorkspace(App):
         padding: 0 1;
     }
     #lab-inputs { height: 3; margin-top: 0; }
-    #atr-input { width: 1fr; }
+    #discover-input { width: 1fr; }
+    #atr-input { width: 2fr; }
 
     /* Help Modal Styling */
     #help-modal {
@@ -174,8 +182,9 @@ class RiskWorkspace(App):
                 
                 # The Strategy Lab (Bottom of Left Pane)
                 with Vertical(id="strategy-lab"):
-                    yield Label("ASSIGN RISK STRATEGY (Sandbox)", classes="panel-header")
+                    yield Label("RISK STRATEGY & TICKER DISCOVERY", classes="panel-header")
                     with Horizontal(id="lab-inputs"):
+                        yield Input(placeholder="Discover Ticker (e.g. NVDA)", id="discover-input")
                         yield Input(placeholder="[SL %] [F/T] [S] [Step] (Enter: Model | Ctrl+Enter: Save)", id="atr-input")
             
             # --- RIGHT PANE: Discovery Sidebar ---
@@ -187,12 +196,14 @@ class RiskWorkspace(App):
                     with Vertical(id="fixed-pane", classes="discovery-sub-pane"):
                         yield Label("FIXED STOP (Protection)", classes="panel-header")
                         yield Label("Base: ---", id="fixed-base", classes="base-price-label")
-                        dt_fixed = DataTable(id="fixed-table"); dt_fixed.can_focus = False
+                        dt_fixed = DataTable(id="fixed-table")
+                        dt_fixed.can_focus = False
                         yield dt_fixed
                     with Vertical(id="trailing-pane", classes="discovery-sub-pane"):
                         yield Label("TRAILING STOP (Profit Harvest)", classes="panel-header")
                         yield Label("Base: ---", id="trailing-base", classes="base-price-label")
-                        dt_trail = DataTable(id="trailing-table"); dt_trail.can_focus = False
+                        dt_trail = DataTable(id="trailing-table")
+                        dt_trail.can_focus = False
                         yield dt_trail
         yield Footer()
 
@@ -225,7 +236,8 @@ class RiskWorkspace(App):
         
         # This now returns consolidated positions (one row per conid)
         self.enriched_data = self.pm.get_dashboard_df(asset_class_filter='STK', total_nav=self.total_nav, silent=True)
-        if self.enriched_data.empty: return
+        if self.enriched_data.empty:
+            return
         
         table = self.query_one("#portfolio-table")
         table.clear()
@@ -310,31 +322,48 @@ class RiskWorkspace(App):
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         conid = event.row_key.value
         self.current_conid = conid
+        
+        # Clear discover input when selecting existing position
+        try:
+            self.query_one("#discover-input").value = ""
+        except Exception:
+            pass
+            
         self.refresh_risk_checklist() # Immediate update of the checklist
         
         if conid in self.discovery_cache:
             self.update_discovery_ui(self.discovery_cache[conid])
         else:
-            self.query_one("#fixed-table").clear(); self.query_one("#trailing-table").clear()
+            self.query_one("#fixed-table").clear()
+            self.query_one("#trailing-table").clear()
             self.fetch_atr_data(conid)
 
-    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None) -> None:
+    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, 
+                               hypo_atr: Optional[float] = None, 
+                               hypo_entry_type: Optional[str] = None,
+                               hypo_scale_step: Optional[float] = None) -> None:
         """Updates the Asset Context with a 2-point Risk Audit Checklist."""
-        if not self.current_conid: return
+        if not self.current_conid:
+            return
         
         # 1. Get position and current enriched metrics
-        # Note: positions are now consolidated in the PortfolioManager
         pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
-        if not pos: return
+        if not pos:
+            return
         
-        row_metrics = self.enriched_data[self.enriched_data['conid'].astype(str) == self.current_conid]
-        if row_metrics.empty: return
-        metrics = row_metrics.iloc[0]
+        row_metrics = self.enriched_data[self.enriched_data['conid'].astype(str) == self.current_conid] if not self.enriched_data.empty else pd.DataFrame()
+        metrics = row_metrics.iloc[0] if not row_metrics.empty else None
         
+        # Prospect Context: Assume purchase at current market price if no entry exists
+        disc_data = self.discovery_cache.get(self.current_conid)
+        effective_entry = pos.entry_price
+        if str(self.current_conid).startswith("PROSPECT:") and disc_data:
+            effective_entry = disc_data['current_price']
+
         # 2. Dual-Constraint Audit (Risk & Exposure)
-        stop_p = hypo_stop if hypo_stop is not None else metrics['SL_Price']
-        cur_p = metrics['Price']
-        tp_p = metrics['TP_Price']
+        stop_p = hypo_stop if hypo_stop is not None else (metrics['SL_Price'] if metrics is not None else None)
+        cur_p = metrics['Price'] if metrics is not None else (disc_data['current_price'] if disc_data else (pos.current_price or pos.mark_price))
+        tp_p = metrics['TP_Price'] if metrics is not None else (stop_p + (3 * hypo_atr) if (stop_p and hypo_atr) else None)
         
         audit_content = "[dim]Waiting for Strategy...[/]"
         integ_content = "---"
@@ -349,7 +378,7 @@ class RiskWorkspace(App):
             integ_content = f"[bold {integ_color}]Price {' > ' if is_safe else ' <= '} Stop[/] | {integ_status} [dim]({buffer:.1f}% Buffer)[/]"
 
             # Dual-constraint evaluation
-            res = RiskEngine.audit_position_risk(cur_p, stop_p, pos.entry_price, pos.qty, pos.multiplier, self.total_nav)
+            res = RiskEngine.audit_position_risk(cur_p, stop_p, effective_entry, pos.qty, pos.multiplier, self.total_nav)
             r_color = res['status_color'].lower()
             
             r_pct = res['current_risk_pct']
@@ -357,10 +386,13 @@ class RiskWorkspace(App):
             adj = res['adjustment']
             
             # RR Efficiency
-            dist_to_stop = (cur_p - stop_p)
-            dist_to_tp = (tp_p - cur_p)
-            rr_val = (dist_to_tp / dist_to_stop) if dist_to_stop > 0 else 0
-            rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
+            rr_val = 0.0
+            rr_color = "red"
+            if tp_p:
+                dist_to_stop = (cur_p - stop_p)
+                dist_to_tp = (tp_p - cur_p)
+                rr_val = (dist_to_tp / dist_to_stop) if dist_to_stop > 0 else 0
+                rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
             
             if res['is_breached']:
                 action_text = "[bold red]STOP BREACHED. EXIT POSITION.[/]"
@@ -380,31 +412,29 @@ class RiskWorkspace(App):
             )
             
             # Scale-In Recommendation (Pilot)
-            atr_val = metrics['ATR']
+            atr_val = hypo_atr if hypo_atr is not None else (metrics['ATR'] if metrics is not None else 0.0)
             if atr_val > 0:
                 # Get daily ATR for the step logic
                 daily_atr = atr_val # Fallback
                 if self.current_conid in self.discovery_cache:
-                    disc_data = self.discovery_cache[self.current_conid]
-                    if disc_data and 'rows' in disc_data and disc_data['rows']:
-                        daily_atr = next((r.atr_wilder for r in disc_data['rows'] if r.label == '14d'), atr_val)
+                    disc_data_val = self.discovery_cache[self.current_conid]
+                    if disc_data_val and 'rows' in disc_data_val and disc_data_val['rows']:
+                        daily_atr = next((r.atr_wilder for r in disc_data_val['rows'] if r.label == '14d'), atr_val)
 
                 # Use Inception Price for fixed milestones
-                inception_p = metrics.get('Inception', metrics['Entry'])
-                scale_step = metrics.get('ScaleStep', 0.5)
+                inception_p = metrics.get('Inception', metrics['Entry']) if metrics is not None else effective_entry
+                scale_step = hypo_scale_step if hypo_scale_step is not None else (metrics.get('ScaleStep', 0.5) if metrics is not None else pos.scale_step)
                 
                 pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_val, self.total_nav, pos.multiplier, inception_p, daily_atr, scale_step)
                 
                 # Financial Action Summary
                 target_full = pilot['full_target_qty']
                 current_qty = pos.qty
-                current_outlay = current_qty * pos.entry_price * pos.multiplier
                 stage_text = ""
                 
-                if metrics.get('EntryType') == 'SCALE_IN':
+                entry_type = hypo_entry_type if hypo_entry_type is not None else (metrics.get('EntryType') if metrics is not None else pos.entry_type)
+                if entry_type == 'SCALE_IN':
                     target_outlay = pilot['scale_in_outlay']
-                    target_full = pilot['full_target_qty']
-                    current_qty = pos.qty
                     
                     # Quantity-driven remaining capital: only calculate if we are below target
                     if current_qty < target_full:
@@ -442,12 +472,14 @@ class RiskWorkspace(App):
                         s3_display = f"[b]Stage 3 @:  {pilot['stage3_price']:,.2f}[/] (Add +{s3_add} sh)"
 
                     current_stage = 1
-                    if s3_hit: current_stage = 3
-                    elif s2_hit: current_stage = 2
+                    if s3_hit:
+                        current_stage = 3
+                    elif s2_hit:
+                        current_stage = 2
                     stage_text = f" [bold yellow](STAGE {current_stage}/3 ACTIVE)[/]"
                     
                     roadmap_content = (
-                        f"  - Current:   {int(current_qty)} sh (@ {pos.entry_price:,.2f})\n"
+                        f"  - Current:   {int(current_qty)} sh (@ {effective_entry:,.2f})\n"
                         f"  - {s2_display}\n"
                         f"  - {s3_display}\n"
                         f"  - [cyan]Target Outlay: {target_outlay:,.0f} {pos.ccy}[/]\n"
@@ -455,8 +487,6 @@ class RiskWorkspace(App):
                     )
                 else:
                     target_outlay = pilot['single_outlay']
-                    target_full = pilot['full_target_qty']
-                    current_qty = pos.qty
                     
                     # Quantity-driven remaining capital
                     if current_qty < target_full:
@@ -465,13 +495,13 @@ class RiskWorkspace(App):
                         remaining = 0
                         
                     roadmap_content = (
-                        f"  - Current:   {int(current_qty)} sh (@ {pos.entry_price:,.2f})\n"
+                        f"  - Current:   {int(current_qty)} sh (@ {effective_entry:,.2f})\n"
                         f"  - Target:    {target_full} sh (Full 1% Unit)\n"
                         f"  - [cyan]Target Outlay: {target_outlay:,.0f} {pos.ccy}[/]\n"
                         f"  - [yellow]Remaining Cap: {remaining:,.0f} {pos.ccy}[/]"
                     )
 
-                step_val = metrics.get('ScaleStep', 0.5)
+                step_val = hypo_scale_step if hypo_scale_step is not None else (metrics.get('ScaleStep', 0.5) if metrics is not None else pos.scale_step)
                 pilot_content = (
                     f"--------------------------------------\n"
                     f"POSITION ROADMAP:{stage_text}\n"
@@ -481,7 +511,7 @@ class RiskWorkspace(App):
                 )
         else:
             # Standalone exposure check if no stop exists yet
-            nav_pct = metrics['NavPct']
+            nav_pct = metrics['NavPct'] if metrics is not None else (pos.market_value / self.total_nav * 100 if self.total_nav > 0 else 0)
             exp_color = "green" if nav_pct <= 5.0 else "red"
             exp_status = "[PASS]" if nav_pct <= 5.0 else "[OVER LIMIT]"
             audit_content = f"1. EXPOSURE: [bold {exp_color}]{nav_pct:.1f}%[/] of NAV | {exp_status} [dim](Limit: <= 5%)[/]\n[dim]Waiting for Strategy to calculate Risk...[/]"
@@ -498,24 +528,41 @@ class RiskWorkspace(App):
         self.query_one("#position-context").update(audit_text)
 
     @work(exclusive=True, thread=True)
-    def fetch_atr_data(self, conid: str) -> None:
-        pos = next((p for p in self.positions if str(p.conid) == conid), None)
-        if not pos: return
-        data = get_atr_discovery_data(pos.ticker, pos.date_entry.strftime("%Y-%m-%d"), pos.entry_price, 
-                                      conid=pos.conid, qty=pos.qty, inst_multiplier=pos.multiplier, total_nav=self.total_nav)
+    def fetch_atr_data(self, conid: Optional[str], ticker: Optional[str] = None) -> None:
+        if conid and not str(conid).startswith("PROSPECT:"):
+            pos = next((p for p in self.positions if str(p.conid) == conid), None)
+            if not pos:
+                return
+            t_sym, entry_p, entry_d, m, q = pos.ticker, pos.entry_price, pos.date_entry.strftime("%Y-%m-%d"), pos.multiplier, pos.qty
+        else:
+            t_sym = ticker or str(conid).split(":")[-1]
+            entry_p, entry_d, m, q = 0.0, pd.Timestamp.now().strftime("%Y-%m-%d"), 1.0, 0.0
+            
+        data = get_atr_discovery_data(t_sym, entry_d, entry_p, 
+                                      conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), 
+                                      qty=q, inst_multiplier=m, total_nav=self.total_nav)
         if data:
-            self.discovery_cache[conid] = data
-            self.post_message(self.DiscoveryDataLoaded(conid, data))
+            # Use Ticker as ID for discovery cache if conid is missing or virtual
+            cache_id = conid or f"PROSPECT:{t_sym}"
+            self.discovery_cache[cache_id] = data
+            self.post_message(self.DiscoveryDataLoaded(cache_id, data))
 
     @on(DiscoveryDataLoaded)
     def on_discovery_loaded(self, message: DiscoveryDataLoaded) -> None:
-        if message.conid == self.current_conid: self.update_discovery_ui(message.data)
+        if message.conid == self.current_conid:
+            self.update_discovery_ui(message.data)
+            self.refresh_risk_checklist()
+            
+            # Auto-trigger strategy update if user already typed something
+            if self.query_one("#atr-input").value:
+                self.on_strategy_change()
 
     def update_discovery_ui(self, data: dict) -> None:
         self.query_one("#fixed-base").update(f"Base: {data['entry_price']:,.2f}")
         self.query_one("#trailing-base").update(f"Base: {data['max_price']:,.2f}")
         fixed_table, trail_table = self.query_one("#fixed-table"), self.query_one("#trailing-table")
-        fixed_table.clear(); trail_table.clear()
+        fixed_table.clear()
+        trail_table.clear()
         for row in data['rows']:
             r_color = "red" if row.pl_pct_nav > 1.5 else ("yellow" if row.pl_pct_nav > 1.0 else "white")
             pl_color = "green" if row.pl_at_stop >= 0 else "red"
@@ -528,15 +575,67 @@ class RiskWorkspace(App):
             
             row_vals = (row.label, atr_display, f"{row.stop_price:,.2f}", sl_pct_display, 
                         f"[{pl_color}]{row.pl_at_stop:,.0f}[/]", f"[{r_color}]{row.pl_pct_nav:.1f}%[/]", f"{row.buffer_pct:.1f}%")
-            if row.stop_type == "FIXED": fixed_table.add_row(*row_vals)
-            else: trail_table.add_row(*row_vals)
+            if row.stop_type == "FIXED":
+                fixed_table.add_row(*row_vals)
+            else:
+                trail_table.add_row(*row_vals)
 
-    def action_toggle_help(self) -> None: self.push_screen(HelpScreen())
+    @on(Input.Submitted, "#discover-input")
+    def on_discover_submitted(self) -> None:
+        """Fetch data for a new ticker not in the portfolio and add a temporary row."""
+        ticker = self.query_one("#discover-input").value.strip().upper()
+        if not ticker:
+            return
+            
+        # 1. Check if it exists in current portfolio (highlight it if it does)
+        table = self.query_one("#portfolio-table")
+        for r_key in table.rows:
+            if not self.enriched_data.empty:
+                row_data = self.enriched_data[self.enriched_data['conid'].astype(str) == r_key.value]
+                if not row_data.empty and row_data.iloc[0]['Ticker'] == ticker:
+                    table.move_cursor(row=table.get_row_index(r_key))
+                    return
+
+        # 2. If new, trigger discovery using Ticker as the Virtual ID
+        self.notify(f"DISCOVERING: {ticker}...")
+        self.current_conid = f"PROSPECT:{ticker}"
+        
+        # Add a temporary phantom position so the audit logic works
+        from models import Position
+        phantom = Position(
+            name=f"PROSPECT: {ticker}", ticker=ticker, conid=self.current_conid,
+            asset_class='STK', ccy='USD', date_entry=pd.Timestamp.now(),
+            qty=0.0, entry_price=0.0, account_id='WATCHLIST'
+        )
+        if not any(p.conid == self.current_conid for p in self.positions):
+            self.positions.append(phantom)
+        
+        # Inject phantom row into the table for visual feedback
+        if self.current_conid not in [r.value for r in table.rows]:
+            table.add_row(
+                f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---",
+                key=self.current_conid
+            )
+        table.move_cursor(row=table.get_row_index(self.current_conid))
+        
+        self.query_one("#fixed-table").clear()
+        self.query_one("#trailing-table").clear()
+        self.fetch_atr_data(None, ticker=ticker)
+
+    def action_toggle_help(self) -> None:
+        self.push_screen(HelpScreen())
+
+    @on(Input.Submitted, "#atr-input")
+    def on_strategy_submitted(self) -> None:
+        """Explicit confirmation of strategy: triggers one last audit refresh."""
+        self.on_strategy_change()
+        self.notify("Strategy Modeled.")
 
     @on(Input.Changed, "#atr-input")
     def on_strategy_change(self) -> None:
         """Instant Modeling Sandbox: updates Grid row AND Audit Checklist."""
-        if not self.current_conid: return
+        if not self.current_conid:
+            return
         raw_text = self.query_one("#atr-input").value.strip().upper()
         if not raw_text: 
             self.refresh_risk_checklist() # Reset checklist to saved state
@@ -545,14 +644,20 @@ class RiskWorkspace(App):
         try:
             # Pattern: [Value/%] [F/T] [S] [Step]
             match = re.match(r"([0-9\.%]+)\s*([FT]?)\s*([S]?)\s*([0-9\.]*)", raw_text)
-            if not match: return
+            if not match:
+                return
             val_part, type_char, scale_in_char, step_char = match.groups()
             stop_type = "FIXED" if type_char == 'F' else "TRAILING"
             entry_type = "SCALE_IN" if scale_in_char == 'S' else "SINGLE"
             
             pos_obj = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
             disc_data = self.discovery_cache.get(self.current_conid)
-            if not pos_obj: return
+            if not pos_obj:
+                return
+
+            # If it's a prospect, use the discovery price as the entry floor
+            current_p_disc = disc_data['current_price'] if disc_data else 0.0
+            entry_floor = pos_obj.entry_price if pos_obj.entry_price > 0 else current_p_disc
 
             # Calculate Model
             final_atr = 0.0
@@ -572,18 +677,21 @@ class RiskWorkspace(App):
                 else:
                     # Default to percentage behavior
                     pct = num_val / 100
-                    base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else pos_obj.entry_price
-                    final_atr = base_p * pct
+                    base_p_calc = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else entry_floor
+                    final_atr = base_p_calc * pct
             except ValueError:
                 return
 
-            if final_atr <= 0: return
+            if final_atr <= 0:
+                return
 
             # Default scale step logic based on input value
             scale_step = 0.5
             if step_char:
-                try: scale_step = float(step_char)
-                except: pass
+                try:
+                    scale_step = float(step_char)
+                except Exception:
+                    pass
             else:
                 # Auto-detect if no step provided: <= 1.2x 14d window -> 1.0x step, else 0.5x step
                 if daily_atr > 0:
@@ -591,34 +699,41 @@ class RiskWorkspace(App):
                 else:
                     scale_step = 0.5
 
-            base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else pos_obj.entry_price
+            base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else entry_floor
             sl_price = base_p - final_atr
             
             # RR Efficiency calculation
             tp_price = sl_price + (3 * final_atr)
-            cur_p = pos_obj.current_price or pos_obj.mark_price
+            cur_p = pos_obj.current_price or pos_obj.mark_price or current_p_disc
             dist_to_stop = (cur_p - sl_price)
             dist_to_tp = (tp_price - cur_p)
             hypo_rr = (dist_to_tp / dist_to_stop) if dist_to_stop > 0 else 0
             rr_color = "green" if hypo_rr > 3.0 else ("yellow" if hypo_rr > 1.0 else "red")
 
-            risk_val = (sl_price - pos_obj.entry_price) * pos_obj.qty * pos_obj.multiplier
-            hypo_r = (abs(pos_obj.entry_price - sl_price) * pos_obj.qty * pos_obj.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
+            risk_val = (sl_price - entry_floor) * pos_obj.qty * pos_obj.multiplier
+            hypo_r = (abs(entry_floor - sl_price) * pos_obj.qty * pos_obj.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
             sl_pct_base = (final_atr / base_p * 100) if base_p > 0 else 0
             
             pl_color = "green" if risk_val >= 0 else "red"
             r_color = "red" if hypo_r > 1.5 else ("yellow" if hypo_r > 1.0 else "white")
             
             # Breach Signal for What-If
-            cur_p_val = pos_obj.current_price or pos_obj.mark_price
-            cur_p_display = f"{cur_p_val:,.2f}"
-            if cur_p_val <= sl_price:
+            cur_p_display = f"{cur_p:,.2f}"
+            if cur_p <= sl_price:
                 cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
 
             # 1. Update Table Row (What-If)
             table = self.query_one("#portfolio-table")
             ticker_prefix = f"[{stop_type[:1]}{'/S' if entry_type == 'SCALE_IN' else ''}]"
-            table.update_cell(self.current_conid, "col_ticker", f"[bold yellow]* {ticker_prefix} {pos_obj.ticker}")
+            
+            # Format ticker display: preserve [PROSPECT] tag if applicable
+            clean_ticker = pos_obj.ticker
+            if str(self.current_conid).startswith("PROSPECT:"):
+                display_ticker = f"[bold yellow]* [PROSPECT] {clean_ticker}"
+            else:
+                display_ticker = f"[bold yellow]* {ticker_prefix} {clean_ticker}"
+
+            table.update_cell(self.current_conid, "col_ticker", display_ticker)
             table.update_cell(self.current_conid, "col_base", f"{base_p:,.2f}")
             table.update_cell(self.current_conid, "col_atr", f"{final_atr:.2f}")
             table.update_cell(self.current_conid, "col_stop_p", f"{sl_price:,.2f}")
@@ -628,30 +743,51 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_r", f"[{r_color}]{hypo_r:.1f}%[/]")
             table.update_cell(self.current_conid, "col_rr", f"[{rr_color}]{hypo_rr:.2f}[/]")
 
-            # 2. Update Risk Audit Checklist with hypothetical stop
-            self.refresh_risk_checklist(hypo_stop=sl_price)
+            # 2. Update Risk Audit Checklist with hypothetical strategy details
+            self.refresh_risk_checklist(
+                hypo_stop=sl_price,
+                hypo_atr=final_atr,
+                hypo_entry_type=entry_type,
+                hypo_scale_step=scale_step
+            )
 
             self.drafts[self.current_conid] = {'atr': final_atr, 'type': stop_type, 'ticker': pos_obj.ticker, 'entry_type': entry_type, 'scale_step': scale_step}
-        except: pass
+        except Exception:
+            pass
 
     def on_key(self, event) -> None:
         """CTRL+ENTER commits the current draft."""
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5))
-                self.notify(f"COMMITTED: {d['ticker']} @ {d['atr']:.2f} ({d['entry_type']})")
-                self.query_one("#atr-input").value = ""; self.load_portfolio()
+                status = 'WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], 
+                                  entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5),
+                                  status=status)
+                
+                msg = "SAVED TO WATCH LIST" if status == 'WATCH' else "COMMITTED"
+                self.notify(f"{msg}: {d['ticker']} @ {d['atr']:.2f} ({d['entry_type']})")
+                self.query_one("#atr-input").value = ""
+                self.query_one("#discover-input").value = ""
+                self.load_portfolio()
                 self.query_one("#portfolio-table").focus()
 
     def action_save_all(self) -> None:
-        if not self.drafts: return
+        if not self.drafts:
+            return
         for conid, draft in self.drafts.items(): 
-            set_position_risk(conid, draft['ticker'], draft['atr'], draft['type'], entry_type=draft['entry_type'], scale_step=draft.get('scale_step', 0.5))
+            status = 'WATCH' if str(conid).startswith("PROSPECT:") else 'ACTIVE'
+            set_position_risk(conid, draft['ticker'], draft['atr'], draft['type'], 
+                              entry_type=draft['entry_type'], scale_step=draft.get('scale_step', 0.5),
+                              status=status)
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
-        self.drafts.clear(); self.load_portfolio(); self.query_one("#atr-input").value = ""
+        self.drafts.clear()
+        self.load_portfolio()
+        self.query_one("#atr-input").value = ""
 
-    def action_refresh(self) -> None: self.discovery_cache.clear(); self.load_portfolio()
+    def action_refresh(self) -> None:
+        self.discovery_cache.clear()
+        self.load_portfolio()
 
 def run_risk_workspace():
     """Entry point for main.py"""

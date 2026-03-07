@@ -1,15 +1,11 @@
 import requests
 import xml.etree.ElementTree as ET
-import pandas as pd
 from pathlib import Path
-from datetime import datetime
 
 from config import (
     IBKR_TRADES_CSV,
     IBKR_OPEN_POSITIONS_CSV,
-    IBKR_NAV_CSV,
-    IBKR_CONFIRMATIONS_CSV,
-    DATA_DIR
+    IBKR_CONFIRMATIONS_CSV
 )
 from .ibkr_parser import IBKRParser
 from logger import logger, log_system_milestone
@@ -111,8 +107,10 @@ def process_local_csvs():
     
     # 1. Gather all potential sources
     search_paths = []
-    if BASE_DATA_DIR.exists(): search_paths.append(BASE_DATA_DIR)
-    if LBD_DIR.exists(): search_paths.append(LBD_DIR)
+    if BASE_DATA_DIR.exists():
+        search_paths.append(BASE_DATA_DIR)
+    if LBD_DIR.exists():
+        search_paths.append(LBD_DIR)     
 
     if not search_paths:
         logger.warning("No data directories found to scan.")

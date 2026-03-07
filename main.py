@@ -1,10 +1,6 @@
 import sys
 import warnings
-# Suppress specific deprecation warnings from third-party libraries (e.g. yfinance/pandas)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", module="yfinance")
-
-from db import init_db, get_manual_trades, delete_trade, add_trade, set_position_risk, wipe_trades_only
+from db import init_db, get_manual_trades, delete_trade, add_trade, wipe_trades_only, get_watch_list_profiles
 from services.ibkr import (
     process_local_csvs, 
     process_ytd_only, 
@@ -16,16 +12,43 @@ from services.ibkr import (
 from dashboard import print_nav_table, run_live_dashboard
 from core.portfolio_manager import PortfolioManager
 import sync_config
-import pandas as pd
-import os
-from datetime import datetime
 from dateutil.parser import parse
-from config import DB_PATH
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+# Suppress specific deprecation warnings from third-party libraries (e.g. yfinance/pandas)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", module="yfinance")
+
 console = Console()
+
+def print_watch_list_summary():
+    """Displays a concise summary of prospects on the Watch List."""
+    prospects = get_watch_list_profiles()
+    if not prospects:
+        return
+
+    from rich.table import Table
+    from rich import box
+    
+    table = Table(box=box.SIMPLE_HEAD, title="[bold yellow]WATCH LIST PROSPECTS[/bold yellow]", title_justify="left")
+    table.add_column("TICKER", style="cyan")
+    table.add_column("ATR", justify="right")
+    table.add_column("TYPE", justify="center")
+    table.add_column("STRATEGY", justify="center")
+    table.add_column("STEP", justify="right")
+
+    for p in prospects:
+        table.add_row(
+            str(p['ticker']),
+            f"{p['atr_value']:.2f}",
+            str(p['stop_type'])[:1],
+            "Pilot" if p['entry_type'] == 'SCALE_IN' else "Single",
+            f"{p['scale_step']}x"
+        )
+    
+    console.print(table)
 
 def show_menu():
     menu_text = Text()
@@ -48,6 +71,10 @@ def show_menu():
     menu_text.append("[5] ", style="bold magenta")
     menu_text.append("MAINTENANCE      ", style="bold white")
     menu_text.append("(Surgical Rebuilds & System Tools)\n", style="dim")
+    
+    menu_text.append("[6] ", style="bold yellow")
+    menu_text.append("WATCH LIST       ", style="bold white")
+    menu_text.append("(Monitor & Manage Prospective Ideas)\n", style="dim")
     
     menu_text.append("\n[0] EXIT", style="bold red")
 
@@ -78,9 +105,12 @@ def handle_manage_positions():
         print("0. Back")
         
         choice = input("\nChoice: ").strip()
-        if choice == '1': handle_atr_calculator()
-        elif choice == '2': handle_manual_trades()
-        elif choice == '0': break
+        if choice == '1':
+            handle_atr_calculator()
+        elif choice == '2':
+            handle_manual_trades()
+        elif choice == '0':
+            break
 
 def handle_maintenance():
     while True:
@@ -92,11 +122,16 @@ def handle_maintenance():
         print("0. Back")
         
         choice = input("\nChoice: ").strip()
-        if choice == '1': handle_rebuild_db()
-        elif choice == '2': fetch_trade_history()
-        elif choice == '3': process_local_csvs()
-        elif choice == '4': handle_sync_prices()
-        elif choice == '0': break
+        if choice == '1':
+            handle_rebuild_db()
+        elif choice == '2':
+            fetch_trade_history()
+        elif choice == '3':
+            process_local_csvs()
+        elif choice == '4':
+            handle_sync_prices()
+        elif choice == '0':
+            break
 
 def handle_sync_prices(silent=False):
     if not silent:
@@ -106,7 +141,8 @@ def handle_sync_prices(silent=False):
     open_positions = manager.get_open_positions_hybrid()
     
     if not open_positions:
-        if not silent: console.print("[yellow]No open positions found to sync.[/yellow]")
+        if not silent:
+            console.print("[yellow]No open positions found to sync.[/yellow]")
         return
 
     from services.price_service import PriceService
@@ -124,7 +160,8 @@ def handle_sync_prices(silent=False):
             except Exception:
                 progress.update(task, advance=1)
 
-    if not silent: console.print("\n[bold green]Price sync complete.[/bold green]")
+    if not silent:
+        console.print("\n[bold green]Price sync complete.[/bold green]")
 
 def handle_rebuild_db():
     console.print("\n[bold red]WARNING: Surgical Rebuild initiated.[/bold red]")
@@ -154,11 +191,13 @@ def parse_input_line(line):
     return ticker, date_val, price, remaining
 
 def handle_manual_trades():
+    from db import get_conid_for_ticker
     while True:
         console.print("\n[bold blue]--- MANAGE MANUAL ENTRIES ---[/bold blue]")
+        console.print("[dim]Use this to 'Heal' missing cost basis or record intraday activity.[/dim]")
         trades = get_manual_trades()
         if not trades:
-            print("No manual trades found.")
+            console.print("[yellow]No manual trades found in ledger.[/yellow]")
         else:
             print(f"{'ID':<5} | {'Date':<12} | {'Ticker':<8} | {'Side':<6} | {'Qty':<8} | {'Price':<8}")
             print("-" * 60)
@@ -170,9 +209,10 @@ def handle_manual_trades():
         
         if opt == 'A':
             print("\nFormat: Ticker, Date, Price, Side (buy/sell), Qty, [conid]")
-            print("Example: AAPL, 21 Feb 2026, 112.5, buy, 100, 265598")
+            print("Example: AAPL, 21 Feb 2026, 112.5, buy, 100")
             line = input("Entry: ").strip()
-            if not line: continue
+            if not line:
+                continue
             
             try:
                 ticker, date_val, price, extra = parse_input_line(line)
@@ -180,7 +220,12 @@ def handle_manual_trades():
                     console.print("[red]Error: Need Side and Qty.[/red]")
                     continue
                 side, qty = extra[0].upper(), float(extra[1])
-                conid = extra[2] if len(extra) > 2 else None
+                
+                # Intelligent Conid Discovery
+                conid = extra[2] if len(extra) > 2 else get_conid_for_ticker(ticker)
+                
+                if not conid:
+                    console.print(f"[yellow]Warning: Could not find Conid for {ticker}. Saving with Ticker-only identity.[/yellow]")
                 
                 add_trade(date=date_val, ticker=ticker, side=side, quantity=qty, price=price, source='MANUAL', conid=conid)
                 console.print(f"[green]SUCCESS: Added {side} {qty} {ticker} @ {price}[/green]")
@@ -189,8 +234,10 @@ def handle_manual_trades():
                 
         elif opt == 'D':
             tid = input("Enter ID to delete: ").strip()
-            if tid: delete_trade(tid)
-        elif opt == 'B': break
+            if tid:
+                delete_trade(tid)
+        elif opt == 'B':
+            break
 
 def handle_atr_calculator():
     """Launch the interactive Risk Assignment Workspace."""
@@ -220,19 +267,77 @@ def handle_kids_fund():
     from kids_fund_dashboard import run_kids_fund_dashboard
     run_kids_fund_dashboard()
 
+def handle_watch_list():
+    """Interactive management of the Watch List."""
+    from db import get_watch_list_profiles, delete_risk_profile
+    while True:
+        console.print("\n[bold yellow]--- WATCH LIST PROSPECTS ---[/bold yellow]")
+        prospects = get_watch_list_profiles()
+        if not prospects:
+            console.print("[dim]Your watch list is currently empty. Add prospects in the Risk Workspace.[/dim]")
+            input("\nPress Enter to return...")
+            break
+
+        from rich.table import Table
+        from rich import box
+        
+        table = Table(box=box.SIMPLE_HEAD)
+        table.add_column("ID", style="dim")
+        table.add_column("TICKER", style="cyan")
+        table.add_column("ATR", justify="right")
+        table.add_column("TYPE", justify="center")
+        table.add_column("STRATEGY", justify="center")
+        table.add_column("STEP", justify="right")
+
+        # Map for deletion
+        id_map = {}
+        for i, p in enumerate(prospects, 1):
+            table.add_row(
+                str(i),
+                str(p['ticker']),
+                f"{p['atr_value']:.2f}",
+                str(p['stop_type'])[:1],
+                "Pilot" if p['entry_type'] == 'SCALE_IN' else "Single",
+                f"{p['scale_step']}x"
+            )
+            id_map[str(i)] = p['conid']
+        
+        console.print(table)
+        console.print("\nOptions: [bold]D[/bold]elete ID, [bold]B[/bold]ack")
+        opt = input("Choice: ").strip().upper()
+        
+        if opt == 'D':
+            idx = input("Enter ID to delete: ").strip()
+            if idx in id_map:
+                delete_risk_profile(id_map[idx])
+                console.print(f"[green]Deleted prospect {idx}[/green]")
+            else:
+                console.print("[red]Invalid ID.[/red]")
+        elif opt == 'B' or not opt:
+            break
+
 def main():
     sync_config.smart_sync()
     init_db()
     while True:
         show_menu()
         choice = input("\nSelect option: ").strip()
-        if choice == '1': handle_sync_all()
-        elif choice == '2': handle_manage_positions()
-        elif choice == '3': handle_view_dashboard()
-        elif choice == '4': handle_kids_fund()
-        elif choice == '5': handle_maintenance()
-        elif choice == '0': sys.exit()
-        else: console.print("[red]Invalid option.[/red]")
+        if choice == '1':
+            handle_sync_all()
+        elif choice == '2':
+            handle_manage_positions()
+        elif choice == '3':
+            handle_view_dashboard()
+        elif choice == '4':
+            handle_kids_fund()
+        elif choice == '5':
+            handle_maintenance()
+        elif choice == '6':
+            handle_watch_list()
+        elif choice == '0':
+            sys.exit()
+        else:
+            console.print("[red]Invalid option.[/red]")
 
 if __name__ == "__main__":
     main()

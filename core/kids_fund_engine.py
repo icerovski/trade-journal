@@ -1,8 +1,7 @@
 import pandas as pd
 from datetime import datetime
-from config import KIDS_ACCOUNT_ID, KIDS_ASSETS, KIDS_GLIDE_PATH
+from config import KIDS_ACCOUNT_ID, KIDS_GLIDE_PATH
 import db
-from logger import logger
 
 class KidsFundEngine:
     """

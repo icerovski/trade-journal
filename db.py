@@ -30,7 +30,7 @@ def init_db():
     # Migration: Add account_id if it doesn't exist
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN account_id TEXT DEFAULT 'U0000000'")
-    except:
+    except Exception:
         pass
 
 
@@ -53,11 +53,12 @@ def init_db():
     # Migration: Add scale_step if it doesn't exist
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN scale_step REAL DEFAULT 0.5")
-    except:
+    except Exception:
         pass
     
-    # Ensure conid unique for ACTIVE profiles
+    # Ensure conid unique for ACTIVE and WATCH profiles separately
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_conid ON risk_profiles(conid) WHERE status = 'WATCH'")
 
 
     # 3. Ticker Info Table (Asset Master - Single Source of Truth for Metadata)
@@ -99,13 +100,13 @@ def wipe_trades_only():
     conn.close()
     init_db()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True, entry_type='SINGLE', scale_step=0.5):
-    """Saves or updates the ACTIVE risk profile for a conid."""
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=True, entry_type='SINGLE', scale_step=0.5, status='ACTIVE'):
+    """Saves or updates a risk profile (ACTIVE or WATCH) for a conid."""
     conn = get_conn()
     conid = str(conid)
     
-    # Check if an active profile exists
-    cursor = conn.execute("SELECT id FROM risk_profiles WHERE conid = ? AND status = 'ACTIVE'", (conid,))
+    # Check if a profile with this status exists
+    cursor = conn.execute("SELECT id FROM risk_profiles WHERE conid = ? AND status = ?", (conid, status))
     existing = cursor.fetchone()
 
     if existing:
@@ -124,9 +125,50 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=T
     else:
         conn.execute("""
             INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, start_date, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), start_date))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), start_date, status))
     
+    conn.commit()
+    conn.close()
+
+def get_watch_list_profiles():
+    """Returns all risk profiles marked as 'WATCH'."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT conid, ticker, atr_value, stop_type, entry_type, scale_step FROM risk_profiles WHERE status = 'WATCH'")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def promote_prospect_to_active(ticker, real_conid):
+    """
+    Bridge Logic: Transfers a 'WATCH' profile to 'ACTIVE' when a real conid is discovered.
+    Called when a new asset is synced from the broker.
+    """
+    conn = get_conn()
+    # Find watch entry by ticker (since conid was virtual)
+    cursor = conn.execute("SELECT id, atr_value, stop_type, entry_type, scale_step FROM risk_profiles WHERE ticker = ? AND status = 'WATCH'", (ticker.upper(),))
+    prospect = cursor.fetchone()
+    
+    if prospect:
+        # 1. Close the watch entry
+        conn.execute("UPDATE risk_profiles SET status = 'CLOSED', end_date = CURRENT_TIMESTAMP WHERE id = ?", (prospect['id'],))
+        
+        # 2. Create new ACTIVE entry with real conid, inheriting settings
+        conn.execute("""
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, status, start_date)
+            VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP)
+        """, (str(real_conid), ticker.upper(), prospect['atr_value'], prospect['stop_type'], 
+              prospect['entry_type'], prospect['scale_step']))
+        
+        conn.commit()
+        # logger is available via import in global scope
+    
+    conn.close()
+
+def delete_risk_profile(conid):
+    """Permanently deletes a risk profile by its conid."""
+    conn = get_conn()
+    conn.execute("DELETE FROM risk_profiles WHERE conid = ?", (str(conid),))
     conn.commit()
     conn.close()
 
@@ -152,15 +194,16 @@ def update_high_water_mark(conid, sl_price):
     conn.close()
 
 def get_all_risk_settings():
-    """Returns all ACTIVE risk settings as a dict {conid: (atr, type, highest_sl, entry_type)}."""
+    """Returns all ACTIVE risk settings as a dict {conid: (atr, type, highest_sl, entry_type, scale_step)}."""
     conn = get_conn()
-    cursor = conn.execute("SELECT conid, atr_value, stop_type, highest_sl, entry_type FROM risk_profiles WHERE status = 'ACTIVE'")
+    cursor = conn.execute("SELECT conid, atr_value, stop_type, highest_sl, entry_type, scale_step FROM risk_profiles WHERE status = 'ACTIVE'")
     rows = cursor.fetchall()
     conn.close()
-    return {r['conid']: (r['atr_value'], r['stop_type'], r['highest_sl'], r['entry_type']) for r in rows}
+    return {r['conid']: (r['atr_value'], r['stop_type'], r['highest_sl'], r['entry_type'], r['scale_step']) for r in rows}
 
 def trade_exists(external_id):
-    if not external_id: return False
+    if not external_id:
+        return False
     conn = get_conn()
     cursor = conn.execute("SELECT 1 FROM trades WHERE external_id = ?", (external_id,))
     exists = cursor.fetchone() is not None
@@ -171,12 +214,15 @@ def add_trade(date, ticker, side, quantity, price, conid, account_id='U0000000',
     """Inserts a trade execution or manual entry (Activity Only)."""
     conn = get_conn()
     try:
+        # Normalize conid to string or None
+        conid_val = str(conid) if conid is not None else None
+        
         conn.execute(
             """INSERT INTO trades 
                (date, account_id, ticker, side, quantity, price, conid, notes, source, external_id) 
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, account_id, ticker.upper(), side.upper(), float(quantity), float(price), 
-             str(conid), notes, source, external_id)
+             conid_val, notes, source, external_id)
         )
         conn.commit()
     except sqlite3.IntegrityError:

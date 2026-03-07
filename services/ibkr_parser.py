@@ -1,6 +1,4 @@
 import pandas as pd
-import numpy as np
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
 import db
@@ -54,7 +52,7 @@ class IBKRParser:
                 conid_raw = row.get('Conid')
                 try:
                     conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                except:
+                except Exception:
                     conid = str(conid_raw)
 
                 if not conid or conid == 'nan':
@@ -135,7 +133,7 @@ class IBKRParser:
                     conid_raw = row.get('Conid')
                     try:
                         conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                    except:
+                    except Exception:
                         conid = str(conid_raw)
 
                     if not conid or conid == 'nan':
@@ -207,7 +205,8 @@ class IBKRParser:
 
                     # Calculate price from PositionAmount (Cost Basis)
                     pos_amt = float(row.get('PositionAmount', 0))
-                    
+                    price = (pos_amt / qty) / multiplier if (qty * multiplier) > 0 else 0.0
+
                     # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
                     if asset_cat in ['BOND', 'BILL', 'FIXED']:
                         qty = qty / 1000.0
@@ -218,7 +217,7 @@ class IBKRParser:
                     conid_raw = row.get('Conid')
                     try:
                         conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                    except:
+                    except Exception:
                         conid = str(conid_raw)
 
                     if not conid or conid == 'nan':
@@ -275,7 +274,8 @@ class IBKRParser:
             count = 0
             for _, row in df.iterrows():
                 ticker = row.get('Symbol')
-                if not ticker or str(ticker) == '-': continue
+                if not ticker or str(ticker) == '-':
+                    continue
                 
                 # Check different possible column names for Type/Description
                 action_desc = str(row.get('ActionDescription', row.get('Type', ''))).upper()
@@ -291,13 +291,14 @@ class IBKRParser:
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
                     
                     # Ensure qty is non-zero
-                    if qty == 0: continue
+                    if qty == 0:
+                        continue
 
                     # Normalize Conid
                     conid_raw = row.get('Conid')
                     try:
                         conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                    except:
+                    except Exception:
                         conid = str(conid_raw)
 
                     # 2. Update Asset Master (Metadata)
@@ -321,7 +322,7 @@ class IBKRParser:
                             source="IBKR_CORP_CSV", external_id=ext_id
                         )
                         count += 1
-                except Exception as e:
+                except Exception:
                     continue
             return count
         except Exception as e:

@@ -1,9 +1,7 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from rich.table import Table
 from rich.console import Console
-from rich import box
 from models import Position, ATRDiscoveryRow
 from db import update_high_water_mark
 from services.price_service import PriceService
@@ -216,20 +214,22 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                 entry_dt = pd.to_datetime(entry_date_str).tz_localize(df_daily.index.tz) if df_daily.index.tz else pd.to_datetime(entry_date_str)
                 df_since = df_daily[df_daily.index >= entry_dt]
                 max_price = df_since['High'].max() if not df_since.empty else entry_price
-            except:
+            except Exception:
                 max_price = entry_price
         
         max_price = max(entry_price, max_price)
         current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
 
+        # Prospect logic: If entry_price is unknown (0.0), assume we buy at current market price
+        effective_entry = entry_price if entry_price > 0 else current_price
+
         intervals = [
             ("14d", 14, 'daily'),
             ("12w", 12, 'weekly'),
             ("12m", 12, 'monthly'),
-            ("12q", 12, 'quarterly'),
-            ("20q", 20, 'quarterly')
+            ("12q", 12, 'quarterly')
         ]
-        
+
         results = []
         for label, window, tf in intervals:
             if conid:
@@ -238,13 +238,14 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                 # Map timeframe to yfinance periods/intervals
                 yf_period = "3y" if tf == 'daily' else ("5y" if tf == 'weekly' else ("10y" if tf == 'monthly' else "max"))
                 yf_interval = "1d" if tf == 'daily' else ("1wk" if tf == 'weekly' else ("1mo" if tf == 'monthly' else "3mo"))
-                
-                # Quarterly needs max to ensure enough history for 20q
-                if tf == 'quarterly': yf_period = "max"
-                
+
+                # Quarterly needs max to ensure enough history
+                if tf == 'quarterly':
+                    yf_period = "max"
                 df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
 
-            if len(df) < window + 1: continue
+            if len(df) < window + 1:
+                continue
 
             df['PrevClose'] = df['Close'].shift(1)
             df['TR'] = np.maximum(df['High'] - df['Low'], 
@@ -257,16 +258,16 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
 
             # Calculate for both types
             for s_type in ['FIXED', 'TRAILING']:
-                base_price = max_price if s_type == 'TRAILING' else entry_price
+                base_price = max_price if s_type == 'TRAILING' else effective_entry
                 stop_price = base_price - final_wilder
                 atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
                 
                 # P/L at Stop (Total profit/loss from entry)
-                pl_at_stop = (stop_price - entry_price) * qty * inst_multiplier
+                pl_at_stop = (stop_price - effective_entry) * qty * inst_multiplier
                 
                 # R (Risk % of NAV) = Potential Loss relative to Entry / Total NAV
                 # Formula: (Entry - Stop) * Qty / NAV
-                risk_amt = (entry_price - stop_price) * qty * inst_multiplier
+                risk_amt = (effective_entry - stop_price) * qty * inst_multiplier
                 pl_pct_nav = (risk_amt / total_nav * 100) if total_nav > 0 else 0
                 
                 buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0
@@ -285,7 +286,7 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             
         return {
             'ticker': ticker_symbol,
-            'entry_price': entry_price,
+            'entry_price': effective_entry,
             'max_price': max_price,
             'current_price': current_price,
             'rows': results

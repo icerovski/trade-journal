@@ -1,8 +1,7 @@
-import json
 import requests
 import pandas as pd
 from functools import lru_cache
-from config import TICKER_MAP_PATH, IBKR_OPEN_POSITIONS_CSV
+from config import IBKR_OPEN_POSITIONS_CSV
 import db
 
 class TickerMapper:
@@ -77,8 +76,10 @@ class TickerMapper:
                 if info['ticker_yfinance'] and info['isin'] and not pd.isna(info['isin']):
                     return info['ticker_yfinance']
                 # Otherwise, continue to see if we can enrich it
-                if not isin: isin = info['isin']
-                if not asset: asset = info['asset_class']
+                if not isin:
+                    isin = info['isin']
+                if not asset:
+                    asset = info['asset_class']
             
         # 2. Check DB via IBKR Ticker (Secondary fallback)
         yf_direct = db.get_yf_ticker(ticker_upper)
@@ -117,7 +118,8 @@ class TickerMapper:
                     details['exchange'] = details['exchange'] or row.get('ListingExchange', '')
                     details['ccy'] = details['ccy'] or row.get('CurrencyPrimary', 'USD')
                     details['underlying'] = details['underlying'] or row.get('UnderlyingSymbol', '')
-                    if not conid: conid = row.get('Conid')
+                    if not conid:
+                        conid = row.get('Conid')
 
         # Clean up details (remove 'nan' strings)
         for k, v in details.items():

@@ -1,8 +1,6 @@
 import pandas as pd
 from typing import List
 from models import Position, Trade
-from logger import logger
-from db import close_risk_profile
 
 class LedgerEngine:
     """

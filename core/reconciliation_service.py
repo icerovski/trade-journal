@@ -1,7 +1,6 @@
 import pandas as pd
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from models import Position, Trade
-from logger import logger
 
 class ReconciliationService:
     """

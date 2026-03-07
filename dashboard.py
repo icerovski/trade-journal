@@ -1,10 +1,9 @@
 import pandas as pd
-import time
 import threading
 from datetime import datetime
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, Static, Label
-from textual.containers import Horizontal, Vertical, Container
+from textual.containers import Horizontal, Vertical
 from textual.binding import Binding
 from textual.message import Message
 from textual import on
@@ -196,9 +195,9 @@ class TradingCockpit(App):
         def _update():
             try:
                 self.query_one("#status-bar").update(msg)
-            except:
+            except Exception:
                 pass
-        
+
         if threading.get_ident() == self._thread_id:
             _update()
         else:
@@ -216,7 +215,7 @@ class TradingCockpit(App):
         """Internal UI update for the table and status bar."""
         table = self.query_one(DataTable)
         table.clear()
-        
+
         for _, row in df_view.iterrows():
             # Breach Indicators
             ticker_display = str(row['Ticker'])
@@ -224,7 +223,7 @@ class TradingCockpit(App):
                 ticker_display = f"🔴 {ticker_display}"
             elif pd.notnull(row['TP_Price']) and row['Price'] >= row['TP_Price']:
                 ticker_display = f"🟢 {ticker_display}"
-            
+
             table.add_row(
                 ticker_display,
                 f"{row['Price']:,.2f}",
@@ -237,7 +236,7 @@ class TradingCockpit(App):
                 f"{row['MarketValue']:,.0f}",
                 f"{row['NavPct']:.1f}%"
             )
-        
+
         filter_label = self.asset_filter if self.asset_filter else "ALL"
         self.update_status(f"IBKR: {report_date} | AUM: {nav:,.0f} | Filter: {filter_label} | Sort: {self.sort_by} | Last Update: {datetime.now().strftime('%H:%M:%S')}")
         self.update_details()
@@ -250,12 +249,12 @@ class TradingCockpit(App):
             table = self.query_one(DataTable)
             if table.cursor_row < 0 or self.df.empty:
                 return
-                
+
             df_view = self.process_and_sort(self.df)
             row_idx = table.cursor_row
             if row_idx < len(df_view):
                 row = df_view.iloc[row_idx]
-                
+
                 # Risk Metrics Calculations
                 s_type = str(row.get('StopType', '---'))
                 atr_val = row.get('ATR', 0.0)
@@ -270,19 +269,19 @@ class TradingCockpit(App):
                     f"Underlying: {row.get('UnderlyingSymbol', '---')}\n"
                     f"Asset Class: {row.get('AssetClass', '---')}\n"
                     f"Currency:   {row.get('CCY', '---')}\n\n"
-                    
+
                     f"[bold cyan]RISK PARAMETERS[/bold cyan]\n"
                     f"ATR (% of cost): {atr_val:.2f} ({atr_pct_cost:.1f}%)\n"
                     f"Stop Type:      {s_type}\n"
                     f"Stop Price:     [bold red]{row['SL_Price']:,.2f}[/]\n"
                     f"P/L at Stop:    {self.color_fmt(row['Risk_Val'], ',.0f')}\n"
                     f"Buffer to SL:   {self.color_fmt(row['Down_Pct'], '.1f', '%')}\n\n"
-                    
+
                     f"[bold cyan]TARGET PROFIT[/bold cyan]\n"
                     f"Target Price:   [bold green]{row['TP_Price']:,.2f}[/]\n"
                     f"P/L at Target:  {self.color_fmt(row['Reward_Val'], ',.0f')}\n"
                     f"Buffer to Tgt:  {self.color_fmt(row['Up_Pct'], '.1f', '%')}\n\n"
-                    
+
                     f"[bold magenta]PERFORMANCE[/bold magenta]\n"
                     f"First Entry:      {row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else '---'}\n"
                     f"Avg Cost:         {row['Entry']:,.2f}\n"
@@ -296,20 +295,22 @@ class TradingCockpit(App):
 
     def process_and_sort(self, df):
         """Generalized logic supporting dynamic field selection AND filtering."""
-        if df.empty: return df
-        
+        if df.empty:
+            return df
+
         if self.asset_filter and str(self.asset_filter) != "None":
             target_class = str(self.asset_filter).upper()
-            if target_class == 'TREASURIES': target_class = 'BILL'
+            if target_class == 'TREASURIES':
+                target_class = 'BILL'
             df = df[df['AssetClass'].str.upper() == target_class]
 
         field_map = {"Pct": "PL_Inc_Pct", "PL": "PL_Inc"}
         actual_field = field_map.get(self.sort_by, self.sort_by)
         ascending = actual_field in ["Ticker", "Date", "AssetClass"]
-        
+
         if actual_field in df.columns:
             return df.sort_values(actual_field, ascending=ascending)
-        
+
         sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
         return df.sort_values(sort_cols, ascending=True) if sort_cols else df
 
@@ -331,7 +332,8 @@ def print_nav_table(portfolio_manager, force_download=False):
     from rich.table import Table
     from rich import box
     data = portfolio_manager.fetch_nav_data(force_download=force_download)
-    if not data: return 0.0
+    if not data:
+        return 0.0
     total, accounts, report_date = data
     table = Table(box=box.SIMPLE_HEAD, title=f"[bold]ACCOUNT BALANCES (IBKR {report_date})[/bold]")
     table.add_column("ALIAS", style="cyan")

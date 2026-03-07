@@ -56,7 +56,7 @@ class PriceService:
 
         if 'Date' in df.columns:
             df = df.rename(columns={'Date': 'date'})
-        elif not 'date' in df.columns:
+        elif 'date' not in df.columns:
             df = df.reset_index().rename(columns={'Date': 'date', 'index': 'date'})
         
         df['conid'] = str(conid)

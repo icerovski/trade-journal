@@ -1,8 +1,4 @@
 import pandas as pd
-import numpy as np
-import yfinance as yf
-import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
 from data_loader import DataLoader
 from services.ticker_mapper import TickerMapper
 from .ledger_engine import LedgerEngine
@@ -55,15 +51,22 @@ class PortfolioManager:
     def recon(self):
         return self._recon or ReconciliationService()
 
-    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, silent=False, account_id=None):
+    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, silent=False, account_id=None, include_watch=True):
         """
         Enriches open positions with market data and risk metrics.
         Uses Hybrid mode (Broker Snapshot + Manual Deltas).
         """
+        from db import get_all_risk_settings
         risk_settings = get_all_risk_settings()
         positions = self.get_open_positions_hybrid(asset_class_filter, account_id=account_id)
+        
+        # Merge Watch List if requested
+        if include_watch and not account_id:
+            watch_positions = self.get_watch_list_positions(asset_class_filter)
+            positions.extend(watch_positions)
             
-        if not positions: return pd.DataFrame()
+        if not positions:
+            return pd.DataFrame()
 
         # Fix Multipliers and apply Asset-Specific metadata rules
         for p in positions:
@@ -114,6 +117,7 @@ class PortfolioManager:
         Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades/transfers.
         Consolidates positions across accounts by default unless account_id is provided.
         """
+        from db import promote_prospect_to_active
         broker_snapshot, report_date = self.loader.get_broker_verified_snapshot()
         all_trades = self.loader.get_trades_as_models()
         
@@ -127,10 +131,13 @@ class PortfolioManager:
         if not open_list:
             logger.warning("No open positions found in Hybrid mode.")
 
-        # Consolidation Logic (Institutional View)
+        # Consolidation Logic & Prospect Promotion
         if not account_id:
             consolidated = {}
             for p in open_list:
+                # Bridge: Promote prospects if a real conid is now present
+                promote_prospect_to_active(p.ticker, p.conid)
+                
                 c_id = str(p.conid) # Force string for robust mapping
                 if c_id not in consolidated:
                     consolidated[c_id] = p
@@ -161,6 +168,36 @@ class PortfolioManager:
             
         return open_list
 
+    def get_watch_list_positions(self, asset_class_filter=None) -> list[Position]:
+        """Returns phantom positions for assets on the Watch List."""
+        from db import get_watch_list_profiles
+        profiles = get_watch_list_profiles()
+        watch_list = []
+        for r in profiles:
+            p = Position(
+                name=f"WATCH: {r['ticker']}",
+                ticker=r['ticker'],
+                conid=r['conid'],
+                asset_class='STK', # Discovery will correct this
+                ccy='USD', 
+                date_entry=pd.Timestamp.now(),
+                qty=0.0, 
+                entry_price=0.0,
+                account_id='WATCHLIST'
+            )
+            # Pre-populate risk settings from DB
+            p.atr = r['atr_value']
+            p.stop_type = r['stop_type']
+            p.entry_type = r['entry_type']
+            p.scale_step = r['scale_step']
+            watch_list.append(p)
+            
+        if asset_class_filter:
+            filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
+            watch_list = [p for p in watch_list if p.asset_class.upper() in filters]
+            
+        return watch_list
+
     # --- Account / NAV Methods ---
     def fetch_nav_data(self, force_download=False):
         from config import IBKR_QUERY_ID_NAV, IBKR_NAV_CSV
@@ -168,6 +205,7 @@ class PortfolioManager:
         from services.ibkr_parser import IBKRParser
         
         file_path = download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_CSV, force_download=force_download)
-        if not file_path: return None
+        if not file_path:
+            return None
         
         return IBKRParser.parse_nav_csv(file_path)

@@ -5,10 +5,13 @@ import numpy as np
 import os
 import sys
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List
+from models import Position
+from logger import logger
 
 # Suppress Pandas4Warning from yfinance (deprecated utcnow calls)
-warnings.filterwarnings("ignore", category=pd.errors.Pandas4Warning) if hasattr(pd.errors, 'Pandas4Warning') else None
+if hasattr(pd.errors, 'Pandas4Warning'):
+    warnings.filterwarnings("ignore", category=pd.errors.Pandas4Warning)
 # Also suppress FutureWarnings for general stability during library transitions
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -26,10 +29,6 @@ def silence_yfinance():
         sys.stdout = old_stdout
         sys.stderr = old_stderr
         new_target.close()
-
-from typing import List, Dict
-from models import Position
-from logger import logger
 
 class MarketDataService:
     """
@@ -102,7 +101,8 @@ class MarketDataService:
                     try:
                         with silence_yfinance():
                             price = yf.Ticker(yf_ticker).fast_info['last_price']
-                    except: pass
+                    except Exception:
+                        pass
 
                 for p in pos_list:
                     # Final fallback to IBKR mark price
@@ -116,7 +116,7 @@ class MarketDataService:
                             p.max_since_entry = max(local_high, p.current_price)
                         else:
                             p.max_since_entry = p.current_price
-                    except:
+                    except Exception:
                         p.max_since_entry = p.current_price
 
             if not silent:

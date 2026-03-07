@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from config import DATA_DIR
 
 # Define log file path
