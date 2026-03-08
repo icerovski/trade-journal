@@ -111,13 +111,19 @@ class RiskWorkspace(App):
 
     class DiscoveryDataLoaded(Message):
         def __init__(self, conid: str, data: dict):
-            self.conid = conid; self.data = data; super().__init__()
+            self.conid = conid
+            self.data = data
+            super().__init__()
 
     def __init__(self):
         super().__init__()
-        self.pm = PortfolioManager(); self.positions = []; self.enriched_data = pd.DataFrame()
-        self.drafts: Dict[str, Dict] = {}; self.current_conid: Optional[str] = None
-        self.discovery_cache: Dict[str, dict] = {}; self.total_nav = 0.0
+        self.pm = PortfolioManager()
+        self.positions = []
+        self.enriched_data = pd.DataFrame()
+        self.drafts: Dict[str, Dict] = {}
+        self.current_conid: Optional[str] = None
+        self.discovery_cache: Dict[str, dict] = {}
+        self.total_nav = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -137,83 +143,141 @@ class RiskWorkspace(App):
                     with Vertical(id="fixed-pane", classes="discovery-sub-pane"):
                         yield Label("FIXED STOP (Protection)", classes="panel-header")
                         yield Label("Base: ---", id="fixed-base", classes="base-price-label")
-                        dt_fixed = DataTable(id="fixed-table"); dt_fixed.can_focus = False; yield dt_fixed
+                        dt_fixed = DataTable(id="fixed-table")
+                        dt_fixed.can_focus = False
+                        yield dt_fixed
                     with Vertical(id="trailing-pane", classes="discovery-sub-pane"):
                         yield Label("TRAILING STOP (Profit Harvest)", classes="panel-header")
                         yield Label("Base: ---", id="trailing-base", classes="base-price-label")
-                        dt_trail = DataTable(id="trailing-table"); dt_trail.can_focus = False; yield dt_trail
+                        dt_trail = DataTable(id="trailing-table")
+                        dt_trail.can_focus = False
+                        yield dt_trail
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#portfolio-table"); table.cursor_type = "row"
-        table.add_column("TICKER", key="col_ticker"); table.add_column("STOP BASE", key="col_base")
-        table.add_column("ATR", key="col_atr"); table.add_column("STOP P", key="col_stop_p")
-        table.add_column("SL %", key="col_sl_pct"); table.add_column("P/L STOP", key="col_pl_stop")
-        table.add_column("CUR P", key="col_cur_p"); table.add_column("% NAV", key="col_nav_pct")
-        table.add_column("R", key="col_r"); table.add_column("RR", key="col_rr")
+        table = self.query_one("#portfolio-table")
+        table.cursor_type = "row"
+        table.add_column("TICKER", key="col_ticker")
+        table.add_column("STOP BASE", key="col_base")
+        table.add_column("ATR", key="col_atr")
+        table.add_column("STOP P", key="col_stop_p")
+        table.add_column("SL %", key="col_sl_pct")
+        table.add_column("P/L STOP", key="col_pl_stop")
+        table.add_column("CUR P", key="col_cur_p")
+        table.add_column("% NAV", key="col_nav_pct")
+        table.add_column("R", key="col_r")
+        table.add_column("RR", key="col_rr")
         for table_id in ["#fixed-table", "#trailing-table"]:
-            dt = self.query_one(table_id); dt.add_columns("WIN", "ATR (SMA)", "STOP", "SL% (SMA)", "P/L", "R", "BUF%")
+            dt = self.query_one(table_id)
+            dt.add_columns("WIN", "ATR (SMA)", "STOP", "SL% (SMA)", "P/L", "R", "BUF%")
         self.load_portfolio()
 
     def load_portfolio(self) -> None:
-        nav_res = self.pm.fetch_nav_data(); self.total_nav = nav_res[0] if nav_res else 0.0
-        # CRITICAL: Receive healed positions list from the manager
+        """Syncs Ledger and calculates metrics, including Stop-Breach signals."""
+        nav_res = self.pm.fetch_nav_data()
+        self.total_nav = nav_res[0] if nav_res else 0.0
         self.enriched_data, self.positions = self.pm.get_dashboard_df(total_nav=self.total_nav, silent=True)
-        if self.enriched_data.empty: return
-        table = self.query_one("#portfolio-table"); table.clear()
+        if self.enriched_data.empty:
+            return
+        table = self.query_one("#portfolio-table")
+        table.clear()
         for _, row in self.enriched_data.sort_values("Ticker").iterrows():
-            conid_str = str(row['conid']); has_risk = pd.notnull(row['ATR']) and row['ATR'] > 0
-            max_r_pct = row.get('MaxRPct', 1.0); max_exp_pct = row.get('MaxExpPct', 5.0)
+            conid_str = str(row['conid'])
+            has_risk = pd.notnull(row['ATR']) and row['ATR'] > 0
+            max_r_pct = row.get('MaxRPct', 1.0)
+            max_exp_pct = row.get('MaxExpPct', 5.0)
             ticker_display = f"[{row['StopType'][:1]}{'/S' if row.get('EntryType') == 'SCALE_IN' else ''}] {row['Ticker']}"
             if conid_str in self.drafts:
-                d = self.drafts[conid_str]; ticker_display = f"[bold yellow]* [{d['type'][:1]}{'/S' if d['entry_type'] == 'SCALE_IN' else ''}] {row['Ticker']}"
-                max_r_pct = d.get('max_r_pct', max_r_pct); max_exp_pct = d.get('max_exp_pct', max_exp_pct)
-            cur_p_val = row['Price']; sl_p = row['SL_Price']; tp_p = row.get('TP_Price')
+                d = self.drafts[conid_str]
+                ticker_display = f"[bold yellow]* [{d['type'][:1]}{'/S' if d['entry_type'] == 'SCALE_IN' else ''}] {row['Ticker']}"
+                max_r_pct = d.get('max_r_pct', max_r_pct)
+                max_exp_pct = d.get('max_exp_pct', max_exp_pct)
+            cur_p_val = row['Price']
+            sl_p = row['SL_Price']
+            tp_p = row.get('TP_Price')
             cur_p_display = f"{cur_p_val:,.2f}"
-            if has_risk and pd.notnull(sl_p) and cur_p_val <= sl_p: cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
+            if has_risk and pd.notnull(sl_p) and cur_p_val <= sl_p:
+                cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
             else:
-                if has_risk and pd.notnull(tp_p) and cur_p_val >= tp_p: ticker_display += " [bold cyan]★[/]"
+                if has_risk and pd.notnull(tp_p) and cur_p_val >= tp_p:
+                    ticker_display += " [bold cyan]★[/]"
                 if has_risk and row.get('EntryType') == 'SCALE_IN':
-                    # Use healed inception for scale-in check
                     incep = row.get('Inception', row['Entry'])
                     pilot = RiskEngine.calculate_pilot_entry(cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), incep, row['ATR'], row.get('ScaleStep', 0.5), max_r_pct=max_r_pct, max_exp_pct=max_exp_pct)
                     if row['Qty'] < pilot['full_target_qty'] * 0.95:
-                        if (row['Qty'] <= pilot['full_target_qty'] * 0.4 and cur_p_val >= pilot['stage2_price']) or (row['Qty'] <= pilot['full_target_qty'] * 0.75 and cur_p_val >= pilot['stage3_price']): ticker_display += " [bold green]⬆[/]"
-            table.add_row(ticker_display, f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", f"{row['ATR']:.2f}" if has_risk else "---", f"{row['SL_Price']:,.2f}" if has_risk else "---", f"{row['sl_pct_base']:.1f}%" if has_risk else "---", f"[{'green' if row['Risk_Val'] >= 0 else 'red'}]{row['Risk_Val']:,.0f}[/]" if has_risk else "---", cur_p_display, f"[{'red' if row['NavPct'] > (max_exp_pct * 1.1) else ('yellow' if row['NavPct'] > max_exp_pct else 'white')}]{row['NavPct']:.1f}% ({max_exp_pct:.1f}%) [/]", f"[{'red' if row['risk_pct_nav'] > (max_r_pct * 1.5) else ('yellow' if row['risk_pct_nav'] > max_r_pct else 'white')}]{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%) [/]", f"[{'green' if row['RR_Ratio'] > 3.0 else ('yellow' if row['RR_Ratio'] > 1.0 else 'red')}]{row['RR_Ratio']:.2f}[/]" if has_risk else "---", key=conid_str)
+                        if (row['Qty'] <= pilot['full_target_qty'] * 0.4 and cur_p_val >= pilot['stage2_price']) or (row['Qty'] <= pilot['full_target_qty'] * 0.75 and cur_p_val >= pilot['stage3_price']):
+                            ticker_display += " [bold green]⬆[/]"
+            
+            r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
+            nav_val = f"{row['NavPct']:.1f}% ({max_exp_pct:.1f}%)"
+            r_color = "red" if row['risk_pct_nav'] > (max_r_pct * 1.5) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
+            exp_color = "red" if row['NavPct'] > (max_exp_pct * 1.1) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
+            pl_color = "green" if row['Risk_Val'] >= 0 else "red"
+            pl_display = f"[{pl_color}]{row['Risk_Val']:,.0f}[/]" if has_risk else "---"
+            rr_val = row['RR_Ratio']
+            rr_display = f"{rr_val:.2f}" if has_risk else "---"
+            rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
+            
+            table.add_row(ticker_display, f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", f"{row['ATR']:.2f}" if has_risk else "---", f"{row['SL_Price']:,.2f}" if has_risk else "---", f"{row['sl_pct_base']:.1f}%" if has_risk else "---", pl_display, cur_p_display, f"[{exp_color}]{nav_val}[/]", f"[{r_color}]{r_val}[/]", f"[{rr_color}]{rr_display}[/]", key=conid_str)
 
     @on(DataTable.RowHighlighted, "#portfolio-table")
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        conid = event.row_key.value; self.current_conid = conid
-        try: self.query_one("#discover-input").value = ""
-        except Exception: pass
+        conid = event.row_key.value
+        self.current_conid = conid
+        try:
+            self.query_one("#discover-input").value = ""
+        except Exception:
+            pass
         self.refresh_risk_checklist() 
-        if conid in self.discovery_cache: self.update_discovery_ui(self.discovery_cache[conid])
-        else: self.query_one("#fixed-table").clear(); self.query_one("#trailing-table").clear(); self.fetch_atr_data(conid)
+        if conid in self.discovery_cache:
+            self.update_discovery_ui(self.discovery_cache[conid])
+        else:
+            self.query_one("#fixed-table").clear()
+            self.query_one("#trailing-table").clear()
+            self.fetch_atr_data(conid)
 
     def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_entry_type: Optional[str] = None, hypo_scale_step: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None) -> None:
-        if not self.current_conid: return
-        pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None); if not pos: return
+        if not self.current_conid:
+            return
+        pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
+        if not pos:
+            return
+        
         active_max_r = hypo_max_r if hypo_max_r is not None else pos.max_r_pct
         active_max_exp = hypo_max_exp if hypo_max_exp is not None else pos.max_exp_pct
         stop_p = hypo_stop if hypo_stop is not None else pos.sl_price
         cur_p = pos.current_price or pos.mark_price
-        audit_content = "[dim]Waiting for Strategy...[/]"; integ_content = "---"; pilot_content = ""
+        tp_p = pos.tp_price if hypo_stop is None else (stop_p + (3 * (hypo_atr or pos.atr)))
+        
+        audit_content = "[dim]Waiting for Strategy...[/]"
+        integ_content = "---"
+        pilot_content = ""
         if pd.notnull(stop_p):
-            is_safe = cur_p > stop_p; buffer = ((cur_p - stop_p) / cur_p * 100) if cur_p > 0 else 0
+            is_safe = cur_p > stop_p
+            buffer = ((cur_p - stop_p) / cur_p * 100) if cur_p > 0 else 0
             integ_content = f"[bold {'green' if is_safe else 'red'}]Price {' > ' if is_safe else ' <= '} Stop[/] | {'[SAFE]' if is_safe else '[BREACHED]'} [dim]({buffer:.1f}% Buffer)[/]"
             res = RiskEngine.audit_position_risk(cur_p, stop_p, pos.entry_price, pos.qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp)
-            audit_content = f"STATUS: [bold {res['status_color'].lower()}]{res['status_color']}[/]\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if ( (stop_p+(3*(hypo_atr or pos.atr))-cur_p)/(cur_p-stop_p) if cur_p>stop_p else 0)>3.0 else 'red'}]{( (stop_p+(3*(hypo_atr or pos.atr))-cur_p)/(cur_p-stop_p) if cur_p>stop_p else 0):.2f} RR[/]\n  - Action: {('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))}"
+            
+            rr_val = (tp_p - cur_p) / (cur_p - stop_p) if (tp_p and cur_p > stop_p) else 0.0
+            audit_content = f"STATUS: [bold {res['status_color'].lower()}]{res['status_color']}[/]\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if rr_val > 3.0 else 'white' if not tp_p else 'red'}]{rr_val:.2f} RR[/]\n  - Action: {('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))}"
+            
             atr_v = hypo_atr if hypo_atr is not None else pos.atr
             if atr_v > 0:
                 daily_atr = atr_v
-                if self.current_conid in self.discovery_cache and self.discovery_cache[self.current_conid]['rows']: daily_atr = next((r.atr_wilder for r in self.discovery_cache[self.current_conid]['rows'] if r.label == '14d'), atr_v)
+                if self.current_conid in self.discovery_cache and self.discovery_cache[self.current_conid]['rows']:
+                    daily_atr = next((r.atr_wilder for r in self.discovery_cache[self.current_conid]['rows'] if r.label == '14d'), atr_v)
+                
                 pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, pos.entry_price, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp)
                 entry_t = (hypo_entry_type or pos.entry_type)
                 if entry_t == 'SCALE_IN':
-                    s2_add = max(0, int(pilot['full_target_qty'] * 2/3) - int(pos.qty)); s3_add = max(0, int(pilot['full_target_qty']) - (int(pos.qty) + s2_add))
+                    s2_add = max(0, int(pilot['full_target_qty'] * 2/3) - int(pos.qty))
+                    s3_add = max(0, int(pilot['full_target_qty']) - (int(pos.qty) + s2_add))
                     roadmap_content = f"  - Current:   {int(pos.qty)} sh (@ {pos.entry_price:,.2f})\n  - [dim green]{'✓' if s2_add<=0 else ' '} Stage 2 @:  {pilot['stage2_price']:,.2f}[/] {'(Add +'+str(s2_add)+' sh)' if s2_add>0 else '(Filled)'}\n  - [dim green]{'✓' if s3_add<=0 else ' '} Stage 3 @:  {pilot['stage3_price']:,.2f}[/] {'(Add +'+str(s3_add)+' sh)' if s3_add>0 else '(Filled)'}\n  - [cyan]Target Outlay: {pilot['scale_in_outlay']:,.0f} {pos.ccy}[/]\n  - [yellow]Remaining Cap: {max(0, pilot['scale_in_outlay'] - (pos.qty * pos.entry_price * pos.multiplier)):,.0f} {pos.ccy}[/]"
-                else: roadmap_content = f"  - Current:   {int(pos.qty)} sh (@ {pos.entry_price:,.2f})\n  - Target:    {pilot['full_target_qty']} sh ({active_max_exp}% Exp Limit)\n  - [cyan]Target Outlay: {pilot['single_outlay']:,.0f} {pos.ccy}[/]\n  - [yellow]Remaining Cap: {max(0, (pilot['full_target_qty'] - pos.qty) * cur_p * pos.multiplier):,.0f} {pos.ccy}[/]"
+                else:
+                    roadmap_content = f"  - Current:   {int(pos.qty)} sh (@ {pos.entry_price:,.2f})\n  - Target:    {pilot['full_target_qty']} sh ({active_max_exp}% Exp Limit)\n  - [cyan]Target Outlay: {pilot['single_outlay']:,.0f} {pos.ccy}[/]\n  - [yellow]Remaining Cap: {max(0, (pilot['full_target_qty'] - pos.qty) * cur_p * pos.multiplier):,.0f} {pos.ccy}[/]"
+                
                 pilot_content = f"--------------------------------------\nPOSITION ROADMAP:{' [bold yellow](STAGE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n{roadmap_content}\n  - Pilot Stop: [bold]{pilot['stop']:,.2f}[/] (assigned ATR)\n  - Scale Step: [bold]{(hypo_scale_step or pos.scale_step)}x ATR[/]"
+        
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"
         audit_text = f"[bold yellow]{pos.ticker}[/] ({pos.name})\nINCEPTION: [bold cyan]{incep_str}[/]\n--------------------------------------\nINTEGRITY: {integ_content}\n--------------------------------------\nDUAL-AUDIT:\n{audit_content}{pilot_content}"
         self.query_one("#position-context").update(audit_text)
@@ -221,93 +285,177 @@ class RiskWorkspace(App):
     @work(exclusive=True, thread=True)
     def fetch_atr_data(self, conid: Optional[str], ticker: Optional[str] = None) -> None:
         if conid and not str(conid).startswith("PROSPECT:"):
-            pos = next((p for p in self.positions if str(p.conid) == conid), None); if not pos: return
-            t_sym, entry_p, entry_d, m, q = pos.ticker, pos.entry_price, pos.date_entry.strftime("%Y-%m-%d"), pos.multiplier, pos.qty; max_r, max_exp = pos.max_r_pct, pos.max_exp_pct
-        else: t_sym = ticker or str(conid).split(":")[-1]; entry_p, entry_d, m, q = 0.0, pd.Timestamp.now().strftime("%Y-%m-%d"), 1.0, 0.0; max_r, max_exp = 1.0, 5.0
+            pos = next((p for p in self.positions if str(p.conid) == conid), None)
+            if not pos:
+                return
+            t_sym, entry_p, entry_d, m, q = pos.ticker, pos.entry_price, pos.date_entry.strftime("%Y-%m-%d"), pos.multiplier, pos.qty
+            max_r, max_exp = pos.max_r_pct, pos.max_exp_pct
+        else:
+            t_sym = ticker or str(conid).split(":")[-1]
+            entry_p, entry_d, m, q = 0.0, pd.Timestamp.now().strftime("%Y-%m-%d"), 1.0, 0.0
+            max_r, max_exp = 1.0, 5.0
+        
         data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp)
-        if data: cache_id = conid or f"PROSPECT:{t_sym}"; self.discovery_cache[cache_id] = data; self.post_message(self.DiscoveryDataLoaded(cache_id, data))
+        if data:
+            cache_id = conid or f"PROSPECT:{t_sym}"
+            self.discovery_cache[cache_id] = data
+            self.post_message(self.DiscoveryDataLoaded(cache_id, data))
 
     @on(DiscoveryDataLoaded)
     def on_discovery_loaded(self, message: DiscoveryDataLoaded) -> None:
         if message.conid == self.current_conid:
-            self.update_discovery_ui(message.data); self.refresh_risk_checklist()
-            if self.query_one("#atr-input").value: self.on_strategy_change()
+            self.update_discovery_ui(message.data)
+            self.refresh_risk_checklist()
+            if self.query_one("#atr-input").value:
+                self.on_strategy_change()
 
     def update_discovery_ui(self, data: dict) -> None:
-        self.query_one("#fixed-base").update(f"Base: {data['entry_price']:,.2f}"); self.query_one("#trailing-base").update(f"Base: {data['max_price']:,.2f}")
-        f_t, t_t = self.query_one("#fixed-table"), self.query_one("#trailing-table"); f_t.clear(); t_t.clear()
+        self.query_one("#fixed-base").update(f"Base: {data['entry_price']:,.2f}")
+        self.query_one("#trailing-base").update(f"Base: {data['max_price']:,.2f}")
+        f_t, t_t = self.query_one("#fixed-table"), self.query_one("#trailing-table")
+        f_t.clear()
+        t_t.clear()
         for r in data['rows']:
-            m_r = data.get('max_r_pct', 1.0); r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
+            m_r = data.get('max_r_pct', 1.0)
+            r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
             row_vals = (r.label, f"{r.atr_wilder:.2f}", f"{r.stop_price:,.2f}", f"{r.atr_base_pct:.1f}%", f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%")
-            if r.stop_type == "FIXED": f_t.add_row(*row_vals);
-            else: t_t.add_row(*row_vals)
+            if r.stop_type == "FIXED":
+                f_t.add_row(*row_vals)
+            else:
+                t_t.add_row(*row_vals)
 
     @on(Input.Submitted, "#discover-input")
     def on_discover_submitted(self) -> None:
-        ticker = self.query_one("#discover-input").value.strip().upper(); if not ticker: return
+        ticker = self.query_one("#discover-input").value.strip().upper()
+        if not ticker:
+            return
         table = self.query_one("#portfolio-table")
         for r_key in table.rows:
             row_data = self.enriched_data[self.enriched_data['conid'].astype(str) == r_key.value] if not self.enriched_data.empty else pd.DataFrame()
-            if not row_data.empty and row_data.iloc[0]['Ticker'] == ticker: table.move_cursor(row=table.get_row_index(r_key)); return
-        self.notify(f"DISCOVERING: {ticker}..."); self.current_conid = f"PROSPECT:{ticker}"
+            if not row_data.empty and row_data.iloc[0]['Ticker'] == ticker:
+                table.move_cursor(row=table.get_row_index(r_key))
+                return
+        self.notify(f"DISCOVERING: {ticker}...")
+        self.current_conid = f"PROSPECT:{ticker}"
         from models import Position
         phantom = Position(name=f"PROSPECT: {ticker}", ticker=ticker, conid=self.current_conid, asset_class='STK', ccy='USD', date_entry=pd.Timestamp.now(), qty=0.0, entry_price=0.0, account_id='WATCHLIST')
-        if not any(p.conid == self.current_conid for p in self.positions): self.positions.append(phantom)
-        if self.current_conid not in [r.value for r in table.rows]: table.add_row(f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---", key=self.current_conid)
-        table.move_cursor(row=table.get_row_index(self.current_conid)); self.fetch_atr_data(None, ticker=ticker)
+        if not any(p.conid == self.current_conid for p in self.positions):
+            self.positions.append(phantom)
+        if self.current_conid not in [r.value for r in table.rows]:
+            table.add_row(f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---", key=self.current_conid)
+        table.move_cursor(row=table.get_row_index(self.current_conid))
+        self.fetch_atr_data(None, ticker=ticker)
 
-    def action_toggle_help(self) -> None: self.push_screen(HelpScreen())
+    def action_toggle_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     @on(Input.Submitted, "#atr-input")
-    def on_strategy_submitted(self) -> None: self.on_strategy_change(); self.notify("Strategy Modeled.")
+    def on_strategy_submitted(self) -> None:
+        self.on_strategy_change()
+        self.notify("Strategy Modeled.")
 
     @on(Input.Changed, "#atr-input")
     def on_strategy_change(self) -> None:
-        if not self.current_conid: return
-        raw = self.query_one("#atr-input").value.strip().upper(); if not raw: self.refresh_risk_checklist(); return
+        if not self.current_conid:
+            return
+        raw = self.query_one("#atr-input").value.strip().upper()
+        if not raw:
+            self.refresh_risk_checklist()
+            return
         try:
-            pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None); disc = self.discovery_cache.get(self.current_conid)
-            if not pos: return
+            pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
+            disc = self.discovery_cache.get(self.current_conid)
+            if not pos:
+                return
             f_atr, s_type, e_type, step, m_r, m_e = pos.atr, pos.stop_type, pos.entry_type, pos.scale_step, pos.max_r_pct, pos.max_exp_pct
-            r_m = re.search(r"R:([0-9\.]+)", raw); if r_m: m_r = float(r_m.group(1)); raw = raw.replace(r_m.group(0), "").strip()
-            e_m = re.search(r"E:([0-9\.]+)", raw); if e_m: m_e = float(e_m.group(1)); raw = raw.replace(e_m.group(0), "").strip()
-            s_m = re.search(r"\bS\s*([0-9\.]*)", raw); if s_m: e_type = "SCALE_IN"; step = float(s_m.group(1)) if s_m.group(1) else step; raw = raw.replace(s_m.group(0), "").strip()
-            if 'T' in raw: s_type = "TRAILING"; raw = raw.replace('T', "").strip()
-            elif 'F' in raw: s_type = "FIXED"; raw = raw.replace('F', "").strip()
+            
+            r_m = re.search(r"R:([0-9\.]+)", raw)
+            if r_m:
+                m_r = float(r_m.group(1))
+                raw = raw.replace(r_m.group(0), "").strip()
+            e_m = re.search(r"E:([0-9\.]+)", raw)
+            if e_m:
+                m_e = float(e_m.group(1))
+                raw = raw.replace(e_m.group(0), "").strip()
+            s_m = re.search(r"\bS\s*([0-9\.]*)", raw)
+            if s_m:
+                e_type = "SCALE_IN"
+                step = float(s_m.group(1)) if s_m.group(1) else step
+                raw = raw.replace(s_m.group(0), "").strip()
+            if 'T' in raw:
+                s_type = "TRAILING"
+                raw = raw.replace('T', "").strip()
+            elif 'F' in raw:
+                s_type = "FIXED"
+                raw = raw.replace('F', "").strip()
+            
             cur_p_d = disc['current_price'] if disc else (pos.current_price or pos.mark_price)
-            # CRITICAL: Use discovered high from cache if available (synced with date entry)
             cached_hwm = disc.get('max_price', 0.0) if disc else 0.0
-            hwm = max(pos.entry_price, cur_p_d, pos.mark_price, cached_hwm, pos.max_since_entry); base_p = hwm if s_type == 'TRAILING' else pos.entry_price
-            if base_p == 0: base_p = cur_p_d
+            hwm = max(pos.entry_price, cur_p_d, pos.mark_price, cached_hwm, pos.max_since_entry)
+            base_p = hwm if s_type == 'TRAILING' else pos.entry_price
+            if base_p == 0:
+                base_p = cur_p_d
+            
             val_m = re.search(r"([\$0-9\.%]+)", raw)
             if val_m:
-                v = val_m.group(1); is_d = v.startswith('$'); num = float(v[1:] if is_d else (v[:-1] if v.endswith('%') else v)); f_atr = num if is_d else base_p * (num / 100.0)
-            sl_p = base_p - f_atr; calc_q = pos.qty
+                v = val_m.group(1)
+                is_d = v.startswith('$')
+                num = float(v[1:] if is_d else (v[:-1] if v.endswith('%') else v))
+                f_atr = num if is_d else base_p * (num / 100.0)
+            
+            sl_p = base_p - f_atr
+            dist_s = (cur_p_d - sl_p)
+            calc_q = pos.qty
             if calc_q == 0 and self.total_nav > 0:
                 dist_sh = abs(base_p - sl_p) * pos.multiplier
                 calc_q = int(min((self.total_nav * (m_r / 100.0)) / dist_sh if dist_sh > 0 else 0, (self.total_nav * (m_e / 100.0)) / (cur_p_d * pos.multiplier) if cur_p_d > 0 else 0))
+            
             risk_v = (sl_p - pos.entry_price) * calc_q * pos.multiplier if pos.entry_price > 0 else (sl_p - cur_p_d) * calc_q * pos.multiplier
             hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
-            table = self.query_one("#portfolio-table"); t_pfx = f"[{s_type[:1]}{'/S' if e_type == 'SCALE_IN' else ''}]"
+            
+            table = self.query_one("#portfolio-table")
+            t_pfx = f"[{s_type[:1]}{'/S' if e_type == 'SCALE_IN' else ''}]"
             table.update_cell(self.current_conid, "col_ticker", f"[bold yellow]* {'[PROSPECT]' if str(self.current_conid).startswith('PROSPECT:') else t_pfx} {pos.ticker}")
-            table.update_cell(self.current_conid, "col_base", f"{base_p:,.2f}"); table.update_cell(self.current_conid, "col_atr", f"{f_atr:.2f}"); table.update_cell(self.current_conid, "col_stop_p", f"{sl_p:,.2f}"); table.update_cell(self.current_conid, "col_sl_pct", f"{(f_atr/base_p*100 if base_p>0 else 0):.1f}%")
-            table.update_cell(self.current_conid, "col_pl_stop", f"[{'green' if risk_v >= 0 else 'red'}]{risk_v:,.0f}[/]"); table.update_cell(self.current_conid, "col_cur_p", f"{cur_p_d:,.2f}"); table.update_cell(self.current_conid, "col_nav_pct", f"{( (pos.qty if pos.qty > 0 else calc_q) * cur_p_d * pos.multiplier / self.total_nav * 100):.1f}% ({m_e:.1f}%)"); table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
-            self.refresh_risk_checklist(sl_p, f_atr, e_type, step, m_r, m_e); self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e}
-        except Exception as e: logger.error(f"Modeling Error: {e}")
+            table.update_cell(self.current_conid, "col_base", f"{base_p:,.2f}")
+            table.update_cell(self.current_conid, "col_atr", f"{f_atr:.2f}")
+            table.update_cell(self.current_conid, "col_stop_p", f"{sl_p:,.2f}")
+            table.update_cell(self.current_conid, "col_sl_pct", f"{(f_atr/base_p*100 if base_p>0 else 0):.1f}%")
+            table.update_cell(self.current_conid, "col_pl_stop", f"[{'green' if risk_v >= 0 else 'red'}]{risk_v:,.0f}[/]")
+            table.update_cell(self.current_conid, "col_cur_p", f"{cur_p_d:,.2f}")
+            table.update_cell(self.current_conid, "col_nav_pct", f"{( (pos.qty if pos.qty > 0 else calc_q) * cur_p_d * pos.multiplier / self.total_nav * 100):.1f}% ({m_e:.1f}%)")
+            table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
+            self.refresh_risk_checklist(sl_p, f_atr, e_type, step, m_r, m_e)
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e}
+        except Exception as e:
+            logger.error(f"Modeling Error: {e}")
 
     def on_key(self, event) -> None:
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
                 set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True)
-                self.notify(f"COMMITTED: {d['ticker']}"); self.query_one("#atr-input").value = ""; self.query_one("#discover-input").value = ""; self.load_portfolio(); self.query_one("#portfolio-table").focus()
+                self.notify(f"COMMITTED: {d['ticker']}")
+                self.query_one("#atr-input").value = ""
+                self.query_one("#discover-input").value = ""
+                self.load_portfolio()
+                self.query_one("#portfolio-table").focus()
 
     def action_save_all(self) -> None:
-        if not self.drafts: return
-        for cid, d in self.drafts.items(): set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True)
-        self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies."); self.drafts.clear(); self.load_portfolio(); self.query_one("#atr-input").value = ""
+        if not self.drafts:
+            return
+        for cid, d in self.drafts.items():
+            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True)
+        self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
+        self.drafts.clear()
+        self.load_portfolio()
+        self.query_one("#atr-input").value = ""
 
-    def action_refresh(self) -> None: self.discovery_cache.clear(); self.load_portfolio()
+    def action_refresh(self) -> None:
+        self.discovery_cache.clear()
+        self.load_portfolio()
 
-def run_risk_workspace(): RiskWorkspace().run()
-if __name__ == "__main__": run_risk_workspace()
+def run_risk_workspace():
+    RiskWorkspace().run()
+
+if __name__ == "__main__":
+    run_risk_workspace()
