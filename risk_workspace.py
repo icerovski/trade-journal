@@ -40,7 +40,8 @@ class HelpScreen(ModalScreen):
                         "[bold cyan]ACTION TRIGGERS[/]\n"
                         "• [b][on red] Price [/][/]: [bold red]EMERGENCY.[/] Stop breached. Exit position.\n"
                         "• [b][bold cyan]★[/][/]: [bold cyan]TAKE PROFIT HIT.[/] Price reached 3x ATR target.\n"
-                        "• [b][bold green]⬆[/][/]: [bold green]SCALE-IN TRIGGERED.[/] Add shares to reach next stage.\n\n"
+                        "• [b][bold green]⬆[/][/]: [bold green]SCALE-IN TRIGGERED.[/] Add shares to reach next stage.\n"
+                        "• [b][bold red]⚠[/][/]: [bold red]LIMIT EXCEEDED.[/] Risk or Exposure above your Max limit.\n\n"
                         "[bold cyan]COLOR METRICS[/]\n"
                         "• [b]Risk (% NAV):[/] [green]< Max R[/] | [yellow]Max R - 1.5x Max R[/] | [red]> 1.5x Max R[/]\n"
                         "• [b]RR (Efficiency):[/] [green]> 3.0[/] | [yellow]1.0 - 3.0[/] | [red]< 1.0[/]\n"
@@ -207,12 +208,21 @@ class RiskWorkspace(App):
             has_risk = pd.notnull(row['ATR']) and row['ATR'] > 0
             max_r_pct = row.get('MaxRPct', 1.0)
             max_exp_pct = row.get('MaxExpPct', 5.0)
+            
+            risk_above_limit = row['risk_pct_nav'] > max_r_pct
+            exp_above_limit = row['NavPct'] > max_exp_pct
+            
             ticker_display = f"[{row['StopType'][:1]}{'/S' if row.get('EntryType') == 'SCALE_IN' else ''}] {row['Ticker']}"
             if conid_str in self.drafts:
                 d = self.drafts[conid_str]
                 ticker_display = f"[bold yellow]* [{d['type'][:1]}{'/S' if d['entry_type'] == 'SCALE_IN' else ''}] {row['Ticker']}"
                 max_r_pct = d.get('max_r_pct', max_r_pct)
                 max_exp_pct = d.get('max_exp_pct', max_exp_pct)
+            
+            # Add WARNING icon if limits are exceeded
+            if risk_above_limit or exp_above_limit:
+                ticker_display += " [bold red]⚠[/]"
+
             cur_p_val = row['Price']
             sl_p = row['SL_Price']
             tp_p = row.get('TP_Price')
@@ -279,7 +289,16 @@ class RiskWorkspace(App):
             
             atr_width = hypo_atr or pos.atr
             efficiency = ( (stop_p+(3*atr_width)-cur_p)/(cur_p-stop_p) if cur_p>stop_p else 0)
-            audit_content = f"STATUS: [bold {res['status_color'].lower()}]{res['status_color']}[/]\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n  - Action: {('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))}"
+            
+            status_display = res['status_color']
+            if res['status_color'] == "RED":
+                status_display = f"[on red][bold white] {res['status_color']} [/][/]"
+            elif res['status_color'] == "YELLOW":
+                status_display = f"[bold yellow]{res['status_color']}[/]"
+            else:
+                status_display = f"[bold green]{res['status_color']}[/]"
+
+            audit_content = f"STATUS: {status_display}\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n  - Action: {('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))}"
             
             atr_v = hypo_atr if hypo_atr is not None else pos.atr
             if atr_v > 0:
@@ -435,7 +454,13 @@ class RiskWorkspace(App):
             
             table = self.query_one("#portfolio-table")
             t_pfx = f"[{s_type[:1]}{'/S' if e_type == 'SCALE_IN' else ''}]"
-            table.update_cell(self.current_conid, "col_ticker", f"[bold yellow]* {'[PROSPECT]' if str(self.current_conid).startswith('PROSPECT:') else t_pfx} {pos.ticker}")
+            display_ticker = f"[bold yellow]* {'[PROSPECT]' if str(self.current_conid).startswith('PROSPECT:') else t_pfx} {pos.ticker}"
+            
+            # Warn icon in modeling sandbox too
+            if hypo_r > m_r or (calc_q * cur_p_d * pos.multiplier / self.total_nav * 100) > m_e:
+                display_ticker += " [bold red]⚠[/]"
+
+            table.update_cell(self.current_conid, "col_ticker", display_ticker)
             table.update_cell(self.current_conid, "col_base", f"{base_p:,.2f}")
             table.update_cell(self.current_conid, "col_atr", f"{f_atr:.2f}")
             table.update_cell(self.current_conid, "col_stop_p", f"{sl_p:,.2f}")
