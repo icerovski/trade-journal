@@ -85,6 +85,16 @@ class RiskWorkspace(App):
     
     CSS = """
     Screen { background: $surface; }
+    
+    #portfolio-summary {
+        background: $surface-darken-1;
+        color: $accent;
+        text-align: center;
+        text-style: bold;
+        height: 1;
+        border-bottom: solid $primary;
+    }
+
     #main-layout { layout: horizontal; height: 1fr; }
     #left-pane { width: 60%; height: 1fr; border-right: tall $primary; padding-right: 1; }
     #right-pane { width: 40%; height: 1fr; padding-left: 1; }
@@ -124,9 +134,11 @@ class RiskWorkspace(App):
         self.current_conid: Optional[str] = None
         self.discovery_cache: Dict[str, dict] = {}
         self.total_nav = 0.0
+        self.nav_ccy = "USD"
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Label("PORTFOLIO NAV: ---", id="portfolio-summary")
         with Container(id="main-layout"):
             with Vertical(id="left-pane"):
                 yield Label("PORTFOLIO RISK STATUS", classes="panel-header")
@@ -175,7 +187,16 @@ class RiskWorkspace(App):
     def load_portfolio(self) -> None:
         """Syncs Ledger and calculates metrics, including Stop-Breach signals."""
         nav_res = self.pm.fetch_nav_data()
-        self.total_nav = nav_res[0] if nav_res else 0.0
+        if nav_res:
+            self.total_nav = nav_res[0]
+            self.nav_ccy = nav_res[1]
+        else:
+            self.total_nav = 0.0
+            self.nav_ccy = "???"
+        
+        # Update high-level summary
+        self.query_one("#portfolio-summary").update(f"PORTFOLIO NAV: [bold]{self.total_nav:,.2f} {self.nav_ccy}[/]")
+        
         self.enriched_data, self.positions = self.pm.get_dashboard_df(total_nav=self.total_nav, silent=True)
         if self.enriched_data.empty:
             return
@@ -247,8 +268,6 @@ class RiskWorkspace(App):
         active_max_exp = hypo_max_exp if hypo_max_exp is not None else pos.max_exp_pct
         stop_p = hypo_stop if hypo_stop is not None else pos.sl_price
         cur_p = pos.current_price or pos.mark_price
-        tp_p = pos.tp_price if hypo_stop is None else (stop_p + (3 * (hypo_atr or pos.atr)))
-        
         audit_content = "[dim]Waiting for Strategy...[/]"
         integ_content = "---"
         pilot_content = ""
@@ -258,8 +277,9 @@ class RiskWorkspace(App):
             integ_content = f"[bold {'green' if is_safe else 'red'}]Price {' > ' if is_safe else ' <= '} Stop[/] | {'[SAFE]' if is_safe else '[BREACHED]'} [dim]({buffer:.1f}% Buffer)[/]"
             res = RiskEngine.audit_position_risk(cur_p, stop_p, pos.entry_price, pos.qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp)
             
-            rr_val = (tp_p - cur_p) / (cur_p - stop_p) if (tp_p and cur_p > stop_p) else 0.0
-            audit_content = f"STATUS: [bold {res['status_color'].lower()}]{res['status_color']}[/]\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if rr_val > 3.0 else 'white' if not tp_p else 'red'}]{rr_val:.2f} RR[/]\n  - Action: {('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))}"
+            atr_width = hypo_atr or pos.atr
+            efficiency = ( (stop_p+(3*atr_width)-cur_p)/(cur_p-stop_p) if cur_p>stop_p else 0)
+            audit_content = f"STATUS: [bold {res['status_color'].lower()}]{res['status_color']}[/]\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n  - Action: {('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))}"
             
             atr_v = hypo_atr if hypo_atr is not None else pos.atr
             if atr_v > 0:
