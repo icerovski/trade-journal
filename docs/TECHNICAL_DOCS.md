@@ -13,6 +13,8 @@ The Prospect Simulator allows for the analysis and simulation of potential stock
 2.  **Instant Simulation**: Entering a ticker (e.g., `NVDA`, `TSLA`) triggers an automated background process:
     *   **Price Fetching**: Real-time pricing and historical OHLCV data are retrieved via `yfinance`.
     *   **Volatility Analysis**: ATR horizons are calculated across multiple timeframes: 14d (Daily), 12w (Weekly), 12m (Monthly), and 12q (Macro).
+    *   **Prospect Anchoring**: For unowned assets (entry price = 0.0), the system automatically assumes a purchase at the **current market price**.
+    *   **Standard Unit Sizing**: Metrics like "P/L at Stop" and "Risk (R)" are calculated based on a **Standard Unit** (the maximum shares allowed by the 1% Risk and 5% Exposure limits).
     *   **Strategy Modeling**: Users can model "What-If" scenarios in the **Strategy Lab** to see hypothetical stops and targets.
 3.  **Institutional Sizing**: The system performs a **Dual-Constraint Audit** against live total NAV:
     *   **Risk Limit**: Ensures potential loss at stop does not exceed 1.0% of NAV.

@@ -217,11 +217,13 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             except Exception:
                 max_price = entry_price
         
-        max_price = max(entry_price, max_price)
         current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
 
         # Prospect logic: If entry_price is unknown (0.0), assume we buy at current market price
         effective_entry = entry_price if entry_price > 0 else current_price
+        
+        # Ensure max_price is never 0 for simulation; default to effective entry
+        max_price = max(effective_entry, max_price)
 
         intervals = [
             ("14d", 14, 'daily'),
@@ -262,12 +264,21 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                 stop_price = base_price - final_wilder
                 atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
                 
+                # --- SIZING FOR PROSPECTS ---
+                # If qty is 0, calculate P/L and R based on a 'Standard Unit' (1% Risk / 5% Exp)
+                calc_qty = qty
+                if calc_qty == 0 and total_nav > 0:
+                    # Dual-Constraint calculation for a hypothetical standard unit
+                    risk_dist = abs(effective_entry - stop_price) * inst_multiplier
+                    qty_by_risk = (total_nav * 0.01) / risk_dist if risk_dist > 0 else 0
+                    qty_by_exp = (total_nav * 0.05) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0
+                    calc_qty = int(min(qty_by_risk, qty_by_exp))
+
                 # P/L at Stop (Total profit/loss from entry)
-                pl_at_stop = (stop_price - effective_entry) * qty * inst_multiplier
+                pl_at_stop = (stop_price - effective_entry) * calc_qty * inst_multiplier
                 
                 # R (Risk % of NAV) = Potential Loss relative to Entry / Total NAV
-                # Formula: (Entry - Stop) * Qty / NAV
-                risk_amt = (effective_entry - stop_price) * qty * inst_multiplier
+                risk_amt = (effective_entry - stop_price) * calc_qty * inst_multiplier
                 pl_pct_nav = (risk_amt / total_nav * 100) if total_nav > 0 else 0
                 
                 buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0

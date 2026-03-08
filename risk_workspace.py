@@ -655,9 +655,14 @@ class RiskWorkspace(App):
             if not pos_obj:
                 return
 
-            # If it's a prospect, use the discovery price as the entry floor
+            # PROSPECT ANCHORING: If entry is 0, use discovered current price
             current_p_disc = disc_data['current_price'] if disc_data else 0.0
             entry_floor = pos_obj.entry_price if pos_obj.entry_price > 0 else current_p_disc
+            
+            # High-Water Mark for Trailing Simulation
+            sim_max_price = disc_data['max_price'] if disc_data else entry_floor
+            if sim_max_price == 0:
+                sim_max_price = entry_floor
 
             # Calculate Model
             final_atr = 0.0
@@ -677,7 +682,7 @@ class RiskWorkspace(App):
                 else:
                     # Default to percentage behavior
                     pct = num_val / 100
-                    base_p_calc = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else entry_floor
+                    base_p_calc = sim_max_price if stop_type == 'TRAILING' else entry_floor
                     final_atr = base_p_calc * pct
             except ValueError:
                 return
@@ -685,7 +690,7 @@ class RiskWorkspace(App):
             if final_atr <= 0:
                 return
 
-            # Default scale step logic based on input value
+            # Default scale step logic
             scale_step = 0.5
             if step_char:
                 try:
@@ -693,13 +698,12 @@ class RiskWorkspace(App):
                 except Exception:
                     pass
             else:
-                # Auto-detect if no step provided: <= 1.2x 14d window -> 1.0x step, else 0.5x step
                 if daily_atr > 0:
                     scale_step = 1.0 if final_atr <= (1.2 * daily_atr) else 0.5
                 else:
                     scale_step = 0.5
 
-            base_p = disc_data['max_price'] if disc_data and stop_type == 'TRAILING' else entry_floor
+            base_p = sim_max_price if stop_type == 'TRAILING' else entry_floor
             sl_price = base_p - final_atr
             
             # RR Efficiency calculation
@@ -710,8 +714,17 @@ class RiskWorkspace(App):
             hypo_rr = (dist_to_tp / dist_to_stop) if dist_to_stop > 0 else 0
             rr_color = "green" if hypo_rr > 3.0 else ("yellow" if hypo_rr > 1.0 else "red")
 
-            risk_val = (sl_price - entry_floor) * pos_obj.qty * pos_obj.multiplier
-            hypo_r = (abs(entry_floor - sl_price) * pos_obj.qty * pos_obj.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
+            # --- SIZING FOR PROSPECTS ---
+            # If qty is 0, model risk and R based on a 'Standard Unit'
+            calc_qty = pos_obj.qty
+            if calc_qty == 0 and self.total_nav > 0:
+                risk_dist_per_sh = abs(entry_floor - sl_price) * pos_obj.multiplier
+                qty_by_risk = (self.total_nav * 0.01) / risk_dist_per_sh if risk_dist_per_sh > 0 else 0
+                qty_by_exp = (self.total_nav * 0.05) / (cur_p * pos_obj.multiplier) if cur_p > 0 else 0
+                calc_qty = int(min(qty_by_risk, qty_by_exp))
+
+            risk_val = (sl_price - entry_floor) * calc_qty * pos_obj.multiplier
+            hypo_r = (abs(entry_floor - sl_price) * calc_qty * pos_obj.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
             sl_pct_base = (final_atr / base_p * 100) if base_p > 0 else 0
             
             pl_color = "green" if risk_val >= 0 else "red"
@@ -719,14 +732,13 @@ class RiskWorkspace(App):
             
             # Breach Signal for What-If
             cur_p_display = f"{cur_p:,.2f}"
-            if cur_p <= sl_price:
+            if cur_p > 0 and cur_p <= sl_price:
                 cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
 
             # 1. Update Table Row (What-If)
             table = self.query_one("#portfolio-table")
             ticker_prefix = f"[{stop_type[:1]}{'/S' if entry_type == 'SCALE_IN' else ''}]"
             
-            # Format ticker display: preserve [PROSPECT] tag if applicable
             clean_ticker = pos_obj.ticker
             if str(self.current_conid).startswith("PROSPECT:"):
                 display_ticker = f"[bold yellow]* [PROSPECT] {clean_ticker}"
@@ -752,8 +764,8 @@ class RiskWorkspace(App):
             )
 
             self.drafts[self.current_conid] = {'atr': final_atr, 'type': stop_type, 'ticker': pos_obj.ticker, 'entry_type': entry_type, 'scale_step': scale_step}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Modeling Error: {e}")
 
     def on_key(self, event) -> None:
         """CTRL+ENTER commits the current draft."""
