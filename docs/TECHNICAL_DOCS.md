@@ -14,11 +14,11 @@ The Prospect Simulator allows for the analysis and simulation of potential stock
     *   **Price Fetching**: Real-time pricing and historical OHLCV data are retrieved via `yfinance`.
     *   **Volatility Analysis**: ATR horizons are calculated across multiple timeframes: 14d (Daily), 12w (Weekly), 12m (Monthly), and 12q (Macro).
     *   **Prospect Anchoring**: For unowned assets (entry price = 0.0), the system automatically assumes a purchase at the **current market price**.
-    *   **Standard Unit Sizing**: Metrics like "P/L at Stop" and "Risk (R)" are calculated based on a **Standard Unit** (the maximum shares allowed by the 1% Risk and 5% Exposure limits).
+    *   **Standard Unit Sizing**: Metrics like "P/L at Stop" and "Risk (R)" are calculated based on a **Standard Unit** (the maximum shares allowed by the designated Risk and Exposure limits).
     *   **Strategy Modeling**: Users can model "What-If" scenarios in the **Strategy Lab** to see hypothetical stops and targets.
 3.  **Institutional Sizing**: The system performs a **Dual-Constraint Audit** against live total NAV:
-    *   **Risk Limit**: Ensures potential loss at stop does not exceed 1.0% of NAV.
-    *   **Exposure Limit**: Ensures total market value does not exceed 5.0% of NAV.
+    *   **Risk Limit**: Ensures potential loss at stop does not exceed the designated Risk Limit (Default: 1.0% of NAV).
+    *   **Exposure Limit**: Ensures total market value does not exceed the designated Exposure Limit (Default: 5.0% of NAV).
     *   The most restrictive constraint automatically dictates the recommended share count.
 4.  **Watch List Persistence**: Pressing `CTRL+ENTER` saves the simulation as a **"Watch List"** profile in the database.
 5.  **The "Healing" Bridge**:
@@ -48,5 +48,24 @@ Institutional-grade accounting logic that ensures a unified portfolio view and a
 *   **Inception Anchoring**: Trailing stops and roadmap milestones are anchored to the earliest `date_entry` and original `inception_price` found across all accounts for that asset.
 *   **Account-Agnostic Reconciliation**: The `ReconciliationService` implements a multi-stage lookup: it first attempts an exact `(Account:Conid)` match for cost basis, then falls back to a global `Conid` match if entry price remains unknown.
 *   **Stability**: Consolidating by `conid` prevents `DuplicateKey` UI crashes in environments where the same asset is held in multiple accounts.
+
+---
+
+## 3. Customizable Conviction Limits (Risk & Exposure)
+
+Allows for per-position Risk-at-Stop and Exposure limits, moving the system from a "one-size-fits-all" model to a "conviction-weighted" capital allocation model.
+
+### Operational Workflow
+1.  **Syntax**: Within the **Strategy Lab**, use the following flags to set custom limits:
+    *   `R:X.X`: Custom Risk limit (e.g., `R:0.5` for 0.5% max risk. Default: 1.0%).
+    *   `E:X.X`: Custom Exposure limit (e.g., `E:10.0` for 10% max exposure. Default: 5.0%).
+    *   Example: `15 T S R:1.0 E:7.5` (15% Trailing, Scale-In, 1% Risk, 7.5% Exposure).
+2.  **Dynamic Auditing**: The **Risk Audit** panel automatically scales its recommendations based on these limits. "Room to add" will be restricted by whichever limit is hit first.
+3.  **Visual Status**: Metric colors (Green/Yellow/Red) in the Grid and Sidebar automatically adjust their thresholds based on the specific limits assigned to the position.
+
+### Technical Implementation Details
+*   **Database Persistence**: Custom limits are stored in the `max_r_pct` and `max_exp_pct` columns of the `risk_profiles` table.
+*   **Fallback Logic**: Default institutional standards (**1.0% Risk / 5.0% Exposure**) are applied if no custom limits are provided.
+*   **Risk Engine Integration**: The `audit_position_risk` and `calculate_pilot_entry` methods accept dynamic limit parameters, ensuring that roadmap quantity targets and action signals (Add/Trim) are always aligned with the position's specific conviction profile.
 
 ---

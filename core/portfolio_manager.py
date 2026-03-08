@@ -55,6 +55,7 @@ class PortfolioManager:
         """
         Enriches open positions with market data and risk metrics.
         Uses Hybrid mode (Broker Snapshot + Manual Deltas).
+        Returns (DataFrame, List[Position])
         """
         from db import get_all_risk_settings
         risk_settings = get_all_risk_settings()
@@ -66,13 +67,25 @@ class PortfolioManager:
             positions.extend(watch_positions)
             
         if not positions:
-            return pd.DataFrame()
+            return pd.DataFrame(), []
+
+        # --- DATE HEALING: Force priority to Risk Profile Start Date for Inception ---
+        for p in positions:
+            conid_str = str(p.conid)
+            if conid_str in risk_settings:
+                # settings: (atr, type, highest_sl, entry_type, scale_step, max_r, max_exp, start_date)
+                s = risk_settings[conid_str]
+                if len(s) >= 8 and s[7]:
+                    profile_date = pd.to_datetime(s[7])
+                    # HEALING: If profile has a date, it IS the inception truth (overriding broker fallback)
+                    if pd.notnull(profile_date):
+                        p.date_entry = profile_date
 
         # Fix Multipliers and apply Asset-Specific metadata rules
         for p in positions:
             AssetRegistry.enrich_position_metadata(p)
         
-        # Batch Market Data Enrichment
+        # Batch Market Data Enrichment (This also fetches historical highs since date_entry)
         if not silent:
             logger.info(f"Fetching market data for {len(positions)} unique tickers...")
         enriched_positions = self.market_data.fetch_market_data(positions, self.mapper, silent=silent)
@@ -90,7 +103,7 @@ class PortfolioManager:
             p.daily_pl_pct = ((p.current_price - p.mark_price) / p.mark_price * 100) if p.mark_price > 0 else 0
             
             # Age & Growth
-            p.age_days = (today - p.date_entry).days
+            p.age_days = (today - p.date_entry).days if pd.notnull(p.date_entry) else 0
             years = max(p.age_days / 365.25, 0.04)
             p.aagr = (((p.current_price / p.entry_price) ** (1 / years)) - 1) * 100 if p.entry_price > 0 else 0
             
@@ -110,7 +123,7 @@ class PortfolioManager:
                 p.risk_pct_nav = 0.0
 
         # Convert list of objects back to DataFrame for the View layer
-        return pd.DataFrame([p.to_dict() for p in enriched_positions])
+        return pd.DataFrame([p.to_dict() for p in enriched_positions]), enriched_positions
 
     def get_open_positions_hybrid(self, asset_class_filter=None, account_id=None) -> list[Position]:
         """
@@ -190,6 +203,7 @@ class PortfolioManager:
             p.stop_type = r['stop_type']
             p.entry_type = r['entry_type']
             p.scale_step = r['scale_step']
+            p.max_r_pct = r['max_r_pct']
             watch_list.append(p)
             
         if asset_class_filter:

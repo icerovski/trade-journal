@@ -306,3 +306,59 @@ Think of Gemini Skills as "specialized apps" or "procedural memory" that you
    * Clear Visuals:
        * ✓ (Filled): You have enough shares for this stage.
        * ! (Action): Price hit the target, and you are missing shares. Shows exactly how many to buy to "catch up."
+
+#### Strategy Lab
+ Here is the definitive list of how to update each metric standalone in
+  the Strategy Lab:
+
+
+  1. Stop Distance (The Number)
+  Type just the number. It defaults to % unless you prefix it with $.
+   * Command: 15 (for 15%) or $2.50 (for a 2.50 price distance).
+   * Result: Updates the stop width while keeping T/F, S, and limits.
+
+
+  2. Stop Type (T or F)
+  Type just the letter to switch logic.
+   * Command: T (Trailing) or F (Fixed).
+   * Result: Swaps the base (Entry vs. High-Water Mark) but keeps the
+     width and limits.
+
+
+  3. Risk Limit (R:)
+  Type R: followed by your target Risk-at-Stop as a % of NAV.
+   * Command: R:0.5
+   * Result: Updates your conviction cap. The sidebar will immediately
+     recalculate your "Room to add" or "Trim" shares.
+
+
+  4. Exposure Limit (E:)
+  Type E: followed by your target total Position Value as a % of NAV.
+   * Command: E:10.0
+   * Result: Sets a hard cap on capital outlay. Useful for
+     high-conviction trades with tight stops.
+
+
+  5. Scale-In Flag (S)
+  Type the letter S alone.
+   * Command: S
+   * Result: Activates the 3-Stage Pilot roadmap. This splits your
+     target quantity into 3 tiers based on ATR progress.
+
+
+  6. Scale-In Step size (Optional after S)
+  Type S followed by a number to set the distance between entry stages.
+   * Command: S 1.0
+   * Result: Activates Scale-In and sets milestones at 1.0x ATR
+     intervals instead of the default 0.5x.
+
+  ---
+
+
+  Testing AGQ:
+   1. Select AGQ.
+   2. Type R:0.5 and hit ENTER.
+   3. You will see the grid update to show Actual% (0.5%) and the
+      sidebar will update the share count recommendations without losing
+      your existing 40% stop distance.
+   4. Press CTRL+ENTER to commit.

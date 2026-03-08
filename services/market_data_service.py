@@ -110,13 +110,22 @@ class MarketDataService:
                     
                     # 4. Update Max High using PriceService (Local Cache)
                     try:
-                        since_date = p.date_entry.strftime('%Y-%m-%d')
-                        local_high = ps.highest_high_since(p.conid, since_date)
-                        if local_high:
-                            p.max_since_entry = max(local_high, p.current_price)
+                        # PROACTIVE SYNC: Ensure we have history since the (possibly healed) inception date
+                        since_date = p.date_entry.strftime('%Y-%m-%d') if pd.notnull(p.date_entry) else None
+                        
+                        if since_date:
+                            # Trigger a check/fetch to ensure prices.db has history since entry
+                            ps.fetch_and_store(p.conid, yf_ticker)
+                            
+                            local_high = ps.highest_high_since(p.conid, since_date)
+                            if local_high:
+                                p.max_since_entry = max(local_high, p.current_price)
+                            else:
+                                p.max_since_entry = p.current_price
                         else:
                             p.max_since_entry = p.current_price
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"MarketDataService: High-Water Mark lookup failed for {p.ticker}: {e}")
                         p.max_since_entry = p.current_price
 
             if not silent:

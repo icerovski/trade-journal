@@ -15,9 +15,9 @@ class RiskEngine:
     """
 
     @staticmethod
-    def audit_position_risk(current_price: float, stop: float, entry_price: float, qty: float, multiplier: float, nav: float) -> dict:
+    def audit_position_risk(current_price: float, stop: float, entry_price: float, qty: float, multiplier: float, nav: float, max_r_pct: float = 1.0, max_exp_pct: float = 5.0) -> dict:
         """
-        Evaluate a position against two hard limits: 1.0% Risk-at-Stop and 5% Total Market Exposure.
+        Evaluate a position against two hard limits: Risk-at-Stop and Total Market Exposure.
         Returns the remaining capital budget for both constraints.
         """
         if nav <= 0:
@@ -35,31 +35,29 @@ class RiskEngine:
         risk_pct = (risk_val / nav) * 100
         exposure_pct = (exposure_val / nav) * 100
         
-        # 2. Maximum Budget
-        max_risk_cap = nav * 0.01
-        max_exposure_cap = nav * 0.05
+        # 2. Maximum Budget (Institutional Cap vs Custom Conviction Cap)
+        max_risk_cap = nav * (max_r_pct / 100.0)
+        max_exposure_cap = nav * (max_exp_pct / 100.0)
 
         # 3. Remaining Budget (In Dollars/Euros)
         risk_budget_rem = max_risk_cap - risk_val
         exposure_budget_rem = max_exposure_cap - exposure_val
         
         # 4. Share Adjustment (Quantity-First Auditing)
-        # Calculate how many shares we can ADD (+) or must TRIM (-) to hit the 1.0% / 5.0% limit.
-        # Use the most restrictive constraint.
+        # Calculate how many shares we can ADD (+) or must TRIM (-) to hit the risk / exposure limits.
         risk_dist = abs(entry_price - stop) * multiplier
         risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else 0
         exp_adj = exposure_budget_rem / (current_price * multiplier) if current_price > 0 else 0
         
-        # If budget is positive, we can add up to the MIN of both adjustments.
-        # If budget is negative (over limit), we must trim by the MAX (most negative) adjustment.
-        # Simplified: min() covers both cases correctly for institutional risk parity.
+        # Use the most restrictive constraint.
         adjustment = min(risk_adj, exp_adj)
 
         is_breached = current_price <= stop
 
-        if is_breached or risk_pct > 1.5 or exposure_pct > 5.5:
+        # Audit thresholds scale with the custom limits
+        if is_breached or risk_pct > (max_r_pct * 1.5) or exposure_pct > (max_exp_pct * 1.1):
             status_color = "RED"
-        elif risk_pct > 1.0 or exposure_pct > 5.0:
+        elif risk_pct > max_r_pct or exposure_pct > max_exp_pct:
             status_color = "YELLOW"
         else:
             status_color = "GREEN"
@@ -71,25 +69,24 @@ class RiskEngine:
             "risk_budget_rem": risk_budget_rem,
             "exposure_budget_rem": exposure_budget_rem,
             "adjustment": adjustment,
-            "is_breached": is_breached
+            "is_breached": is_breached,
+            "max_r_pct": max_r_pct,
+            "max_exp_pct": max_exp_pct
         }
 
     @staticmethod
     def calculate_pilot_entry(current_price: float, assigned_atr: float, nav: float, multiplier: float, 
-                              entry_price: float, daily_atr: float, scale_step: float = 0.5) -> dict:
+                              entry_price: float, daily_atr: float, scale_step: float = 0.5, max_r_pct: float = 1.0, max_exp_pct: float = 5.0) -> dict:
         """
-        Calculates the Pilot Entry roadmap.
-        - assigned_atr: The width of the STOP LOSS (e.g. 15% of price).
-        - daily_atr: The 14d 'heartbeat' used for SCALING milestones.
-        - scale_step: Multiplier applied to daily_atr for each stage add.
+        Calculates the Pilot Entry roadmap based on custom Risk and Exposure limits.
         """
         if nav <= 0 or current_price <= 0 or assigned_atr <= 0:
             return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
             
         # 1. Dual-Constraint Target Calculation (Matches Audit Logic)
         risk_dist = assigned_atr * multiplier
-        qty_by_risk = (nav * 0.01) / risk_dist if risk_dist > 0 else 0
-        qty_by_exposure = (nav * 0.05) / (current_price * multiplier) if current_price > 0 else 0
+        qty_by_risk = (nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else 0
+        qty_by_exposure = (nav * (max_exp_pct / 100.0)) / (current_price * multiplier) if current_price > 0 else 0
         
         full_target_qty = int(min(qty_by_risk, qty_by_exposure))
         unit_shares = int(full_target_qty / 3.0)
@@ -109,7 +106,7 @@ class RiskEngine:
         return {
             "shares": unit_shares,
             "stop": current_price - assigned_atr,
-            "risk_pct": 0.33,
+            "risk_pct": (max_r_pct / 3.0),
             "stage2_price": s2_p,
             "stage3_price": s3_p,
             "full_target_qty": full_target_qty,
@@ -126,8 +123,15 @@ class RiskEngine:
         if str(position.conid) in risk_settings:
             settings = risk_settings[str(position.conid)]
             
-            # Handle tuple unpacking gracefully for backwards compatibility during session updates
-            if len(settings) == 5:
+            # Handle tuple unpacking for different versions of the DB schema
+            max_r_pct = 1.0
+            max_exp_pct = 5.0
+            if len(settings) >= 7:
+                # settings: (atr, type, highest_sl, entry_type, scale_step, max_r, max_exp, [start_date])
+                atr, s_type, highest_sl, e_type, scale_step, max_r_pct, max_exp_pct = settings[:7]
+            elif len(settings) == 6:
+                atr, s_type, highest_sl, e_type, scale_step, max_r_pct = settings
+            elif len(settings) == 5:
                 atr, s_type, highest_sl, e_type, scale_step = settings
             elif len(settings) == 4:
                 atr, s_type, highest_sl, e_type = settings
@@ -138,12 +142,14 @@ class RiskEngine:
                 scale_step = 0.5
             
             # 1. Base Stop Loss Calculation
-            # Stop Base is Entry Price (Fixed) or Max Price Since Entry (Trailing)
-            stop_base = position.max_since_entry if s_type == 'TRAILING' else position.entry_price
+            # Robust Base: Use highest of Entry, Current, or Mark price
+            hwm_proxy = max(position.entry_price, position.current_price, position.mark_price)
+            # For Trailing, anchor to the Max High Since Entry (which should now be healed by date)
+            stop_base = max(position.max_since_entry, hwm_proxy) if s_type == 'TRAILING' else position.entry_price
             
-            # Robust Fallback: If stop_base is 0 (missing entry), use mark_price or current_price as the floor
+            # Robust Fallback: If stop_base is 0 (missing entry), use hwm_proxy
             if not stop_base or stop_base == 0:
-                stop_base = position.mark_price or position.current_price
+                stop_base = hwm_proxy
             
             calculated_sl = stop_base - atr
             
@@ -152,6 +158,8 @@ class RiskEngine:
             position.stop_type = s_type
             position.entry_type = e_type
             position.scale_step = scale_step
+            position.max_r_pct = max_r_pct
+            position.max_exp_pct = max_exp_pct
             
             # 2. Ratchet Rule (High-Water Mark)
             final_sl = max(calculated_sl, highest_sl)
@@ -188,10 +196,10 @@ class RiskEngine:
         
         return position
 
-def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, qty=0.0, inst_multiplier=1.0, total_nav=0.0):
+def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, qty=0.0, inst_multiplier=1.0, total_nav=0.0, max_r_pct=1.0, max_exp_pct=5.0):
     """
     Returns raw ATR analysis data for both FIXED and TRAILING stop types.
-    Calculates Risk % of NAV (R) for each scenario.
+    Calculates Risk % of NAV (R) for each scenario based on customizable Risk and Exposure limits.
     """
     from .portfolio_manager import PortfolioManager
     try:
@@ -237,11 +245,8 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             if conid:
                 df = price_service.get_prices(conid, timeframe=tf)
             else:
-                # Map timeframe to yfinance periods/intervals
                 yf_period = "3y" if tf == 'daily' else ("5y" if tf == 'weekly' else ("10y" if tf == 'monthly' else "max"))
                 yf_interval = "1d" if tf == 'daily' else ("1wk" if tf == 'weekly' else ("1mo" if tf == 'monthly' else "3mo"))
-
-                # Quarterly needs max to ensure enough history
                 if tf == 'quarterly':
                     yf_period = "max"
                 df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
@@ -265,13 +270,11 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                 atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
                 
                 # --- SIZING FOR PROSPECTS ---
-                # If qty is 0, calculate P/L and R based on a 'Standard Unit' (1% Risk / 5% Exp)
                 calc_qty = qty
                 if calc_qty == 0 and total_nav > 0:
-                    # Dual-Constraint calculation for a hypothetical standard unit
                     risk_dist = abs(effective_entry - stop_price) * inst_multiplier
-                    qty_by_risk = (total_nav * 0.01) / risk_dist if risk_dist > 0 else 0
-                    qty_by_exp = (total_nav * 0.05) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0
+                    qty_by_risk = (total_nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else 0
+                    qty_by_exp = (total_nav * (max_exp_pct / 100.0)) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0        
                     calc_qty = int(min(qty_by_risk, qty_by_exp))
 
                 # P/L at Stop (Total profit/loss from entry)
@@ -300,7 +303,9 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             'entry_price': effective_entry,
             'max_price': max_price,
             'current_price': current_price,
-            'rows': results
+            'rows': results,
+            'max_r_pct': max_r_pct,
+            'max_exp_pct': max_exp_pct
         }
     except Exception as e:
         logger.error(f"ATR Discovery Data Error: {e}")

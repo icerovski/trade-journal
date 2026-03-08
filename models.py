@@ -82,6 +82,8 @@ class Position:
     rr_ratio: float = 0.0
     sl_pct_base: float = 0.0
     risk_pct_nav: float = 0.0  # R (% of NAV)
+    max_r_pct: float = 1.0
+    max_exp_pct: float = 5.0
 
     def to_dict(self):
         """Converts to a dictionary for DataFrame compatibility."""
@@ -110,6 +112,8 @@ class Position:
             'StopType': self.stop_type,
             'EntryType': self.entry_type,
             'ScaleStep': self.scale_step,
+            'MaxRPct': self.max_r_pct,
+            'MaxExpPct': self.max_exp_pct,
             'SL_Price': self.sl_price,
             'TP_Price': self.tp_price,
             'Down_Pct': self.down_pct,
