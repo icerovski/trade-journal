@@ -42,6 +42,10 @@ class KidsFundEngine:
         new_trades = pd.read_sql(trades_query, conn)
         conn.close()
         
+        # Healing: Handle NULL multipliers from older or manual entries
+        if not new_trades.empty:
+            new_trades['multiplier'] = new_trades['multiplier'].fillna(1.0)
+        
         # Split every new dollar equally
         for _, trade in new_trades.iterrows():
             # net_val is the cash flow of the trade

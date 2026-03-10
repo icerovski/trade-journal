@@ -74,7 +74,7 @@ class KidsFundDashboard(App):
         kids_account_nav = next((a['nav'] for a in accounts if str(a['alias']) == KIDS_ACCOUNT_ID), 0.0)
         
         # Filter main dashboard logic for just this account
-        kids_holdings = self.pm.get_dashboard_df(account_id=KIDS_ACCOUNT_ID, total_nav=kids_account_nav, silent=True)
+        kids_holdings, _ = self.pm.get_dashboard_df(account_id=KIDS_ACCOUNT_ID, total_nav=kids_account_nav, silent=True)
         
         # 2. Get Ownership Data
         kids_data = self.engine.calculate_ownership()

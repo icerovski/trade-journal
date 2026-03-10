@@ -23,6 +23,7 @@ def init_db():
             side TEXT NOT NULL,
             quantity REAL NOT NULL,
             price REAL NOT NULL,
+            multiplier REAL DEFAULT 1.0,
             notes TEXT,
             source TEXT DEFAULT 'MANUAL',
             external_id TEXT UNIQUE
@@ -31,6 +32,12 @@ def init_db():
     # Migration: Add account_id if it doesn't exist
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN account_id TEXT DEFAULT 'U0000000'")
+    except Exception:
+        pass
+    
+    # Migration: Add multiplier if it doesn't exist
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN multiplier REAL DEFAULT 1.0")
     except Exception:
         pass
 
@@ -221,7 +228,7 @@ def trade_exists(external_id):
     conn.close()
     return exists
 
-def add_trade(date, ticker, side, quantity, price, conid, account_id='U0000000', notes="", source="MANUAL", external_id=None):
+def add_trade(date, ticker, side, quantity, price, conid, account_id='U0000000', multiplier=1.0, notes="", source="MANUAL", external_id=None):
     """Inserts a trade execution or manual entry (Activity Only)."""
     conn = get_conn()
     try:
@@ -230,10 +237,10 @@ def add_trade(date, ticker, side, quantity, price, conid, account_id='U0000000',
         
         conn.execute(
             """INSERT INTO trades 
-               (date, account_id, ticker, side, quantity, price, conid, notes, source, external_id) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (date, account_id, ticker, side, quantity, price, multiplier, conid, notes, source, external_id) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, account_id, ticker.upper(), side.upper(), float(quantity), float(price), 
-             conid_val, notes, source, external_id)
+             float(multiplier), conid_val, notes, source, external_id)
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -250,15 +257,18 @@ def get_manual_trades():
     return rows
 
 def seed_kids_fund():
-    """Initial seed of the kids fund configuration from the legacy JSON state."""
+    """Initial seed of the kids fund configuration with Parity-Adjusted units (as of March 10, 2026)."""
+    # Distribution based on Equal Real Purchasing Power at age 18 (3.5% inflation, ~10% growth)
+    # Total units remain 12,501.76
     data = [
-        ("Angelina", "2016-01-18", 5430.3034, "2026-03-05"),
-        ("Ivan",     "2018-11-26", 3788.2800, "2026-03-05"),
-        ("Boris",    "2020-02-20", 3283.1760, "2026-03-05")
+        ("Angelina", "2016-01-18", 4778.17, "2026-03-10"),
+        ("Ivan",     "2018-11-26", 3979.31, "2026-03-10"),
+        ("Boris",    "2020-02-20", 3744.28, "2026-03-10")
     ]
     conn = get_conn()
     for name, dob, units, bdate in data:
-        conn.execute("INSERT OR IGNORE INTO kids_config (name, birthdate, base_units, base_date) VALUES (?, ?, ?, ?)",
+        # Use REPLACE to overwrite existing values with the new calculated baseline
+        conn.execute("INSERT OR REPLACE INTO kids_config (name, birthdate, base_units, base_date) VALUES (?, ?, ?, ?)",
                      (name, dob, units, bdate))
     conn.commit()
     conn.close()

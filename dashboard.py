@@ -175,7 +175,7 @@ class TradingCockpit(App):
             real_nav, _, r_date = nav_res if nav_res else (0.0, [], "---")
             
             # Always fetch ALL to allow dynamic in-memory filtering.
-            df = self.pm.get_dashboard_df(
+            df, _ = self.pm.get_dashboard_df(
                 asset_class_filter=None, 
                 total_nav=real_nav,
                 silent=True

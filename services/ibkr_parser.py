@@ -85,10 +85,10 @@ class IBKRParser:
                         date=date_normalized, ticker=ticker, side=side, 
                         quantity=qty, price=price, conid=conid,
                         account_id=account_id,
+                        multiplier=multiplier,
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
                         source="IBKR_CONFIRMATION", external_id=ext_id
                     )
-                    count += 1
                     count += 1
             return count
         except Exception as e:
@@ -163,6 +163,7 @@ class IBKRParser:
                         date=date_str, ticker=ticker, side=side, 
                         quantity=qty, price=price, conid=conid,
                         account_id=account_id,
+                        multiplier=multiplier,
                         notes=f"IBKR TRADES Import {datetime.now().date()}",
                         source="IBKR_TRADES_CSV", external_id=ext_id
                     )
@@ -245,6 +246,7 @@ class IBKRParser:
                             date=date_str, ticker=ticker, side=side, 
                             quantity=qty, price=price, conid=conid,
                             account_id=account_id,
+                            multiplier=multiplier,
                             notes=f"IBKR TRANSFER Import ({row.get('Type')})",
                             source="IBKR_TRANSFER_CSV", external_id=ext_id
                         )
@@ -318,6 +320,7 @@ class IBKRParser:
                             date=date_str, ticker=ticker, side='SPLIT', 
                             quantity=qty, price=0.0, conid=conid,
                             account_id=account_id,
+                            multiplier=1.0,
                             notes=f"IBKR CORP ACTION: {action_desc[:100]}",
                             source="IBKR_CORP_CSV", external_id=ext_id
                         )
