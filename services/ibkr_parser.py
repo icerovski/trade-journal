@@ -58,11 +58,6 @@ class IBKRParser:
                 if not conid or conid == 'nan':
                     conid = ticker # Fallback
 
-                # 1. Fingerprint De-duplication: Delete manual entries that match this trade
-                deleted_count = db.delete_manual_duplicates(ticker, date_normalized, qty, side)
-                if deleted_count > 0:
-                    logger.info(f"Reconciled {deleted_count} manual entries for {ticker}")
-
                 # 2. Update Asset Master (Metadata)
                 db.save_ticker_info(
                     conid=conid,

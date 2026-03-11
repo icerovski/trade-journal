@@ -19,10 +19,10 @@ class ReconciliationService:
         Merges broker-verified positions with pending delta trades (Manual + Confirmations).
         """
         # 1. Filter for trades occurring AFTER the report date (or explicitly marked as pending)
-        # We include both 'MANUAL' and 'IBKR_CONFIRMATION' sources.
+        # We only include 'IBKR_CONFIRMATION' as a pending delta.
         def is_pending_delta(t):
             t_date = pd.to_datetime(t.date)
-            is_delta_source = t.source in ['MANUAL', 'IBKR_CONFIRMATION']
+            is_delta_source = t.source == 'IBKR_CONFIRMATION'
             if report_date:
                 # Same-day trades might have same date as report_date depending on precision.
                 # However, confirmations are specifically 'today' and snapshot is 'LBD'.

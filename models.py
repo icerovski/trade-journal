@@ -4,7 +4,7 @@ from typing import Optional
 
 @dataclass
 class Trade:
-    """Represents a single execution or manual trade entry."""
+    """Represents a single execution or broker-provided trade record."""
     date: str
     ticker: str
     side: str  # BUY / SELL
@@ -18,7 +18,7 @@ class Trade:
     currency: str = "USD"
     underlying_symbol: str = ""
     isin: str = ""
-    source: str = "MANUAL"
+    source: str = "UNKNOWN"
     external_id: Optional[str] = None
     notes: str = ""
 
@@ -34,6 +34,7 @@ class ATRDiscoveryRow:
     pl_at_stop: float
     buffer_pct: float
     pl_pct_nav: float
+    qty: float = 0.0
 
 @dataclass
 class Position:

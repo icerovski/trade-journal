@@ -46,7 +46,8 @@ class RiskEngine:
         # 4. Share Adjustment (Quantity-First Auditing)
         # Calculate how many shares we can ADD (+) or must TRIM (-) to hit the risk / exposure limits.
         risk_dist = abs(entry_price - stop) * multiplier
-        risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else 0
+        # If risk_dist is 0 (stop at entry), risk constraint is effectively infinite shares allowed.
+        risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else float('inf')
         exp_adj = exposure_budget_rem / (current_price * multiplier) if current_price > 0 else 0
         
         # Use the most restrictive constraint.
@@ -251,16 +252,25 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                     yf_period = "max"
                 df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
 
-            if len(df) < window + 1:
+            # Adaptive Window: Use the requested window, or the max available history (min 2 periods)
+            # This prevents 12q from disappearing for tickers with 3-5 years of history
+            if len(df) < 2:
                 continue
+            
+            # If we have less than window+1, we use a smaller window for the calculation
+            # but we keep the label so the user knows which timeframe we are looking at.
+            actual_window = min(window, len(df) - 1)
 
             df['PrevClose'] = df['Close'].shift(1)
             df['TR'] = np.maximum(df['High'] - df['Low'], 
                         np.maximum(abs(df['High'] - df['PrevClose']), 
                                    abs(df['Low'] - df['PrevClose'])))
 
-            atr_wilder = df['TR'].ewm(com=window - 1, min_periods=window, adjust=False).mean().iloc[-1]
-            atr_sma = df['TR'].rolling(window=window).mean().iloc[-1]
+            # Wilder ATR (EMA equivalent) using the adaptive window
+            atr_wilder = df['TR'].ewm(com=actual_window - 1, min_periods=actual_window, adjust=False).mean().iloc[-1]
+            # Simple Moving Average ATR
+            atr_sma = df['TR'].rolling(window=actual_window).mean().iloc[-1]
+            
             final_wilder = atr_wilder * multiplier
 
             # Calculate for both types
@@ -273,9 +283,10 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                 calc_qty = qty
                 if calc_qty == 0 and total_nav > 0:
                     risk_dist = abs(effective_entry - stop_price) * inst_multiplier
-                    qty_by_risk = (total_nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else 0
-                    qty_by_exp = (total_nav * (max_exp_pct / 100.0)) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0        
-                    calc_qty = int(min(qty_by_risk, qty_by_exp))
+                    # Dual-Constraint Sizing
+                    risk_q = (total_nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else float('inf')
+                    exp_q = (total_nav * (max_exp_pct / 100.0)) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0
+                    calc_qty = int(min(risk_q, exp_q))
 
                 # P/L at Stop (Total profit/loss from entry)
                 pl_at_stop = (stop_price - effective_entry) * calc_qty * inst_multiplier
@@ -295,7 +306,8 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                     atr_base_pct=atr_pct,
                     pl_at_stop=pl_at_stop,
                     buffer_pct=buffer_pct,
-                    pl_pct_nav=pl_pct_nav
+                    pl_pct_nav=pl_pct_nav,
+                    qty=calc_qty
                 ))
             
         return {

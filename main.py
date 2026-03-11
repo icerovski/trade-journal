@@ -1,6 +1,6 @@
 import sys
 import warnings
-from db import init_db, get_manual_trades, delete_trade, add_trade, wipe_trades_only, get_watch_list_profiles
+from db import init_db, wipe_trades_only, get_watch_list_profiles
 from services.ibkr import (
     process_local_csvs, 
     process_ytd_only, 
@@ -12,7 +12,6 @@ from services.ibkr import (
 from dashboard import print_nav_table, run_live_dashboard
 from core.portfolio_manager import PortfolioManager
 import sync_config
-from dateutil.parser import parse
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -57,8 +56,8 @@ def show_menu():
     menu_text.append("(IBKR Fetch + Ledger Update + Price Sync)\n", style="dim")
     
     menu_text.append("[2] ", style="bold yellow")
-    menu_text.append("MANUAL ENTRIES   ", style="bold white")
-    menu_text.append("(Risk Discovery, Risk Strategy, Manual Trades)\n", style="dim")
+    menu_text.append("RISK WORKSPACE   ", style="bold white")
+    menu_text.append("(ATR Discovery, Risk Audit, Strategy Lab)\n", style="dim")
     
     menu_text.append("[3] ", style="bold cyan")
     menu_text.append("VIEW DASHBOARD   ", style="bold white")
@@ -96,21 +95,6 @@ def handle_sync_all():
     handle_sync_prices(silent=True)
     
     console.print("\n[bold green]SUCCESS: Full system sync complete.[/bold green]")
-
-def handle_manage_positions():
-    while True:
-        console.print("\n[bold yellow]--- MANAGE POSITIONS & RISK ---[/bold yellow]")
-        print("1. ATR Discovery & Analysis (Workspace)")
-        print("2. Manual Trade Entries (Ledger)")
-        print("0. Back")
-        
-        choice = input("\nChoice: ").strip()
-        if choice == '1':
-            handle_atr_calculator()
-        elif choice == '2':
-            handle_manual_trades()
-        elif choice == '0':
-            break
 
 def handle_maintenance():
     while True:
@@ -175,69 +159,6 @@ def handle_rebuild_db():
         console.print("[bold green]Full rebuild complete.[/bold green]")
     else:
         console.print("Aborted.")
-
-def parse_input_line(line):
-    """Common parser for Ticker, Date, Price line."""
-    parts = [p.strip() for p in line.split(',')]
-    if len(parts) < 3:
-        raise ValueError("Need at least Ticker, Date, and Price.")
-    
-    ticker = parts[0].upper()
-    date_val = parse(parts[1]).strftime("%Y-%m-%d")
-    price = float(parts[2])
-    
-    # Optional 4th part could be Side or Qty depending on context
-    remaining = parts[3:] if len(parts) > 3 else []
-    return ticker, date_val, price, remaining
-
-def handle_manual_trades():
-    from db import get_conid_for_ticker
-    while True:
-        console.print("\n[bold blue]--- MANAGE MANUAL ENTRIES ---[/bold blue]")
-        console.print("[dim]Use this to 'Heal' missing cost basis or record intraday activity.[/dim]")
-        trades = get_manual_trades()
-        if not trades:
-            console.print("[yellow]No manual trades found in ledger.[/yellow]")
-        else:
-            print(f"{'ID':<5} | {'Date':<12} | {'Ticker':<8} | {'Side':<6} | {'Qty':<8} | {'Price':<8}")
-            print("-" * 60)
-            for t in trades:
-                print(f"{t['id']:<5} | {t['date']:<12} | {t['ticker']:<8} | {t['side']:<6} | {t['quantity']:<8,.0f} | {t['price']:<8,.2f}")
-        
-        console.print("\nOptions: [bold]A[/bold]dd Entry, [bold]D[/bold]elete ID, [bold]B[/bold]ack")
-        opt = input("Choice: ").strip().upper()
-        
-        if opt == 'A':
-            print("\nFormat: Ticker, Date, Price, Side (buy/sell), Qty, [conid]")
-            print("Example: AAPL, 21 Feb 2026, 112.5, buy, 100")
-            line = input("Entry: ").strip()
-            if not line:
-                continue
-            
-            try:
-                ticker, date_val, price, extra = parse_input_line(line)
-                if len(extra) < 2:
-                    console.print("[red]Error: Need Side and Qty.[/red]")
-                    continue
-                side, qty = extra[0].upper(), float(extra[1])
-                
-                # Intelligent Conid Discovery
-                conid = extra[2] if len(extra) > 2 else get_conid_for_ticker(ticker)
-                
-                if not conid:
-                    console.print(f"[yellow]Warning: Could not find Conid for {ticker}. Saving with Ticker-only identity.[/yellow]")
-                
-                add_trade(date=date_val, ticker=ticker, side=side, quantity=qty, price=price, source='MANUAL', conid=conid)
-                console.print(f"[green]SUCCESS: Added {side} {qty} {ticker} @ {price}[/green]")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-                
-        elif opt == 'D':
-            tid = input("Enter ID to delete: ").strip()
-            if tid:
-                delete_trade(tid)
-        elif opt == 'B':
-            break
 
 def handle_atr_calculator():
     """Launch the interactive Risk Assignment Workspace."""
@@ -325,7 +246,7 @@ def main():
         if choice == '1':
             handle_sync_all()
         elif choice == '2':
-            handle_manage_positions()
+            handle_atr_calculator()
         elif choice == '3':
             handle_view_dashboard()
         elif choice == '4':
