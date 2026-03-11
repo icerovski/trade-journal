@@ -209,7 +209,7 @@ class RiskWorkspace(App):
             self.nav_ccy = "???"
         
         # Update high-level summary
-        self.query_one("#portfolio-summary").update(f"PORTFOLIO NAV: [bold]{self.total_nav:,.2f} {self.nav_ccy}[/]")
+        self.query_one("#portfolio-summary", Label).update(f"PORTFOLIO NAV: [bold]{self.total_nav:,.2f} {self.nav_ccy}[/]")
         
         self.enriched_data, self.positions = self.pm.get_dashboard_df(total_nav=self.total_nav, silent=True)
         if self.enriched_data.empty:
@@ -274,7 +274,7 @@ class RiskWorkspace(App):
             pass
         self.refresh_risk_checklist() 
         if conid in self.discovery_cache:
-            self.update_discovery_ui(self.discovery_cache[conid])
+            self.update_discovery_ui(conid, self.discovery_cache[conid])
         else:
             self.query_one("#fixed-table").clear()
             self.query_one("#trailing-table").clear()
@@ -357,7 +357,7 @@ class RiskWorkspace(App):
             audit_header = "[bold reverse yellow] MODELING STRATEGY [/]\n" + audit_header
             
         audit_text = f"{audit_header}\n--------------------------------------\nINTEGRITY: {integ_content}\n--------------------------------------\nDUAL-AUDIT:\n{audit_content}{pilot_content}"
-        self.query_one("#position-context").update(audit_text)
+        self.query_one("#position-context", Static).update(audit_text)
 
     @work(exclusive=True, thread=True)
     def fetch_atr_data(self, conid: Optional[str], ticker: Optional[str] = None) -> None:
@@ -391,8 +391,8 @@ class RiskWorkspace(App):
         if conid != self.current_conid:
             return
             
-        self.query_one("#fixed-base").update(f"Base: {data['entry_price']:,.2f}")
-        self.query_one("#trailing-base").update(f"Base: {data['max_price']:,.2f}")
+        self.query_one("#fixed-base", Label).update(f"Base: {data['entry_price']:,.2f}")
+        self.query_one("#trailing-base", Label).update(f"Base: {data['max_price']:,.2f}")
         f_t, t_t = self.query_one("#fixed-table"), self.query_one("#trailing-table")
         f_t.clear()
         t_t.clear()

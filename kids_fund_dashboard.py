@@ -87,7 +87,7 @@ class KidsFundDashboard(App):
             f"[bold yellow]Account:[/] {KIDS_ACCOUNT_ID}\n"
             f"[bold yellow]Total Fund NAV:[/] €{kids_account_nav:,.2f}"
         )
-        self.query_one("#summary-bar-text").update(summary)
+        self.query_one("#summary-bar-text", Static).update(summary)
         
         # 5. Populate Holdings Summary Table
         summary_table = self.query_one("#summary-table")

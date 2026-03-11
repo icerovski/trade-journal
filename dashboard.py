@@ -64,7 +64,7 @@ class TradingCockpit(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Exit"),
+        Binding("q", "exit_app", "Exit"),
         Binding("r", "refresh_manual", "Manual Refresh"),
         Binding("1", "sort('Ticker')", "Sort: Ticker"),
         Binding("2", "sort('PL_Daily_Pct')", "Sort: P/L %"),
@@ -102,6 +102,7 @@ class TradingCockpit(App):
         self.total_nav = 0.0
         self.report_date = "---"
         self._exit_flag = threading.Event()
+        self._thread_id = threading.get_ident()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -129,6 +130,7 @@ class TradingCockpit(App):
         panel.display = not panel.display
 
     def on_mount(self) -> None:
+        self._thread_id = threading.get_ident()
         table = self.query_one(DataTable)
         table.cursor_type = "row"
         table.add_columns("TICKER", "PRICE", "QTY", "P/L DAY", "P/L %", "UNRL P&L", "UNRL %", "COST VAL", "MKT VAL", "% NAV")
@@ -194,7 +196,9 @@ class TradingCockpit(App):
         """Thread-safe status update."""
         def _update():
             try:
-                self.query_one("#status-bar").update(msg)
+                widget = self.query_one("#status-bar")
+                if hasattr(widget, "update"):
+                    getattr(widget, "update")(msg)
             except Exception:
                 pass
 
@@ -289,7 +293,9 @@ class TradingCockpit(App):
                     f"AAGR (Growth):    {self.color_fmt(row['AAGR'], '.1f', '%')}\n"
                     f"Holding Age:      {row['Age_Days']} days"
                 )
-                self.query_one("#details-text").update(details)
+                widget = self.query_one("#details-text")
+                if hasattr(widget, "update"):
+                    getattr(widget, "update")(details)
         except Exception as e:
             logger.error(f"Sidebar Update Error: {e}")
 
@@ -314,10 +320,10 @@ class TradingCockpit(App):
         sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
         return df.sort_values(sort_cols, ascending=True) if sort_cols else df
 
-    def action_quit(self) -> None:
+    def action_exit_app(self) -> None:
         """Handle clean shutdown."""
         self._exit_flag.set()
-        self.exit()
+        self.app.exit()
 
 def run_live_dashboard(portfolio_manager, sort_by="Ticker"):
     """Launch the cockpit with hardcoded institutional defaults."""
