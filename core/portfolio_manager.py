@@ -57,73 +57,64 @@ class PortfolioManager:
         Uses Hybrid mode (Broker Snapshot + Manual Deltas).
         Returns (DataFrame, List[Position])
         """
-        from db import get_all_risk_settings
         risk_settings = get_all_risk_settings()
         positions = self.get_open_positions_hybrid(asset_class_filter, account_id=account_id)
         
         # Merge Watch List if requested
         if include_watch and not account_id:
-            watch_positions = self.get_watch_list_positions(asset_class_filter)
-            positions.extend(watch_positions)
+            positions.extend(self.get_watch_list_positions(asset_class_filter))
             
         if not positions:
             return pd.DataFrame(), []
 
-        # --- DATE HEALING: Force priority to Risk Profile Start Date for Inception ---
-        for p in positions:
-            conid_str = str(p.conid)
-            if conid_str in risk_settings:
-                # settings: (atr, type, highest_sl, entry_type, scale_step, max_r, max_exp, start_date)
-                s = risk_settings[conid_str]
-                if len(s) >= 8 and s[7]:
-                    profile_date = pd.to_datetime(s[7])
-                    # HEALING: If profile has a date, it IS the inception truth (overriding broker fallback)
-                    if pd.notnull(profile_date):
-                        p.date_entry = profile_date
-
-        # Fix Multipliers and apply Asset-Specific metadata rules
+        # 1. Metdata Healing & Rule Enrichment
+        self._heal_inception_dates(positions, risk_settings)
         for p in positions:
             AssetRegistry.enrich_position_metadata(p)
         
-        # Batch Market Data Enrichment (This also fetches historical highs since date_entry)
+        # 2. Batch Market Data Enrichment
         if not silent:
             logger.info(f"Fetching market data for {len(positions)} unique tickers...")
         enriched_positions = self.market_data.fetch_market_data(positions, self.mapper, silent=silent)
             
-        # Calculate Metrics for each position
-        today = pd.Timestamp.now()
-        for p in enriched_positions:
-            # Basic financial math (Since Inception)
-            p.market_value = p.current_price * p.qty * p.multiplier
-            p.unrealized_pl = (p.current_price - p.entry_price) * p.qty * p.multiplier
-            p.pl_pct = ((p.current_price - p.entry_price) / p.entry_price * 100) if p.entry_price > 0 else 0
-            
-            # Daily performance (Compared to last close / mark_price from DB)
-            p.daily_pl = (p.current_price - p.mark_price) * p.qty * p.multiplier if p.mark_price > 0 else 0
-            p.daily_pl_pct = ((p.current_price - p.mark_price) / p.mark_price * 100) if p.mark_price > 0 else 0
-            
-            # Age & Growth
-            p.age_days = (today - p.date_entry).days if pd.notnull(p.date_entry) else 0
-            years = max(p.age_days / 365.25, 0.04)
-            p.aagr = (((p.current_price / p.entry_price) ** (1 / years)) - 1) * 100 if p.entry_price > 0 else 0
-            
-            # Risk Metrics (Delegated to RiskEngine)
-            self.risk.calculate_position_risk(p, risk_settings)
-
-        # Final pass for NAV %
-        total_mv = sum(p.market_value for p in enriched_positions)
-        denominator = total_nav if (total_nav and total_nav > 0) else total_mv
-        for p in enriched_positions:
-            p.nav_pct = (p.market_value / denominator) * 100
-            # Calculate R (% of NAV)
-            if p.entry_price > 0 and p.sl_price:
-                risk_amt = (p.entry_price - p.sl_price) * p.qty * p.multiplier
-                p.risk_pct_nav = (risk_amt / denominator) * 100
-            else:
-                p.risk_pct_nav = 0.0
+        # 3. Financial and Risk Metric Calculation
+        self._enrich_metrics(enriched_positions, risk_settings, total_nav)
 
         # Convert list of objects back to DataFrame for the View layer
         return pd.DataFrame([p.to_dict() for p in enriched_positions]), enriched_positions
+
+    def _heal_inception_dates(self, positions: list[Position], risk_settings: dict):
+        """Force priority to Risk Profile Start Date for Inception if available."""
+        for p in positions:
+            conid_str = str(p.conid)
+            if conid_str in risk_settings:
+                # settings: (..., start_date) is at index 7
+                s = risk_settings[conid_str]
+                if len(s) >= 8 and s[7]:
+                    profile_date = pd.to_datetime(s[7])
+                    if pd.notnull(profile_date):
+                        p.date_entry = profile_date
+
+    def _enrich_metrics(self, positions: list[Position], risk_settings: dict, total_nav: float):
+        """Calculates performance and risk metrics for all positions."""
+        # Calculate financial metrics (P/L, AAGR, Age)
+        for p in positions:
+            p.calculate_financial_metrics()
+            self.risk.calculate_position_risk(p, risk_settings)
+
+        # Calculate NAV Exposure %
+        total_mv = sum(p.market_value for p in positions)
+        denominator = total_nav if (total_nav and total_nav > 0) else total_mv
+
+        for p in positions:
+            p.nav_pct = (p.market_value / denominator * 100) if denominator != 0 else 0
+            
+            # Calculate Risk-at-Stop (% of NAV)
+            if p.entry_price > 0 and p.sl_price:
+                risk_amt = (p.entry_price - p.sl_price) * p.qty * p.multiplier
+                p.risk_pct_nav = (risk_amt / denominator) * 100 if denominator != 0 else 0
+            else:
+                p.risk_pct_nav = 0.0
 
     def get_open_positions_hybrid(self, asset_class_filter=None, account_id=None) -> list[Position]:
         """
@@ -156,18 +147,27 @@ class PortfolioManager:
                     consolidated[c_id] = p
                 else:
                     existing = consolidated[c_id]
-                    new_qty = existing.qty + p.qty
-                    if new_qty > 0:
-                        # Weighted Average Entry Price
-                        total_cost = (existing.entry_price * existing.qty * existing.multiplier) + \
-                                     (p.entry_price * p.qty * p.multiplier)
+                    old_qty = existing.qty
+                    p_qty = p.qty
+                    new_qty = old_qty + p_qty
+
+                    if new_qty > 0.0001:
+                        # Institutional Weighted Average Cost (WAC)
+                        # total_cost = (Q1 * P1 * M1) + (Q2 * P2 * M2)
+                        # entry_price = total_cost / (TotalQty * M_final)
+                        total_cost = (existing.entry_price * old_qty * existing.multiplier) + \
+                                     (p.entry_price * p_qty * p.multiplier)
+                        
+                        existing.qty = new_qty
                         existing.entry_price = total_cost / (new_qty * existing.multiplier)
-                    
-                    # Update metrics
-                    existing.qty = new_qty
-                    if p.date_entry < existing.date_entry:
-                        existing.date_entry = p.date_entry
-                        existing.inception_price = p.inception_price
+                        
+                        # Inception Priority: Use the earlier entry date/price
+                        if p.date_entry and (not existing.date_entry or p.date_entry < existing.date_entry):
+                            existing.date_entry = p.date_entry
+                            existing.inception_price = p.inception_price
+                    else:
+                        existing.qty = 0.0
+                        existing.entry_price = 0.0
                     
                     existing.account_id = "CONSOLIDATED"
             open_list = list(consolidated.values())

@@ -29,16 +29,21 @@ class LedgerEngine:
 
         open_positions = []
         for (acct_id, conid), group in trades_by_key.items():
-            # Sort by date
-            group.sort(key=lambda x: x.date)
+            # Sort by date, then side to prioritize inflows (BUY/TRANSFER_IN) over outflows on same-day trades
+            # Side priority: BUY/TRANSFER_IN=0, Others=1
+            def trade_sort_key(t):
+                side_pri = 0 if t.side.upper() in ['BUY', 'TRANSFER_IN'] else 1
+                return (t.date, side_pri)
+            
+            group.sort(key=trade_sort_key)
             
             qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
             
             for t in group:
                 side = t.side.strip().upper()
                 q = abs(t.quantity)
-                p = t.price
-                m = float(t.multiplier)
+                p = abs(t.price)
+                m = float(t.multiplier) if t.multiplier is not None else 1.0
                 
                 # Special handling for opening balance reset
                 if 'OPENING_BALANCE' in t.source.upper():
@@ -66,6 +71,14 @@ class LedgerEngine:
             
             if qty > 0.0001:
                 latest = group[-1]
+                # Entry price should be the average price in 'points' (e.g. 98.5)
+                # total_cost is in dollars (Price * Qty * Mult)
+                # To get back to 'points', we divide by (Qty * 1.0) because total_cost already has Mult.
+                # However, to be consistent with how Position.to_dict() works, 
+                # entry_price * Qty * Mult must = total_cost.
+                # Therefore: entry_price = total_cost / (qty * multiplier)
+                # The issue is that total_cost was ALREADY scaled during ingestion for some sources.
+                
                 open_positions.append(Position(
                     name=latest.description or latest.ticker,
                     ticker=latest.ticker,
@@ -78,7 +91,7 @@ class LedgerEngine:
                     entry_price=total_cost / (qty * multiplier) if (qty * multiplier) != 0 else 0,
                     inception_price=first_price,
                     multiplier=multiplier,
-                    mark_price=0.0, # Will be filled by market data or snapshot
+                    mark_price=0.0, 
                     isin="", 
                     listing_exchange=latest.listing_exchange,
                     underlying_symbol=latest.underlying_symbol

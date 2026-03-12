@@ -33,6 +33,7 @@ class DataLoader:
                 t.quantity as Quantity,
                 t.price as Price,
                 t.conid as Conid,
+                t.account_id,
                 t.source,
                 t.external_id,
                 t.notes,
@@ -66,6 +67,7 @@ class DataLoader:
                 quantity=row['Quantity'],
                 price=row['Price'],
                 conid=str(row['Conid']),
+                account_id=str(row.get('account_id', 'U0000000')),
                 # These metadata fields now come from ticker_info via JOIN
                 multiplier=row.get('Multiplier', 1.0),
                 description=row.get('Description', ''),
@@ -170,6 +172,8 @@ class DataLoader:
             lots = df[df['LevelOfDetail'] == 'LOT'].copy()
             earliest_dates = {}
             if not lots.empty:
+                # Ensure Conid is string for consistent mapping
+                lots['Conid'] = lots['Conid'].astype(str)
                 # OpenDateTime often has multiple timestamps separated by semicolon
                 lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].astype(str).str.split(';').str[0], errors='coerce')
                 earliest_dates = lots.groupby('Conid')['OpenDateClean'].min().to_dict()
@@ -227,7 +231,7 @@ class DataLoader:
                     'Qty': qty, 
                     'Entry': entry,
                     'Multiplier': multiplier,
-                    'Date': earliest_dates.get(conid_val) or report_date,
+                    'Date': earliest_dates.get(conid_str), # No default here, and use conid_str
                     'Description': group['Description'].iloc[0], 
                     'Symbol': group['Symbol'].iloc[0],
                     'AssetClass': asset_cat, 

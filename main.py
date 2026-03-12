@@ -3,7 +3,7 @@ import warnings
 from db import init_db, wipe_trades_only, get_watch_list_profiles
 from services.ibkr import (
     process_local_csvs, 
-    process_ytd_only, 
+    process_all_local_history, 
     fetch_trade_history, 
     fetch_open_positions,
     fetch_trade_confirmations,
@@ -84,12 +84,14 @@ def handle_sync_all():
     console.print("\n[bold green]>>> Step 1: Syncing with Interactive Brokers...[/bold green]")
     fetch_trade_history()
     fetch_open_positions()
+    fetch_trade_confirmations()
     
     manager = PortfolioManager()
     print_nav_table(manager, force_download=True)
     
     console.print("\n[bold green]>>> Step 2: Ingesting Trades into trade_journal.db...[/bold green]")
-    process_ytd_only()
+    process_all_local_history()
+    process_confirmations()
     
     console.print("\n[bold green]>>> Step 3: Syncing Historical Prices (prices.db)...[/bold green]")
     handle_sync_prices(silent=True)

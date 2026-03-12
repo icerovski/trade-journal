@@ -131,7 +131,7 @@ def process_local_csvs():
             IBKRParser.parse_transfers_csv(f)
 
         # C. CORPORATE ACTIONS / SPLITS
-        split_patterns = ["corp_actions_*.csv", "stock_splits_*.csv", "corp_actions_ytd.csv"]
+        split_patterns = ["corp_actions_*.csv", "corp_actions_ytd.csv"]
         for pattern in split_patterns:
             for f in path.glob(pattern):
                 logger.info(f"Parsing Corp Actions: {f.name} from {path.name}")
@@ -139,28 +139,26 @@ def process_local_csvs():
     
     logger.info("Database up to date with all local CSVs.")
 
-def process_ytd_only():
-    """Incorporate ONLY YTD CSVs from BASE_DATA_DIR into DB for quick updates."""
+def process_all_local_history():
+    """Incorporate ALL local CSVs from BASE_DATA_DIR into DB for complete history."""
     from config import BASE_DATA_DIR
     if not BASE_DATA_DIR.exists():
         logger.warning(f"Base data directory {BASE_DATA_DIR} does not exist.")
         return
     
-    ytd_files = list(BASE_DATA_DIR.glob("*_ytd.csv"))
-    if not ytd_files:
-        logger.warning("No YTD files found in data_base.")
-        return
-
-    for f in ytd_files:
-        name = f.name.lower()
-        if "trades" in name:
-            logger.info(f"Updating YTD Trades: {f.name}")
-            IBKRParser.parse_trade_csv(f)
-        elif "transfers" in name:
-            logger.info(f"Updating YTD Transfers: {f.name}")
-            IBKRParser.parse_transfers_csv(f)
-        elif "corp_actions" in name:
-            logger.info(f"Updating YTD Corp Actions: {f.name}")
-            IBKRParser.parse_corporate_actions_csv(f)
+    # Process Trades
+    for f in BASE_DATA_DIR.glob("trades_*.csv"):
+        logger.info(f"Syncing History - Trades: {f.name}")
+        IBKRParser.parse_trade_csv(f)
+        
+    # Process Transfers
+    for f in BASE_DATA_DIR.glob("transfers_*.csv"):
+        logger.info(f"Syncing History - Transfers: {f.name}")
+        IBKRParser.parse_transfers_csv(f)
+        
+    # Process Corporate Actions
+    for f in BASE_DATA_DIR.glob("corp_actions_*.csv"):
+        logger.info(f"Syncing History - Corp Actions: {f.name}")
+        IBKRParser.parse_corporate_actions_csv(f)
             
-    logger.info("Database updated with YTD records.")
+    logger.info("Database synced with all local history records.")

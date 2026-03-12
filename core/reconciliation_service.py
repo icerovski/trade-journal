@@ -1,5 +1,5 @@
 import pandas as pd
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from models import Position, Trade
 
 class ReconciliationService:
@@ -8,8 +8,8 @@ class ReconciliationService:
     Treats the broker snapshot as a 'Checkpoint' and manual trades/confirmations as a 'Delta'.
     """
 
-    @staticmethod
     def reconcile_hybrid(
+        self,
         broker_snapshot: Dict, 
         report_date: Optional[pd.Timestamp], 
         all_trades: List[Trade],
@@ -17,90 +17,119 @@ class ReconciliationService:
     ) -> List[Position]:
         """
         Merges broker-verified positions with pending delta trades (Manual + Confirmations).
+        Returns a list of enriched Position objects.
         """
-        # 1. Filter for trades occurring AFTER the report date (or explicitly marked as pending)
-        # We only include 'IBKR_CONFIRMATION' as a pending delta.
-        def is_pending_delta(t):
-            t_date = pd.to_datetime(t.date)
-            is_delta_source = t.source == 'IBKR_CONFIRMATION'
-            if report_date:
-                # Same-day trades might have same date as report_date depending on precision.
-                # However, confirmations are specifically 'today' and snapshot is 'LBD'.
-                return is_delta_source and t_date > report_date
-            return is_delta_source
-
-        pending_deltas = [t for t in all_trades if is_pending_delta(t)]
-
-        open_list = []
-        matched_conids = set()
+        # 1. Filter for trades occurring AFTER the report date
+        pending_deltas = self._filter_pending_deltas(all_trades, report_date)
 
         # 2. Pre-calculate ledger positions for cost-basis recovery
-        # Stage 1: Map by exact Account:Conid
-        all_ledger_pos = ledger_engine.calculate_positions(all_trades)
-        ledger_by_key = {f"{p.account_id}:{p.conid}": p for p in all_ledger_pos}
-        
-        # Stage 2: Map by Conid only (Fallback for account-agnostic cost basis recovery)
-        # We take the most recent entry for that conid as the primary recovery source.
-        ledger_by_conid = {}
-        for p in sorted(all_ledger_pos, key=lambda x: x.date_entry):
-            ledger_by_conid[str(p.conid)] = p
+        ledger_by_key, ledger_by_conid = self._prepare_ledger_lookups(all_trades, ledger_engine)
+
+        open_list = []
+        matched_keys = set()
 
         # 3. Process Broker Snapshot
         for key, v in broker_snapshot.items():
-            acct_id = v.get('account_id', 'U0000000')
-            conid = str(v.get('conid', key.split(':')[-1]))
-            ticker, qty, entry, first_date = v['Symbol'], v['Qty'], v['Entry'], v['Date']
-            multiplier = v.get('Multiplier', 1.0)
-            inception_price = 0.0
+            pos = self._create_position_from_snapshot(key, v)
             
             # --- COST BASIS RECOVERY (HEALING) ---
-            # Try exact match first, then fall back to asset-level match
-            lp = ledger_by_key.get(key) or ledger_by_conid.get(conid)
-            
-            if lp:
-                if not entry or entry == 0:
-                    entry = lp.entry_price
-                if not first_date or pd.isna(first_date):
-                    first_date = lp.date_entry
-                multiplier = lp.multiplier
-                inception_price = lp.inception_price
+            self._heal_from_ledger(pos, ledger_by_key, ledger_by_conid)
 
-            # 4. Apply 'Delta' (Pending Adjustments)
-            # Filter deltas for this specific (Account, Conid)
-            adjustments = [t for t in pending_deltas if str(t.conid) == str(conid) and getattr(t, 'account_id', 'U0000000') == acct_id]
-            for t in adjustments:
-                side, q, p, m = t.side.upper(), t.quantity, t.price, t.multiplier
-                if side in ['BUY', 'TRANSFER_IN']:
-                    new_qty = qty + q
-                    # WAC (Weighted Average Cost) adjustment
-                    entry = ((qty * entry * multiplier) + (q * p * m)) / (new_qty * m) if (new_qty * m) != 0 else 0
-                    qty = new_qty
-                    multiplier = m
-                    if not first_date: 
-                        first_date = t.date
-                        inception_price = p
-                elif side in ['SELL', 'TRANSFER_OUT']:
-                    qty = max(0, qty - q)
-                    if qty <= 0: 
-                        qty, entry, first_date, inception_price = 0, 0, None, 0.0
-                elif side == 'SPLIT':
-                    qty += q
+            # --- APPLY INTRADAY DELTAS ---
+            self._apply_intraday_deltas(pos, pending_deltas)
 
-            if qty > 0.0001:
-                open_list.append(Position(
-                    name=v['Description'], ticker=ticker, conid=str(conid),
-                    account_id=acct_id,
-                    listing_exchange=v['ListingExchange'], asset_class=v['AssetClass'],
-                    underlying_symbol=v['UnderlyingSymbol'], ccy=v['Currency'], isin=str(v.get('ISIN', '')),
-                    date_entry=pd.to_datetime(first_date), qty=qty, entry_price=entry, 
-                    inception_price=inception_price,
-                    multiplier=multiplier, mark_price=v['MarkPrice']
-                ))
-            matched_conids.add(key)
+            if pos.qty > 0.0001:
+                # Final fallback for date if still missing
+                if not pos.date_entry or pd.isna(pos.date_entry):
+                    pos.date_entry = report_date
+                open_list.append(pos)
+                
+            matched_keys.add(key)
 
-        # 5. Add delta trades for assets NOT in IBKR snapshot
-        remaining_delta = [t for t in pending_deltas if f"{getattr(t, 'account_id', 'U0000000')}:{t.conid}" not in matched_conids]
-        if remaining_delta:
-            open_list.extend(ledger_engine.calculate_positions(remaining_delta))
+        # 4. Add delta trades for assets NOT in IBKR snapshot
+        remaining_deltas = [t for t in pending_deltas if f"{t.account_id}:{t.conid}" not in matched_keys]
+        if remaining_deltas:
+            open_list.extend(ledger_engine.calculate_positions(remaining_deltas))
 
         return open_list
+
+    def _filter_pending_deltas(self, trades: List[Trade], report_date: Optional[pd.Timestamp]) -> List[Trade]:
+        """Filters for trades that should be applied as deltas on top of the snapshot."""
+        def is_pending(t):
+            # Only IBKR confirmations are currently treated as pending deltas
+            if t.source != 'IBKR_CONFIRMATION':
+                return False
+            if not report_date:
+                return True
+            return pd.to_datetime(t.date) > report_date
+            
+        return [t for t in trades if is_pending(t)]
+
+    def _prepare_ledger_lookups(self, trades: List[Trade], engine) -> Tuple[Dict, Dict]:
+        """Generates lookup maps for exact and fallback cost-basis recovery."""
+        all_ledger_pos = engine.calculate_positions(trades)
+        
+        # Exact match map: Account:Conid
+        by_key = {f"{p.account_id}:{p.conid}": p for p in all_ledger_pos}
+        
+        # Fallback map: Conid only (EARLIEST entry for true inception healing)
+        by_conid = {}
+        # Sort by date_entry ascending, but handle None by putting them at the end
+        def sort_by_date(p):
+            if p.date_entry and pd.notnull(p.date_entry):
+                return p.date_entry
+            return pd.Timestamp.max
+            
+        for p in sorted(all_ledger_pos, key=sort_by_date):
+            c_str = str(p.conid)
+            if c_str not in by_conid:
+                by_conid[c_str] = p
+            
+        return by_key, by_conid
+
+    def _create_position_from_snapshot(self, key: str, v: Dict) -> Position:
+        """Initializes a Position object from a broker snapshot dictionary."""
+        conid = str(v.get('conid', key.split(':')[-1]))
+        return Position(
+            name=v['Description'],
+            ticker=v['Symbol'],
+            conid=conid,
+            account_id=v.get('account_id', 'U0000000'),
+            listing_exchange=v['ListingExchange'],
+            asset_class=v['AssetClass'],
+            underlying_symbol=v['UnderlyingSymbol'],
+            ccy=v['Currency'],
+            isin=str(v.get('ISIN', '')),
+            date_entry=pd.to_datetime(v['Date']) if v.get('Date') else None,
+            qty=v['Qty'],
+            entry_price=v['Entry'],
+            inception_price=0.0,
+            multiplier=v.get('Multiplier', 1.0),
+            mark_price=v['MarkPrice']
+        )
+
+    def _heal_from_ledger(self, pos: Position, by_key: Dict, by_conid: Dict):
+        """Attempts to recover missing metadata (entry date, cost basis) from the ledger."""
+        key = f"{pos.account_id}:{pos.conid}"
+        lp = by_key.get(key) or by_conid.get(pos.conid)
+        
+        if lp:
+            if not pos.entry_price or pos.entry_price == 0:
+                pos.entry_price = lp.entry_price
+            if not pos.date_entry or pd.isna(pos.date_entry):
+                pos.date_entry = lp.date_entry
+            if not pos.multiplier or pos.multiplier == 1.0:
+                pos.multiplier = lp.multiplier
+            pos.inception_price = lp.inception_price
+
+    def _apply_intraday_deltas(self, pos: Position, deltas: List[Trade]):
+        """Applies relevant intraday trades to a position's quantity and cost basis."""
+        adjustments = [t for t in deltas if str(t.conid) == pos.conid and t.account_id == pos.account_id]
+        for t in adjustments:
+            pos.apply_trade(
+                side=t.side,
+                q=t.quantity,
+                p=t.price,
+                m=t.multiplier,
+                t_date=t.date
+            )

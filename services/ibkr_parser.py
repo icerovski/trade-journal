@@ -44,6 +44,12 @@ class IBKRParser:
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
+
+                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                        qty = qty / 1000.0
+                        if multiplier == 1.0:
+                            multiplier = 10.0
                 except Exception as e:
                     logger.warning(f"Skipping confirmation row for {ticker}: {e}")
                     continue
@@ -124,6 +130,12 @@ class IBKRParser:
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
+                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
+                        qty = qty / 1000.0
+                        if multiplier == 1.0:
+                            multiplier = 10.0
+
                     # Normalize Conid
                     conid_raw = row.get('Conid')
                     try:
@@ -180,9 +192,10 @@ class IBKRParser:
             df = pd.read_csv(file_path)
             df.columns = df.columns.str.strip()
             
-            # Filter for Intercompany as requested
+            # Filter for valid transfer types
             if 'Type' in df.columns:
-                df = df[df['Type'] == 'INTERCOMPANY']
+                allowed_types = ['INTERCOMPANY', 'INTERNAL', 'ADJUSTMENT']
+                df = df[df['Type'].isin(allowed_types)]
             
             count = 0
             for _, row in df.iterrows():
@@ -200,7 +213,7 @@ class IBKRParser:
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
                     # Calculate price from PositionAmount (Cost Basis)
-                    pos_amt = float(row.get('PositionAmount', 0))
+                    pos_amt = abs(float(row.get('PositionAmount', 0)))
                     price = (pos_amt / qty) / multiplier if (qty * multiplier) > 0 else 0.0
 
                     # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
@@ -208,6 +221,9 @@ class IBKRParser:
                         qty = qty / 1000.0
                         if multiplier == 1.0:
                             multiplier = 10.0
+                        # Institutional Correction: Transfers report total value, but trades use 'Points' (Percentage of Par)
+                        # We multiply by 100 to convert decimal (0.85) to Points (85.0)
+                        price = price * 100.0
                     
                     # Normalize Conid
                     conid_raw = row.get('Conid')
@@ -234,7 +250,13 @@ class IBKRParser:
 
                     # 3. Ingest Transfer (Activity Only)
                     side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
-                    ext_id = str(row.get('TransactionID')) or f"XFER-{date_str}-{ticker}-{qty}"
+                    
+                    # Use unique ID that includes account and side to prevent internal transfers from colliding
+                    raw_id = row.get('TransactionID')
+                    if raw_id:
+                        ext_id = f"{raw_id}-{account_id}-{side}"
+                    else:
+                        ext_id = f"XFER-{date_str}-{ticker}-{qty}-{account_id}-{side}"
 
                     if not db.trade_exists(ext_id):
                         db.add_trade(
@@ -308,7 +330,11 @@ class IBKRParser:
                     )
 
                     # 3. Ingest Split (Activity Only)
-                    ext_id = str(row.get('TransactionID')) if row.get('TransactionID') else f"CORP-{date_str}-{ticker}-{qty}"
+                    raw_id = row.get('TransactionID')
+                    if raw_id:
+                        ext_id = f"{raw_id}-{account_id}"
+                    else:
+                        ext_id = f"CORP-{date_str}-{ticker}-{qty}-{account_id}"
 
                     if not db.trade_exists(ext_id):
                         db.add_trade(

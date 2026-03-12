@@ -1,3 +1,4 @@
+import pandas as pd
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -11,6 +12,7 @@ class Trade:
     quantity: float
     price: float
     conid: str
+    account_id: str = "U0000000"
     multiplier: float = 1.0
     description: str = ""
     asset_category: str = "STK"
@@ -85,6 +87,65 @@ class Position:
     risk_pct_nav: float = 0.0  # R (% of NAV)
     max_r_pct: float = 1.0
     max_exp_pct: float = 5.0
+
+    def reset(self):
+        """Clears all position data (used when quantity hits zero)."""
+        self.qty = 0.0
+        self.entry_price = 0.0
+        self.inception_price = 0.0
+        self.date_entry = None
+
+    def apply_trade(self, side: str, q: float, p: float, m: float, t_date=None):
+        """
+        Updates the position based on a single trade.
+        Implements Weighted Average Cost (WAC) and Reset-on-Zero.
+        """
+        side = side.upper()
+        if side in ['BUY', 'TRANSFER_IN']:
+            if self.qty <= 0.0001:
+                self.date_entry = pd.to_datetime(t_date) if t_date else None
+                self.inception_price = p
+                self.multiplier = m
+            
+            new_qty = self.qty + q
+            # WAC calculation
+            if (new_qty * m) != 0:
+                self.entry_price = ((self.qty * self.entry_price * self.multiplier) + (q * p * m)) / (new_qty * m)
+            self.qty = new_qty
+            self.multiplier = m
+            
+        elif side in ['SELL', 'TRANSFER_OUT']:
+            self.qty = max(0, self.qty - q)
+            if self.qty <= 0.0001:
+                self.reset()
+                
+        elif side == 'SPLIT':
+            # Split increases qty but keeps total cost basis the same
+            self.qty += q
+
+    def calculate_financial_metrics(self):
+        """Calculates core P/L and growth metrics."""
+        self.market_value = self.current_price * self.qty * self.multiplier
+        self.unrealized_pl = (self.current_price - self.entry_price) * self.qty * self.multiplier
+        self.pl_pct = ((self.current_price - self.entry_price) / self.entry_price * 100) if self.entry_price > 0 else 0
+        
+        # Daily performance (Compared to last close / mark_price from DB)
+        self.daily_pl = (self.current_price - self.mark_price) * self.qty * self.multiplier if self.mark_price > 0 else 0
+        self.daily_pl_pct = ((self.current_price - self.mark_price) / self.mark_price * 100) if self.mark_price > 0 else 0
+        
+        # Age & Growth
+        today = pd.Timestamp.now()
+        self.age_days = (today - self.date_entry).days if pd.notnull(self.date_entry) else 0
+        years = max(self.age_days / 365.25, 0.04) # Floor at ~2 weeks for AAGR stability
+        
+        if self.entry_price > 0:
+            growth_factor = self.current_price / self.entry_price
+            if growth_factor > 0:
+                self.aagr = ((growth_factor ** (1 / years)) - 1) * 100
+            else:
+                self.aagr = -100.0
+        else:
+            self.aagr = 0.0
 
     def to_dict(self):
         """Converts to a dictionary for DataFrame compatibility."""
