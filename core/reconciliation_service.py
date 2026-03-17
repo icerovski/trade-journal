@@ -1,6 +1,7 @@
 import pandas as pd
 from typing import List, Dict, Optional, Tuple
 from models import Position, Trade
+from dataclasses import replace as dc_replace
 
 class ReconciliationService:
     """
@@ -19,34 +20,34 @@ class ReconciliationService:
         Merges broker-verified positions with pending delta trades (Manual + Confirmations).
         Returns a list of enriched Position objects.
         """
-        # 1. Filter for trades occurring AFTER the report date
+        # 1. Filter for trades occurring AFTER the report date      
         pending_deltas = self._filter_pending_deltas(all_trades, report_date)
 
-        # 2. Pre-calculate ledger positions for cost-basis recovery
-        ledger_by_key, ledger_by_conid = self._prepare_ledger_lookups(all_trades, ledger_engine)
+        # 2. Pre-calculate ledger positions for cost-basis recovery 
+        ledger_by_key, ledger_by_conid, ledger_by_global = self._prepare_ledger_lookups(all_trades, ledger_engine)
 
         open_list = []
         matched_keys = set()
 
         # 3. Process Broker Snapshot
         for key, v in broker_snapshot.items():
-            pos = self._create_position_from_snapshot(key, v)
-            
+            pos = self._create_position_from_snapshot(key, v)       
+
             # --- COST BASIS RECOVERY (HEALING) ---
-            self._heal_from_ledger(pos, ledger_by_key, ledger_by_conid)
+            self._heal_from_ledger(pos, ledger_by_key, ledger_by_conid, ledger_by_global)
 
             # --- APPLY INTRADAY DELTAS ---
-            self._apply_intraday_deltas(pos, pending_deltas)
+            self._apply_intraday_deltas(pos, pending_deltas)        
 
             if pos.qty > 0.0001:
                 # Final fallback for date if still missing
-                if not pos.date_entry or pd.isna(pos.date_entry):
+                if not pos.date_entry or pd.isna(pos.date_entry):   
                     pos.date_entry = report_date
                 open_list.append(pos)
-                
+
             matched_keys.add(key)
 
-        # 4. Add delta trades for assets NOT in IBKR snapshot
+        # 4. Add delta trades for assets NOT in IBKR snapshot       
         remaining_deltas = [t for t in pending_deltas if f"{t.account_id}:{t.conid}" not in matched_keys]
         if remaining_deltas:
             open_list.extend(ledger_engine.calculate_positions(remaining_deltas))
@@ -62,13 +63,18 @@ class ReconciliationService:
             if not report_date:
                 return True
             return pd.to_datetime(t.date) > report_date
-            
+
         return [t for t in trades if is_pending(t)]
 
-    def _prepare_ledger_lookups(self, trades: List[Trade], engine) -> Tuple[Dict, Dict]:
-        """Generates lookup maps for exact and fallback cost-basis recovery."""
+    def _prepare_ledger_lookups(self, trades: List[Trade], engine) -> Tuple[Dict, Dict, Dict]:
+        """Generates lookup maps for exact, fallback, and truly global cost-basis recovery."""
         all_ledger_pos = engine.calculate_positions(trades)
         
+        # Truly Global Ledger: Ignores account_id to perfectly wash internal transfers
+        global_trades = [dc_replace(t, account_id="CONSOLIDATED") for t in trades]
+        global_ledger_pos = engine.calculate_positions(global_trades)
+        by_global = {str(p.conid): p for p in global_ledger_pos}
+
         # Exact match map: Account:Conid
         by_key = {f"{p.account_id}:{p.conid}": p for p in all_ledger_pos}
         
@@ -79,13 +85,13 @@ class ReconciliationService:
             if p.date_entry and pd.notnull(p.date_entry):
                 return p.date_entry
             return pd.Timestamp.max
-            
+
         for p in sorted(all_ledger_pos, key=sort_by_date):
             c_str = str(p.conid)
             if c_str not in by_conid:
                 by_conid[c_str] = p
-            
-        return by_key, by_conid
+
+        return by_key, by_conid, by_global
 
     def _create_position_from_snapshot(self, key: str, v: Dict) -> Position:
         """Initializes a Position object from a broker snapshot dictionary."""
@@ -108,19 +114,28 @@ class ReconciliationService:
             mark_price=v['MarkPrice']
         )
 
-    def _heal_from_ledger(self, pos: Position, by_key: Dict, by_conid: Dict):
+    def _heal_from_ledger(self, pos: Position, by_key: Dict, by_conid: Dict, by_global: Dict):
         """Attempts to recover missing metadata (entry date, cost basis) from the ledger."""
         key = f"{pos.account_id}:{pos.conid}"
         lp = by_key.get(key) or by_conid.get(pos.conid)
-        
+        gp = by_global.get(pos.conid)
+
+        # 1. Price Healing: Always prefer the truly global account-agnostic cost basis
+        # This fixes "stepped-up" prices caused by internal inter-account transfers.
+        if gp and gp.entry_price > 0:
+            pos.entry_price = gp.entry_price
+        elif lp and (not pos.entry_price or pos.entry_price == 0):
+            pos.entry_price = lp.entry_price
+
+        # 2. Date and Multiplier Healing
         if lp:
-            if not pos.entry_price or pos.entry_price == 0:
-                pos.entry_price = lp.entry_price
-            if not pos.date_entry or pd.isna(pos.date_entry):
+            if not pos.date_entry or pd.isna(pos.date_entry):       
                 pos.date_entry = lp.date_entry
             if not pos.multiplier or pos.multiplier == 1.0:
                 pos.multiplier = lp.multiplier
-            pos.inception_price = lp.inception_price
+            
+        # 3. Inception Healing: Always trace back to the very first global purchase
+        pos.inception_price = gp.inception_price if gp else (lp.inception_price if lp else pos.entry_price)
 
     def _apply_intraday_deltas(self, pos: Position, deltas: List[Trade]):
         """Applies relevant intraday trades to a position's quantity and cost basis."""

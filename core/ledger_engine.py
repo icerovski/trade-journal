@@ -67,6 +67,10 @@ class LedgerEngine:
                         qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
                 elif side == 'SPLIT':
                     # A split changes quantity but keeps total_cost the same.
+                    # We must also adjust the inception price proportionally.
+                    if qty > 0:
+                        split_ratio = qty / (qty + q)
+                        first_price = first_price * split_ratio
                     qty += q
             
             if qty > 0.0001:

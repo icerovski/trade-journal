@@ -211,7 +211,7 @@ class RiskWorkspace(App):
         # Update high-level summary
         self.query_one("#portfolio-summary", Label).update(f"PORTFOLIO NAV: [bold]{self.total_nav:,.2f} {self.nav_ccy}[/]")
         
-        self.enriched_data, self.positions = self.pm.get_dashboard_df(total_nav=self.total_nav, silent=True)
+        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True)
         if self.enriched_data.empty:
             return
         table = self.query_one("#portfolio-table")
