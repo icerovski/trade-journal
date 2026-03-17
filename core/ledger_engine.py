@@ -29,49 +29,87 @@ class LedgerEngine:
 
         open_positions = []
         for (acct_id, conid), group in trades_by_key.items():
-            # Sort by date, then side to prioritize inflows (BUY/TRANSFER_IN) over outflows on same-day trades
-            # Side priority: BUY/TRANSFER_IN=0, Others=1
-            def trade_sort_key(t):
-                side_pri = 0 if t.side.upper() in ['BUY', 'TRANSFER_IN'] else 1
-                return (t.date, side_pri)
-            
-            group.sort(key=trade_sort_key)
+            # 1. Group by Date to net out internal transfers (Washes)
+            daily_groups = {}
+            for t in group:
+                d = t.date.split(' ')[0] # Use date only for grouping
+                if d not in daily_groups:
+                    daily_groups[d] = []
+                daily_groups[d].append(t)
             
             qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
             
-            for t in group:
-                side = t.side.strip().upper()
-                q = abs(t.quantity)
-                p = abs(t.price)
-                m = float(t.multiplier) if t.multiplier is not None else 1.0
+            sorted_dates = sorted(daily_groups.keys())
+            for d in sorted_dates:
+                day_trades = daily_groups[d]
                 
-                # Special handling for opening balance reset
-                if 'OPENING_BALANCE' in t.source.upper():
-                    qty, total_cost, first_date, first_price, multiplier = q, q * p * m, t.date, p, m
-                    continue
+                # Sort day trades: inflows first for individual accounts, 
+                # but we need to net out transfers specifically.
+                def day_sort_key(t):
+                    s = t.side.upper()
+                    if s in ['BUY', 'TRANSFER_IN']: return 0
+                    if s == 'SPLIT': return 1
+                    return 2
+                day_trades.sort(key=day_sort_key)
+
+                # Process all non-transfer trades first, then the net transfer
+                other_trades = [t for t in day_trades if t.side not in ['TRANSFER_IN', 'TRANSFER_OUT']]
+                transfers = [t for t in day_trades if t.side in ['TRANSFER_IN', 'TRANSFER_OUT']]
                 
-                if side in ['BUY', 'TRANSFER_IN']:
-                    # Reset point: if we were flat, this is a new inception
-                    if qty <= 0.0001:
-                        first_date = t.date
-                        first_price = p
-                        multiplier = m
-                    total_cost += q * p * m
-                    qty += q
-                elif side in ['SELL', 'TRANSFER_OUT'] and qty > 0:
-                    # Cost basis reduction (FIFO/WAC style)
-                    total_cost -= q * (total_cost / qty)
-                    qty -= q
-                    # Reset point: if we hit zero, wipe history
-                    if qty <= 0.0001:
-                        qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
-                elif side == 'SPLIT':
-                    # A split changes quantity but keeps total_cost the same.
-                    # We must also adjust the inception price proportionally.
-                    if qty > 0:
-                        split_ratio = qty / (qty + q)
-                        first_price = first_price * split_ratio
-                    qty += q
+                # Combine others and net transfer
+                net_transfer_qty = sum(t.quantity if t.side == 'TRANSFER_IN' else -t.quantity for t in transfers)
+                
+                # If there are transfers, we pick a representative price (avg of inflows if net > 0)
+                inflows = [t for t in transfers if t.side == 'TRANSFER_IN']
+                inflow_qty_sum = sum(t.quantity for t in inflows)
+                
+                if inflow_qty_sum > 0.0001:
+                    rep_transfer_price = sum(t.price * t.quantity for t in inflows) / inflow_qty_sum
+                elif transfers:
+                    rep_transfer_price = transfers[0].price
+                else:
+                    rep_transfer_price = 0
+                
+                active_day_trades = other_trades
+                if abs(net_transfer_qty) > 0.0001:
+                    # Create a synthetic net transfer trade
+                    side = 'TRANSFER_IN' if net_transfer_qty > 0 else 'TRANSFER_OUT'
+                    active_day_trades.append(Trade(
+                        date=d, ticker=group[0].ticker, side=side, 
+                        quantity=abs(net_transfer_qty), price=rep_transfer_price, 
+                        conid=conid, multiplier=group[0].multiplier
+                    ))
+                
+                # Re-sort to ensure Inception happens if we were flat
+                active_day_trades.sort(key=day_sort_key)
+
+                for t in active_day_trades:
+                    side = t.side.strip().upper()
+                    q = abs(t.quantity)
+                    p = abs(t.price)
+                    m = float(t.multiplier) if t.multiplier is not None else 1.0
+                    
+                    if 'OPENING_BALANCE' in t.source.upper() if hasattr(t, 'source') else False:
+                        qty, total_cost, first_date, first_price, multiplier = q, q * p * m, t.date, p, m
+                        continue
+                    
+                    if side in ['BUY', 'TRANSFER_IN']:
+                        if qty <= 0.0001:
+                            first_date = t.date
+                            first_price = p
+                            multiplier = m
+                        total_cost += q * p * m
+                        qty += q
+                    elif side in ['SELL', 'TRANSFER_OUT'] and qty > 0:
+                        total_cost -= q * (total_cost / qty)
+                        qty -= q
+                        if qty <= 0.0001:
+                            qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
+                    elif side == 'SPLIT':
+                        if qty > 0:
+                            split_ratio = qty / (qty + q)
+                            first_price = first_price * split_ratio
+                        qty += q
             
             if qty > 0.0001:
                 latest = group[-1]

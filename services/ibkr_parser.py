@@ -309,8 +309,8 @@ class IBKRParser:
                     qty = float(row.get('Quantity', 0))
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
                     
-                    # Ensure qty is non-zero
-                    if qty == 0:
+                    # Ensure qty is non-zero and account is real
+                    if qty == 0 or account_id == '-':
                         continue
 
                     # Normalize Conid
