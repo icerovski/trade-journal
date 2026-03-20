@@ -100,17 +100,25 @@ class RiskWorkspace(App):
     #left-pane { width: 60%; height: 1fr; border-right: tall $primary; padding-right: 1; }
     #right-pane { width: 40%; height: 1fr; padding-left: 1; }
     #portfolio-table { height: 1fr; }
-    #discovery-layout { layout: vertical; height: 1fr; }
-    .discovery-sub-pane { height: 1fr; border-bottom: solid $secondary; padding: 0 1; }
-    .base-price-label { background: $surface-lighten-1; color: $accent; text-align: center; text-style: bold; height: 1; }
-    .panel-header { text-style: bold; color: $accent; text-align: center; background: $surface-darken-1; height: 1; }
     
     #sidebar-scroll {
-        height: 16;
+        height: 60%;
         border: solid $secondary;
         background: $surface-darken-2;
-        margin-bottom: 1;
     }
+    
+    #discovery-layout { 
+        height: 40%;
+        border: solid $secondary;
+        background: $surface-darken-2;
+    }
+    
+    #atr-discovery-table {
+        height: auto;
+    }
+    
+    .base-price-label { background: $surface-lighten-1; color: $accent; text-align: center; text-style: bold; height: 1; }
+    .panel-header { text-style: bold; color: $accent; text-align: center; background: $surface-darken-1; height: 1; }
     
     #position-context { 
         padding: 0 1;
@@ -165,19 +173,10 @@ class RiskWorkspace(App):
                 yield Label("ASSET CONTEXT & RISK AUDIT", classes="panel-header")
                 with ScrollableContainer(id="sidebar-scroll"):
                     yield Static("Select a position...", id="position-context")
-                with Container(id="discovery-layout"):
-                    with Vertical(id="fixed-pane", classes="discovery-sub-pane"):
-                        yield Label("FIXED STOP (Protection)", classes="panel-header")
-                        yield Label("Base: ---", id="fixed-base", classes="base-price-label")
-                        dt_fixed = DataTable(id="fixed-table")
-                        dt_fixed.can_focus = False
-                        yield dt_fixed
-                    with Vertical(id="trailing-pane", classes="discovery-sub-pane"):
-                        yield Label("TRAILING STOP (Profit Harvest)", classes="panel-header")
-                        yield Label("Base: ---", id="trailing-base", classes="base-price-label")
-                        dt_trail = DataTable(id="trailing-table")
-                        dt_trail.can_focus = False
-                        yield dt_trail
+                
+                yield Label("ATR DISCOVERY", classes="panel-header")
+                with ScrollableContainer(id="discovery-layout"):
+                    yield DataTable(id="atr-discovery-table")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -193,9 +192,11 @@ class RiskWorkspace(App):
         table.add_column("% NAV", key="col_nav_pct")
         table.add_column("R", key="col_r")
         table.add_column("RR", key="col_rr")
-        for table_id in ["#fixed-table", "#trailing-table"]:
-            dt = self.query_one(table_id)
-            dt.add_columns("WIN", "ATR (SMA)", "STOP", "SL% (SMA)", "QTY", "P/L", "R", "BUF%")
+        
+        atr_table = self.query_one("#atr-discovery-table")
+        atr_table.can_focus = False
+        atr_table.add_columns("WIN", "ATR (SMA)", "STOP", "SL% (SMA)", "QTY", "P/L", "R", "BUF%")
+        
         self.load_portfolio()
 
     def load_portfolio(self) -> None:
@@ -246,10 +247,20 @@ class RiskWorkspace(App):
                 if has_risk and pd.notnull(tp_p) and cur_p_val >= tp_p:
                     ticker_display += " [bold cyan]★[/]"
                 if has_risk and row.get('EntryType') == 'SCALE_IN':
+                    # Use inception if healed (Single Source of Truth), else fallback to entry
                     incep = row.get('Inception', row['Entry'])
-                    pilot = RiskEngine.calculate_pilot_entry(cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), incep, row['ATR'], row.get('ScaleStep', 0.5), max_r_pct=max_r_pct, max_exp_pct=max_exp_pct)
+                    pilot = RiskEngine.calculate_pilot_entry(
+                        cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), 
+                        row['Entry'], row['ATR'], row.get('ScaleStep', 0.5), 
+                        max_r_pct=max_r_pct, max_exp_pct=max_exp_pct,
+                        base_price=incep
+                    )
+                    # Trigger if we have room to add AND price reached next milestone
                     if row['Qty'] < pilot['full_target_qty'] * 0.95:
-                        if (row['Qty'] <= pilot['full_target_qty'] * 0.4 and cur_p_val >= pilot['stage2_price']) or (row['Qty'] <= pilot['full_target_qty'] * 0.75 and cur_p_val >= pilot['stage3_price']):
+                        # Stage 2 Trigger: Qty < 2/3 and price >= Stage 2
+                        # Stage 3 Trigger: Qty < Full and price >= Stage 3
+                        if (row['Qty'] < pilot['full_target_qty'] * 0.6 and cur_p_val >= pilot['stage2_price']) or \
+                           (row['Qty'] < pilot['full_target_qty'] * 0.9 and cur_p_val >= pilot['stage3_price']):
                             ticker_display += " [bold green]⬆[/]"
             
             r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
@@ -276,8 +287,7 @@ class RiskWorkspace(App):
         if conid in self.discovery_cache:
             self.update_discovery_ui(conid, self.discovery_cache[conid])
         else:
-            self.query_one("#fixed-table").clear()
-            self.query_one("#trailing-table").clear()
+            self.query_one("#atr-discovery-table").clear()
             self.fetch_atr_data(conid)
 
     def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_entry_type: Optional[str] = None, hypo_scale_step: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None) -> None:
@@ -391,19 +401,27 @@ class RiskWorkspace(App):
         if conid != self.current_conid:
             return
             
-        self.query_one("#fixed-base", Label).update(f"Base: {data['entry_price']:,.2f}")
-        self.query_one("#trailing-base", Label).update(f"Base: {data['max_price']:,.2f}")
-        f_t, t_t = self.query_one("#fixed-table"), self.query_one("#trailing-table")
-        f_t.clear()
-        t_t.clear()
-        for r in data['rows']:
+        table = self.query_one("#atr-discovery-table")
+        table.clear()
+        
+        # Section 1: FIXED STOP
+        table.add_row(f"[bold cyan]Fixed Stop (Protection) | Base: {data['entry_price']:,.2f}[/]", "", "", "", "", "", "", "")
+        for r in [r for r in data['rows'] if r.stop_type == "FIXED"]:
             m_r = data.get('max_r_pct', 1.0)
             r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
             row_vals = (r.label, f"{r.atr_wilder:.2f}", f"{r.stop_price:,.2f}", f"{r.atr_base_pct:.1f}%", f"{int(r.qty)}", f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%")
-            if r.stop_type == "FIXED":
-                f_t.add_row(*row_vals)
-            else:
-                t_t.add_row(*row_vals)
+            table.add_row(*row_vals)
+
+        # Spacer
+        table.add_row("", "", "", "", "", "", "", "")
+
+        # Section 2: TRAILING STOP
+        table.add_row(f"[bold cyan]Trailing Stop (Profit Harvest) | Base: {data['max_price']:,.2f}[/]", "", "", "", "", "", "", "")
+        for r in [r for r in data['rows'] if r.stop_type == "TRAILING"]:
+            m_r = data.get('max_r_pct', 1.0)
+            r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
+            row_vals = (r.label, f"{r.atr_wilder:.2f}", f"{r.stop_price:,.2f}", f"{r.atr_base_pct:.1f}%", f"{int(r.qty)}", f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%")
+            table.add_row(*row_vals)
 
     @on(Input.Submitted, "#discover-input")
     def on_discover_submitted(self) -> None:

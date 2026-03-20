@@ -51,7 +51,7 @@ class PortfolioManager:
     def recon(self):
         return self._recon or ReconciliationService()
 
-    def get_dashboard_df(self, asset_class_filter=None, total_nav=None, silent=False, account_id=None, include_watch=True):
+    def get_dashboard_df(self, asset_class_filter: str | list[str] | None = None, total_nav: float | None = None, silent: bool = False, account_id: str | None = None, include_watch: bool = True):
         """
         Enriches open positions with market data and risk metrics.
         Uses Hybrid mode (Broker Snapshot + Manual Deltas).
@@ -95,7 +95,7 @@ class PortfolioManager:
                     if pd.notnull(profile_date):
                         p.date_entry = profile_date
 
-    def _enrich_metrics(self, positions: list[Position], risk_settings: dict, total_nav: float):
+    def _enrich_metrics(self, positions: list[Position], risk_settings: dict, total_nav: float | None):
         """Calculates performance and risk metrics for all positions."""
         # Calculate financial metrics (P/L, AAGR, Age)
         for p in positions:

@@ -77,9 +77,12 @@ class RiskEngine:
 
     @staticmethod
     def calculate_pilot_entry(current_price: float, assigned_atr: float, nav: float, multiplier: float, 
-                              entry_price: float, daily_atr: float, scale_step: float = 0.5, max_r_pct: float = 1.0, max_exp_pct: float = 5.0) -> dict:
+                              entry_price: float, daily_atr: float, scale_step: float = 0.5, 
+                              max_r_pct: float = 1.0, max_exp_pct: float = 5.0,
+                              base_price: float = None) -> dict:
         """
         Calculates the Pilot Entry roadmap based on custom Risk and Exposure limits.
+        If base_price is provided (e.g. Inception Price), targets are anchored to it.
         """
         if nav <= 0 or current_price <= 0 or assigned_atr <= 0:
             return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
@@ -93,13 +96,14 @@ class RiskEngine:
         unit_shares = int(full_target_qty / 3.0)
         
         # 2. Financial Milestones (Based on the 14d Daily ATR Heartbeat)
+        anchor = base_price if base_price is not None else entry_price
         step_dist = daily_atr * scale_step
-        s2_p = entry_price + step_dist
-        s3_p = entry_price + (2 * step_dist)
+        s2_p = anchor + step_dist
+        s3_p = anchor + (2 * step_dist)
         
         # Scale-In Total Outlay: Sum of 3 tranches at their respective prices
         tranche = full_target_qty / 3.0
-        scale_in_outlay = (entry_price * tranche * multiplier) + (s2_p * tranche * multiplier) + (s3_p * tranche * multiplier)
+        scale_in_outlay = (anchor * tranche * multiplier) + (s2_p * tranche * multiplier) + (s3_p * tranche * multiplier)
         
         # Single Purchase Outlay: Full target at current market price
         single_outlay = current_price * full_target_qty * multiplier
