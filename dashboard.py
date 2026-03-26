@@ -223,14 +223,21 @@ class TradingCockpit(App):
         for _, row in df_view.iterrows():
             # Breach Indicators
             ticker_display = str(row['Ticker'])
-            if pd.notnull(row['SL_Price']) and row['Price'] <= row['SL_Price']:
+            price_display = f"{row['Price']:,.2f}"
+            
+            is_stop_breached = pd.notnull(row['SL_Price']) and row['Price'] <= row['SL_Price']
+            is_target_reached = pd.notnull(row['TP_Price']) and row['Price'] >= row['TP_Price']
+
+            if is_stop_breached:
                 ticker_display = f"🔴 {ticker_display}"
-            elif pd.notnull(row['TP_Price']) and row['Price'] >= row['TP_Price']:
+                price_display = f"[on red][bold white] {price_display} [/][/]"
+            elif is_target_reached:
                 ticker_display = f"🟢 {ticker_display}"
+                price_display = f"[on green][bold white] {price_display} [/][/]"
 
             table.add_row(
                 ticker_display,
-                f"{row['Price']:,.2f}",
+                price_display,
                 f"{row['Qty']:,.0f}",
                 self.color_fmt(row['PL_Daily']),
                 self.color_fmt(row['PL_Daily_Pct'], ".1f", "%"),
