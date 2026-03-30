@@ -27,8 +27,14 @@ This document provides a comprehensive technical and strategic overview of the T
 ### Module Structure
 #### Orchestration
 *   **main.py**: The Entry Point. Implements a Minimalist CLI (Sync All, Risk Workspace, View Dashboard, Kids Fund, Maintenance, Watch List).
+*   **watch_list_workspace.py**: The Technical Audit Desk. 
+    * **Comprehensive Confluence Audit**: Evaluates distances between Price/Stops and 8 indicators (EMA/DMA 200, 100, 50, 10).
+    * **Volatility-Adjusted Proximity**: Measures confluence zones in Daily ATR units (< 0.25R) to ensure cross-asset mathematical consistency.
+    * **Undisturbed Trend Engine**: Tracks 200-DMA direction changes with a 21-day "Confirmed Trend" trigger (🟢 BUY / 🔴 SELL).
 *   **core/portfolio_manager.py**: The Portfolio Hub. Handles multi-account consolidation and institutional enrichment.
 * **risk_workspace.py**: The Audit Terminal.       
+    * **Elegant Split Discovery**: Separates Fixed and Trailing stop strategies into dedicated modules with synced scrolling.
+    * **Adaptive Stacking Layout**: Automatically toggles between Horizontal and Vertical input containers based on screen width to prevent UI clipping.
     * **Institutional Sizing Discovery**: Added a **QTY** column to ATR Discovery tables, showing required shares for each volatility timeframe based on NAV limits.
     * **Persistent NAV Summary**: Displays total Portfolio NAV at the top of the screen for real-time risk sanity checks.
     * **Scrollable Context Sidebar**: Implements a high-water mark stable audit sidebar with scrollable roadmaps for 3-stage Scale-Ins.
@@ -49,7 +55,7 @@ This document provides a comprehensive technical and strategic overview of the T
 
 #### External Services (services/)
 *   **market_data_service.py**: The Data Pipeline. Performs optimized batch fetching from Yahoo Finance.
-*   **price_service.py**: The Price Hub. Manages local OHLCV caching and resampling.
+*   **price_service.py**: The Price Hub. Manages local OHLCV caching and technical indicator calculation (DMA/EMA).
 *   **ticker_mapper.py**: The Symbol Resolver. Maps symbols to Yahoo tickers using the DB-based **Asset Master**.
 *   **ibkr_parser.py**: The Translator. Interprets IBKR Flex CSVs (NAV, Trades, Transfers, Corp Actions) and ingests them into the ledger.
     * **Fingerprint De-duplication**: Uses multi-factor external IDs (TransactionID-AccountID-Side) to prevent collisions.
@@ -72,5 +78,4 @@ This document provides a comprehensive technical and strategic overview of the T
 *   **Startup:** smart_sync() ensures local config is up to date with OneDrive.
 *   **Exit:** backup mirrors logs and config to OneDrive automatically.
 *   **Risk Workspace:** Asynchronous background data fetching with instant multiplier (1.5) and percentage (10%) input parsing. Focus-optimized TAB navigation.
-*   **Dynamic Cockpit:** Supports in-memory **Sorting** (Keys 1-4) and **Mnemonic Filtering** (Keys: a, s, o, b, t). Uses high-contrast price highlighting (Bold Red/Green) to signal breaches or target achievements.    
-
+*   **Dynamic Cockpit:** Supports in-memory **Sorting** (Keys 1-4) and **Mnemonic Filtering** (Keys: a, s, o, b, t). Uses high-contrast price highlighting (Bold Red/Green) to signal breaches or target achievements.

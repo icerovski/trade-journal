@@ -168,3 +168,52 @@ class PriceService:
     def highest_high_since(self, conid: str, since: str, timeframe: str = 'daily'):
         df = self.get_prices(conid, start_date=since, timeframe=timeframe)
         return None if df.empty else df["High"].max()
+
+    def get_trend_analysis(self, conid: str, yf_ticker: str) -> dict:
+        """
+        Calculates the 200-DMA trend over the last 100 days.
+        Finds the consecutive undisturbed trend direction.
+        """
+        # Ensure we have the latest data
+        df = self.fetch_and_store(conid, yf_ticker)
+        
+        if df.empty or len(df) < 200:
+            return {"status": "INSUFFICIENT_DATA"}
+            
+        # 1. Calculate 200-DMA for trend engine
+        dma200 = df['Close'].rolling(window=200).mean()
+        recent_dma = dma200.tail(100).dropna()
+        
+        if len(recent_dma) < 2:
+            return {"status": "INSUFFICIENT_DATA"}
+            
+        diffs = recent_dma.diff().dropna()
+        current_direction = 1 if diffs.iloc[-1] > 0 else -1
+        consecutive_days = 0
+        for val in diffs.iloc[::-1]:
+            direction = 1 if val > 0 else -1
+            if direction == current_direction:
+                consecutive_days += 1
+            else:
+                break
+                
+        signal = "NEUTRAL"
+        if consecutive_days >= 21:
+            signal = "BUY" if current_direction == 1 else "SELL"
+            
+        # 2. Calculate Comprehensive Moving Averages (DMA & EMA)
+        # We'll return 200, 100, 50, 10 for both Simple and Exponential
+        tech = {}
+        for window in [200, 100, 50, 10]:
+            tech[f'DMA{window}'] = df['Close'].rolling(window=window).mean().iloc[-1]
+            tech[f'EMA{window}'] = df['Close'].ewm(span=window, adjust=False).mean().iloc[-1]
+            
+        return {
+            "status": "OK",
+            "dmas": tech, # tech contains both DMA and EMA now
+            "dma200_trend": {
+                "direction": "UP" if current_direction == 1 else "DOWN",
+                "consecutive_days": consecutive_days,
+                "signal": signal
+            }
+        }

@@ -201,6 +201,53 @@ class RiskEngine:
         
         return position
 
+    @staticmethod
+    def evaluate_confluence(price: float, stop_price: float, dmas: dict, atr: float) -> dict:
+        """
+        Evaluates Volatility-Adjusted Confluence based on Daily ATR.
+        """
+        if atr <= 0 or not dmas:
+            return {"strength": 0, "zones": []}
+            
+        confluence_zones = []
+        strength_score = 0
+        
+        for dma_name, dma_val in dmas.items():
+            # Check Entry Confluence
+            dist_to_price = abs(price - dma_val)
+            atr_dist_price = dist_to_price / atr
+            
+            if atr_dist_price < 0.25:
+                strength_score += 1
+                confluence_zones.append({
+                    "type": "ENTRY",
+                    "dma": dma_name,
+                    "dma_val": dma_val,
+                    "atr_distance": atr_dist_price,
+                    "pct_distance": (dist_to_price / price) * 100 if price > 0 else 0,
+                    "is_fortress": atr_dist_price < 0.10
+                })
+                
+            # Check Stop Confluence
+            dist_to_stop = abs(stop_price - dma_val)
+            atr_dist_stop = dist_to_stop / atr
+            
+            if atr_dist_stop < 0.25:
+                strength_score += 1
+                confluence_zones.append({
+                    "type": "STOP",
+                    "dma": dma_name,
+                    "dma_val": dma_val,
+                    "atr_distance": atr_dist_stop,
+                    "pct_distance": (dist_to_stop / stop_price) * 100 if stop_price > 0 else 0,
+                    "is_fortress": atr_dist_stop < 0.10
+                })
+                
+        return {
+            "strength": strength_score,
+            "zones": confluence_zones
+        }
+
 def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, qty=0.0, inst_multiplier=1.0, total_nav=0.0, max_r_pct=1.0, max_exp_pct=5.0):
     """
     Returns raw ATR analysis data for both FIXED and TRAILING stop types.
@@ -314,6 +361,8 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
                     qty=calc_qty
                 ))
             
+        trend_data = price_service.get_trend_analysis(conid if conid else f"PROSPECT:{ticker_symbol}", yf_ticker)
+
         return {
             'ticker': ticker_symbol,
             'entry_price': effective_entry,
@@ -321,7 +370,8 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
             'current_price': current_price,
             'rows': results,
             'max_r_pct': max_r_pct,
-            'max_exp_pct': max_exp_pct
+            'max_exp_pct': max_exp_pct,
+            'trend_data': trend_data
         }
     except Exception as e:
         logger.error(f"ATR Discovery Data Error: {e}")

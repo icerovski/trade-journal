@@ -78,7 +78,23 @@ class HelpScreen(ModalScreen):
             yield Label("Press ESC or F1 to Close", id="close-hint")
 
 # =============================================================================
-# 2. MAIN WORKSPACE APPLICATION
+# 2. UI COMPONENTS
+# =============================================================================
+class AdaptiveInputContainer(Container):
+    """
+    A container that swaps between horizontal and vertical layouts 
+    based on available width to prevent text clipping.
+    """
+    def on_resize(self, event) -> None:
+        if self.size.width < 100:  # Threshold for "small laptop screen"
+            self.styles.layout = "vertical"
+            self.styles.height = "auto"
+        else:
+            self.styles.layout = "horizontal"
+            self.styles.height = 3
+
+# =============================================================================
+# 3. MAIN WORKSPACE APPLICATION
 # =============================================================================
 class RiskWorkspace(App):
     TITLE = "RISK ASSIGNMENT WORKSPACE"
@@ -105,16 +121,24 @@ class RiskWorkspace(App):
         height: 60%;
         border: solid $secondary;
         background: $surface-darken-2;
+        overflow-y: scroll;
+        scrollbar-gutter: stable;
     }
     
     #discovery-layout { 
         height: 40%;
         border: solid $secondary;
         background: $surface-darken-2;
+        scrollbar-gutter: stable;
+        overflow-y: scroll;
+        scrollbar-size: 1 1;
     }
     
-    #atr-discovery-table {
+    #fixed-stop-table, #trailing-stop-table {
         height: auto;
+        overflow-x: hidden;
+        overflow-y: hidden;
+        min-height: 0;
     }
     
     .base-price-label { background: $surface-lighten-1; color: $accent; text-align: center; text-style: bold; height: 1; }
@@ -125,12 +149,29 @@ class RiskWorkspace(App):
         color: $text; 
     }
     
-    #strategy-lab { border-top: solid $secondary; background: $surface-lighten-1; height: 6; padding: 0 1; }
-    #lab-inputs { height: 3; margin-top: 0; }
-    #discover-input { width: 1fr; }
-    #atr-input { width: 2fr; }
+    #strategy-lab { 
+        border-top: solid $secondary; 
+        background: $surface-lighten-1; 
+        height: auto; 
+        min-height: 6;
+        padding: 0 1; 
+    }
+    #lab-inputs { 
+        margin-top: 0;
+    }
+    #discover-input { width: 1fr; min-width: 20; }
+    #atr-input { width: 2fr; min-width: 40; }
     #help-modal { background: $surface-darken-3; border: tall $accent; width: 80%; height: 80%; padding: 1 2; align: center middle; margin: 5 10; }
     #close-hint { text-align: center; color: $text-muted; margin-top: 1; }
+    
+    .table-section-label {
+        background: $surface-lighten-1;
+        color: $text;
+        padding: 0 1;
+        text-style: bold;
+        margin-top: 0;
+        width: 100%;
+    }
     """
 
     BINDINGS = [
@@ -166,21 +207,30 @@ class RiskWorkspace(App):
                 yield DataTable(id="portfolio-table")
                 with Vertical(id="strategy-lab"):
                     yield Label("RISK STRATEGY & TICKER DISCOVERY", classes="panel-header")
-                    with Horizontal(id="lab-inputs"):
-                        yield Input(placeholder="Discover Ticker (e.g. NVDA)", id="discover-input")
-                        yield Input(placeholder="[SL %] [F/T] [S] [Step] [R:MaxR] [E:MaxExp] (Enter: Model | Ctrl+Enter: Save)", id="atr-input")
+                    with AdaptiveInputContainer(id="lab-inputs"):
+                        yield Input(
+                            placeholder="Discover Ticker (e.g. NVDA)", 
+                            id="discover-input"
+                        )
+                        yield Input(
+                            placeholder="[SL %] [F/T] [S] [Step] [R:MaxR] [E:MaxExp] (Enter: Model | Ctrl+Enter: Save)", 
+                            id="atr-input"
+                        )
             with Vertical(id="right-pane"):
                 yield Label("ASSET CONTEXT & RISK AUDIT", classes="panel-header")
                 with ScrollableContainer(id="sidebar-scroll"):
                     yield Static("Select a position...", id="position-context")
                 
-                yield Label("ATR DISCOVERY", classes="panel-header")
+                yield Label("ATR DISCOVERY & CONFLUENCE", classes="panel-header")
                 with ScrollableContainer(id="discovery-layout"):
-                    yield DataTable(id="atr-discovery-table")
+                    yield Label("[bold cyan]FIXED STOP | BASE: ENTRY[/]", classes="table-section-label", id="fixed-label")
+                    yield DataTable(id="fixed-stop-table")
+                    yield Label("[bold magenta]TRAILING STOP | BASE: HIGH[/]", classes="table-section-label", id="trailing-label")
+                    yield DataTable(id="trailing-stop-table")
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#portfolio-table")
+        table = self.query_one("#portfolio-table", DataTable)
         table.cursor_type = "row"
         table.add_column("TICKER", key="col_ticker")
         table.add_column("STOP BASE", key="col_base")
@@ -193,9 +243,17 @@ class RiskWorkspace(App):
         table.add_column("R", key="col_r")
         table.add_column("RR", key="col_rr")
         
-        atr_table = self.query_one("#atr-discovery-table")
-        atr_table.can_focus = False
-        atr_table.add_columns("WIN", "ATR (SMA)", "STOP", "SL% (SMA)", "QTY", "P/L", "R", "BUF%")
+        # Setup Fixed Stop Table
+        table_f = self.query_one("#fixed-stop-table", DataTable)
+        table_f.can_focus = False
+        for col, key in [("WIN", "f_win"), ("ATR(W)", "f_atr_w"), ("SL%(W)", "f_sl_w"), ("ATR(S)", "f_atr_s"), ("SL%(S)", "f_sl_s"), ("STOP", "f_stop"), ("QTY", "f_qty"), ("P/L", "f_pl"), ("R", "f_r"), ("BUF%", "f_buf")]:
+            table_f.add_column(col, key=key, width=(10 if col == "WIN" else None))
+
+        # Setup Trailing Stop Table
+        table_t = self.query_one("#trailing-stop-table", DataTable)
+        table_t.can_focus = False
+        for col, key in [("WIN", "t_win"), ("ATR(W)", "t_atr_w"), ("SL%(W)", "t_sl_w"), ("ATR(S)", "t_atr_s"), ("SL%(S)", "t_sl_s"), ("STOP", "t_stop"), ("QTY", "t_qty"), ("P/L", "t_pl"), ("R", "t_r"), ("BUF%", "t_buf")]:
+            table_t.add_column(col, key=key, width=(10 if col == "WIN" else None))
         
         self.load_portfolio()
 
@@ -212,10 +270,10 @@ class RiskWorkspace(App):
         # Update high-level summary
         self.query_one("#portfolio-summary", Label).update(f"PORTFOLIO NAV: [bold]{self.total_nav:,.2f} {self.nav_ccy}[/]")
         
-        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True)
+        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True)
         if self.enriched_data.empty:
             return
-        table = self.query_one("#portfolio-table")
+        table = self.query_one("#portfolio-table", DataTable)
         table.clear()
         for _, row in self.enriched_data.sort_values("Ticker").iterrows():
             conid_str = str(row['conid'])
@@ -280,14 +338,15 @@ class RiskWorkspace(App):
         conid = event.row_key.value
         self.current_conid = conid
         try:
-            self.query_one("#discover-input").value = ""
+            self.query_one("#discover-input", Input).value = ""
         except Exception:
             pass
         self.refresh_risk_checklist() 
         if conid in self.discovery_cache:
             self.update_discovery_ui(conid, self.discovery_cache[conid])
         else:
-            self.query_one("#atr-discovery-table").clear()
+            self.query_one("#fixed-stop-table", DataTable).clear()
+            self.query_one("#trailing-stop-table", DataTable).clear()
             self.fetch_atr_data(conid)
 
     def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_entry_type: Optional[str] = None, hypo_scale_step: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None) -> None:
@@ -393,7 +452,7 @@ class RiskWorkspace(App):
         if message.conid == self.current_conid:
             self.update_discovery_ui(message.conid, message.data)
             self.refresh_risk_checklist()
-            if self.query_one("#atr-input").value:
+            if self.query_one("#atr-input", Input).value:
                 self.on_strategy_change()
 
     def update_discovery_ui(self, conid: str, data: dict) -> None:
@@ -401,34 +460,55 @@ class RiskWorkspace(App):
         if conid != self.current_conid:
             return
             
-        table = self.query_one("#atr-discovery-table")
-        table.clear()
+        table_f = self.query_one("#fixed-stop-table", DataTable)
+        table_t = self.query_one("#trailing-stop-table", DataTable)
+        table_f.clear()
+        table_t.clear()
         
-        # Section 1: FIXED STOP
-        table.add_row(f"[bold cyan]Fixed Stop (Protection) | Base: {data['entry_price']:,.2f}[/]", "", "", "", "", "", "", "")
-        for r in [r for r in data['rows'] if r.stop_type == "FIXED"]:
-            m_r = data.get('max_r_pct', 1.0)
-            r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
-            row_vals = (r.label, f"{r.atr_wilder:.2f}", f"{r.stop_price:,.2f}", f"{r.atr_base_pct:.1f}%", f"{int(r.qty)}", f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%")
-            table.add_row(*row_vals)
+        m_r = data.get('max_r_pct', 1.0)
+        
+        # Update dynamic labels with base prices
+        self.query_one("#fixed-label").update(f"[bold cyan]FIXED STOP | BASE: ENTRY ({data['entry_price']:,.2f})[/]")
+        self.query_one("#trailing-label").update(f"[bold magenta]TRAILING STOP | BASE: HIGH ({data['max_price']:,.2f})[/]")
 
-        # Spacer
-        table.add_row("", "", "", "", "", "", "", "")
+        # Section 1: FIXED STOP
+        for r in [r for r in data['rows'] if r.stop_type == "FIXED"]:
+            r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
+            # Calculate SMA SL% relative to Entry
+            sma_sl_pct = (r.atr_sma / data['entry_price'] * 100) if data['entry_price'] > 0 else 0
+            
+            row_vals = (
+                r.label, 
+                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%", 
+                f"{r.atr_sma:.2f}", f"{sma_sl_pct:.1f}%",
+                f"{r.stop_price:,.2f}", f"{int(r.qty)}", 
+                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", 
+                f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%"
+            )
+            table_f.add_row(*row_vals)
 
         # Section 2: TRAILING STOP
-        table.add_row(f"[bold cyan]Trailing Stop (Profit Harvest) | Base: {data['max_price']:,.2f}[/]", "", "", "", "", "", "", "")
         for r in [r for r in data['rows'] if r.stop_type == "TRAILING"]:
-            m_r = data.get('max_r_pct', 1.0)
             r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
-            row_vals = (r.label, f"{r.atr_wilder:.2f}", f"{r.stop_price:,.2f}", f"{r.atr_base_pct:.1f}%", f"{int(r.qty)}", f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%")
-            table.add_row(*row_vals)
+            # Calculate SMA SL% relative to Max High
+            sma_sl_pct = (r.atr_sma / data['max_price'] * 100) if data['max_price'] > 0 else 0
+            
+            row_vals = (
+                r.label, 
+                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%", 
+                f"{r.atr_sma:.2f}", f"{sma_sl_pct:.1f}%",
+                f"{r.stop_price:,.2f}", f"{int(r.qty)}", 
+                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", 
+                f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%"
+            )
+            table_t.add_row(*row_vals)
 
     @on(Input.Submitted, "#discover-input")
     def on_discover_submitted(self) -> None:
-        ticker = self.query_one("#discover-input").value.strip().upper()
+        ticker = self.query_one("#discover-input", Input).value.strip().upper()
         if not ticker:
             return
-        table = self.query_one("#portfolio-table")
+        table = self.query_one("#portfolio-table", DataTable)
         for r_key in table.rows:
             row_data = self.enriched_data[self.enriched_data['conid'].astype(str) == r_key.value] if not self.enriched_data.empty else pd.DataFrame()
             if not row_data.empty and row_data.iloc[0]['Ticker'] == ticker:
@@ -457,7 +537,7 @@ class RiskWorkspace(App):
     def on_strategy_change(self) -> None:
         if not self.current_conid:
             return
-        raw = self.query_one("#atr-input").value.strip().upper()
+        raw = self.query_one("#atr-input", Input).value.strip().upper()
         if not raw:
             if self.current_conid in self.drafts:
                 del self.drafts[self.current_conid]
@@ -519,7 +599,7 @@ class RiskWorkspace(App):
             risk_v = (sl_p - hypo_entry) * calc_q * pos.multiplier
             hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
             
-            table = self.query_one("#portfolio-table")
+            table = self.query_one("#portfolio-table", DataTable)
             t_pfx = f"[{s_type[:1]}{'/S' if e_type == 'SCALE_IN' else ''}]"
             display_ticker = f"[bold yellow]* {'[PROSPECT]' if str(self.current_conid).startswith('PROSPECT:') else t_pfx} {pos.ticker}"
             if hypo_r > m_r or (calc_q * cur_p_d * pos.multiplier / self.total_nav * 100) > m_e:
@@ -547,8 +627,8 @@ class RiskWorkspace(App):
                 d = self.drafts[self.current_conid]
                 set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True)
                 self.notify(f"COMMITTED: {d['ticker']}")
-                self.query_one("#atr-input").value = ""
-                self.query_one("#discover-input").value = ""
+                self.query_one("#atr-input", Input).value = ""
+                self.query_one("#discover-input", Input).value = ""
                 self.load_portfolio()
                 self.query_one("#portfolio-table").focus()
 
@@ -560,7 +640,7 @@ class RiskWorkspace(App):
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
         self.drafts.clear()
         self.load_portfolio()
-        self.query_one("#atr-input").value = ""
+        self.query_one("#atr-input", Input).value = ""
 
     def action_refresh(self) -> None:
         self.discovery_cache.clear()

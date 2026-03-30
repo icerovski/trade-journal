@@ -140,7 +140,15 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
 
 def get_watch_list_profiles():
     conn = get_conn()
-    cursor = conn.execute("SELECT conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct FROM risk_profiles WHERE status = 'WATCH'")
+    cursor = conn.execute("SELECT conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status FROM risk_profiles WHERE status = 'WATCH'")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_all_monitored_profiles():
+    """Retrieves all risk profiles with status 'WATCH' or 'ACTIVE'."""
+    conn = get_conn()
+    cursor = conn.execute("SELECT conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status FROM risk_profiles WHERE status IN ('WATCH', 'ACTIVE') ORDER BY ticker ASC")
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -254,3 +262,17 @@ def get_yf_ticker(ticker_ibkr):
     row = cursor.fetchone()
     conn.close()
     return row['ticker_yfinance'] if row else None
+
+def get_asset_details_from_trades(conid):
+    """
+    Returns asset metadata (isin, category, etc) from ticker_info for a conid.
+    Note: Function name is legacy; metadata now resides primarily in ticker_info Asset Master.
+    """
+    conn = get_conn()
+    cursor = conn.execute("""
+        SELECT isin, asset_class as asset_category, listing_exchange, currency, underlying_symbol 
+        FROM ticker_info WHERE conid = ?
+    """, (str(conid),))
+    row = cursor.fetchone()
+    conn.close()
+    return row

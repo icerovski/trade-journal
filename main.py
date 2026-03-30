@@ -191,53 +191,9 @@ def handle_kids_fund():
     run_kids_fund_dashboard()
 
 def handle_watch_list():
-    """Interactive management of the Watch List."""
-    from db import get_watch_list_profiles, delete_risk_profile
-    while True:
-        console.print("\n[bold yellow]--- WATCH LIST PROSPECTS ---[/bold yellow]")
-        prospects = get_watch_list_profiles()
-        if not prospects:
-            console.print("[dim]Your watch list is currently empty. Add prospects in the Risk Workspace.[/dim]")
-            input("\nPress Enter to return...")
-            break
-
-        from rich.table import Table
-        from rich import box
-        
-        table = Table(box=box.SIMPLE_HEAD)
-        table.add_column("ID", style="dim")
-        table.add_column("TICKER", style="cyan")
-        table.add_column("ATR", justify="right")
-        table.add_column("TYPE", justify="center")
-        table.add_column("STRATEGY", justify="center")
-        table.add_column("STEP", justify="right")
-
-        # Map for deletion
-        id_map = {}
-        for i, p in enumerate(prospects, 1):
-            table.add_row(
-                str(i),
-                str(p['ticker']),
-                f"{p['atr_value']:.2f}",
-                str(p['stop_type'])[:1],
-                "Pilot" if p['entry_type'] == 'SCALE_IN' else "Single",
-                f"{p['scale_step']}x"
-            )
-            id_map[str(i)] = p['conid']
-        
-        console.print(table)
-        console.print("\nOptions: [bold]D[/bold]elete ID, [bold]B[/bold]ack")
-        opt = input("Choice: ").strip().upper()
-        
-        if opt == 'D':
-            idx = input("Enter ID to delete: ").strip()
-            if idx in id_map:
-                delete_risk_profile(id_map[idx])
-                console.print(f"[green]Deleted prospect {idx}[/green]")
-            else:
-                console.print("[red]Invalid ID.[/red]")
-        elif opt == 'B' or not opt:
-            break
+    """Interactive management of the Watch List via Textual Workspace."""
+    from watch_list_workspace import run_watch_list_workspace
+    run_watch_list_workspace()
 
 def main():
     sync_config.smart_sync()
