@@ -49,19 +49,24 @@ def print_watch_list_summary():
     
     console.print(table)
 
-def show_menu():
+def show_menu(nav_info=None):
     menu_text = Text()
     menu_text.append("\n[1] ", style="bold green")
     menu_text.append("SYNC ALL         ", style="bold white")
     menu_text.append("(IBKR Fetch + Ledger Update + Price Sync)\n", style="dim")
     
+    nav_display = ""
+    if nav_info:
+        nav_val, nav_ccy, _, _ = nav_info
+        nav_display = f" [bold cyan](AUM: {nav_val:,.0f} {nav_ccy})[/]"
+
     menu_text.append("[2] ", style="bold yellow")
     menu_text.append("RISK WORKSPACE   ", style="bold white")
-    menu_text.append("(ATR Discovery, Risk Audit, Strategy Lab)\n", style="dim")
+    menu_text.append(f"(ATR Discovery, Risk Audit, Strategy Lab){nav_display}\n", style="dim")
     
     menu_text.append("[3] ", style="bold cyan")
     menu_text.append("VIEW DASHBOARD   ", style="bold white")
-    menu_text.append("(Performance & Risk Monitoring)\n", style="dim")
+    menu_text.append(f"(Performance & Risk Monitoring){nav_display}\n", style="dim")
     
     menu_text.append("[4] ", style="bold yellow")
     menu_text.append("KIDS FUND        ", style="bold white")
@@ -198,11 +203,15 @@ def handle_watch_list():
 def main():
     sync_config.smart_sync()
     init_db()
+    manager = PortfolioManager()
+    nav_info = manager.fetch_nav_data()
+    
     while True:
-        show_menu()
+        show_menu(nav_info)
         choice = input("\nSelect option: ").strip()
         if choice == '1':
             handle_sync_all()
+            nav_info = manager.fetch_nav_data() # Refresh after sync
         elif choice == '2':
             handle_atr_calculator()
         elif choice == '3':

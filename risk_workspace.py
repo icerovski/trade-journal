@@ -130,15 +130,16 @@ class RiskWorkspace(App):
         border: solid $secondary;
         background: $surface-darken-2;
         scrollbar-gutter: stable;
-        overflow-y: scroll;
-        scrollbar-size: 1 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-size: 2 2;
     }
     
     #fixed-stop-table, #trailing-stop-table {
         height: auto;
-        overflow-x: hidden;
-        overflow-y: hidden;
-        min-height: 0;
+        width: 100%;
+        min-height: 5;
+        overflow-x: scroll;
     }
     
     .base-price-label { background: $surface-lighten-1; color: $accent; text-align: center; text-style: bold; height: 1; }
@@ -261,8 +262,7 @@ class RiskWorkspace(App):
         """Syncs Ledger and calculates metrics, including Stop-Breach signals."""
         nav_res = self.pm.fetch_nav_data()
         if nav_res:
-            self.total_nav = nav_res[0]
-            self.nav_ccy = nav_res[1]
+            self.total_nav, self.nav_ccy, _, _ = nav_res
         else:
             self.total_nav = 0.0
             self.nav_ccy = "???"

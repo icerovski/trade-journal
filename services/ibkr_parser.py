@@ -356,11 +356,11 @@ class IBKRParser:
     @staticmethod
     def parse_nav_csv(file_path):
         """
-        Parses an IBKR Equity Summary CSV and returns (total_nav, account_list, report_date).
+        Parses an IBKR Equity Summary CSV and returns (total_nav, currency, account_list, report_date).
         Supports both Flex sections and flat CSVs with repeated headers.
         """
         if not file_path or not Path(file_path).exists():
-            return 0.0, [], "Unknown"
+            return 0.0, "???", [], "Unknown"
 
         try:
             # Load CSV - do not skip rows, handle repeated headers manually
@@ -383,7 +383,7 @@ class IBKRParser:
             
             if nav_rows.empty:
                 logger.warning(f"No NAV data found in {file_path}")
-                return 0.0, [], "Unknown"
+                return 0.0, "???", [], "Unknown"
 
             # Ensure numeric
             nav_rows = nav_rows.copy()
@@ -392,7 +392,13 @@ class IBKRParser:
             
             total_nav = nav_rows['Total'].sum()
             
-            # Extract ReportDate (normalize to string)
+            # Extract Currency and ReportDate
+            nav_ccy = "???"
+            if 'CurrencyPrimary' in nav_rows.columns:
+                valid_ccy = nav_rows['CurrencyPrimary'].dropna()
+                if not valid_ccy.empty:
+                    nav_ccy = str(valid_ccy.iloc[0])
+
             report_date = "Unknown"
             if 'ReportDate' in nav_rows.columns:
                 valid_dates = nav_rows['ReportDate'].dropna()
@@ -410,8 +416,8 @@ class IBKRParser:
                         'nav': float(row.get('Total', 0))
                     })
             
-            logger.info(f"Parsed NAV: {total_nav:,.2f} for date {report_date} from {len(accounts)} accounts.")
-            return total_nav, accounts, report_date
+            logger.info(f"Parsed NAV: {total_nav:,.2f} {nav_ccy} for date {report_date} from {len(accounts)} accounts.")
+            return total_nav, nav_ccy, accounts, report_date
         except Exception as e:
             logger.error(f"ERROR: IBKR NAV CSV Parsing Error: {e}")
-            return 0.0, [], "Unknown"
+            return 0.0, "???", [], "Unknown"

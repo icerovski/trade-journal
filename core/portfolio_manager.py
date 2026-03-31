@@ -220,6 +220,6 @@ class PortfolioManager:
         
         file_path = download_flex_report(IBKR_QUERY_ID_NAV, IBKR_NAV_CSV, force_download=force_download)
         if not file_path:
-            return None
+            return 0.0, "???", [], "Unknown"
         
         return IBKRParser.parse_nav_csv(file_path)

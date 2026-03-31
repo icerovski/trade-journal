@@ -174,7 +174,10 @@ class TradingCockpit(App):
             disable_console_logging()
             
             nav_res = self.pm.fetch_nav_data(force_download=False)
-            real_nav, _, r_date = nav_res if nav_res else (0.0, [], "---")
+            if nav_res:
+                real_nav, _, _, r_date = nav_res
+            else:
+                real_nav, _, _, r_date = 0.0, "???", [], "---"
             
             # Always fetch ALL to allow dynamic in-memory filtering.
             df, _ = self.pm.get_dashboard_df(
@@ -347,14 +350,14 @@ def print_nav_table(portfolio_manager, force_download=False):
     data = portfolio_manager.fetch_nav_data(force_download=force_download)
     if not data:
         return 0.0
-    total, accounts, report_date = data
+    total, nav_ccy, accounts, report_date = data
     table = Table(box=box.SIMPLE_HEAD, title=f"[bold]ACCOUNT BALANCES (IBKR {report_date})[/bold]")
     table.add_column("ALIAS", style="cyan")
     table.add_column("NAV", justify="right", style="green")
     for a in accounts:
-        table.add_row(str(a['alias']), f"€{a['nav']:,.2f}")
+        table.add_row(str(a['alias']), f"{a['nav']:,.2f} {nav_ccy}")
     table.add_section()
-    table.add_row("TOTAL", f"€{total:,.2f}")
+    table.add_row("TOTAL", f"{total:,.2f} {nav_ccy}")
     from rich.console import Console
     Console().print(table)
     return total

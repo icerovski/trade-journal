@@ -70,7 +70,7 @@ class KidsFundDashboard(App):
     def action_refresh(self) -> None:
         """Reloads all data and refreshes UI."""
         # 1. Fetch Account NAV and Holdings
-        nav_total, accounts, _ = self.pm.fetch_nav_data()
+        nav_total, _, accounts, _ = self.pm.fetch_nav_data()
         kids_account_nav = next((a['nav'] for a in accounts if str(a['alias']) == KIDS_ACCOUNT_ID), 0.0)
         
         # Filter main dashboard logic for just this account
