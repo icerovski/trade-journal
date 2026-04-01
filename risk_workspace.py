@@ -113,12 +113,12 @@ class RiskWorkspace(App):
     }
 
     #main-layout { layout: horizontal; height: 1fr; }
-    #left-pane { width: 60%; height: 1fr; border-right: tall $primary; padding-right: 1; }
-    #right-pane { width: 40%; height: 1fr; padding-left: 1; }
+    #left-pane { width: 55%; height: 1fr; border-right: tall $primary; padding-right: 1; }
+    #right-pane { width: 45%; height: 1fr; padding-left: 1; }
     #portfolio-table { height: 1fr; }
     
     #sidebar-scroll {
-        height: 60%;
+        height: 55%;
         border: solid $secondary;
         background: $surface-darken-2;
         overflow-y: scroll;
@@ -126,7 +126,7 @@ class RiskWorkspace(App):
     }
     
     #discovery-layout { 
-        height: 40%;
+        height: 45%;
         border: solid $secondary;
         background: $surface-darken-2;
         scrollbar-gutter: stable;
@@ -386,46 +386,63 @@ class RiskWorkspace(App):
             atr_width = hypo_atr or pos.atr
             efficiency = ( (effective_stop+(3*atr_width)-cur_p)/(cur_p-effective_stop) if cur_p>effective_stop else 0)
             
-            status_display = res['status_color']
+            status_display = f"[bold green]{res['status_color']}[/]"
             if res['status_color'] == "RED":
                 status_display = f"[on red][bold white] {res['status_color']} [/][/]"
             elif res['status_color'] == "YELLOW":
                 status_display = f"[bold yellow]{res['status_color']}[/]"
-            else:
-                status_display = f"[bold green]{res['status_color']}[/]"
 
-            # Action / Target Logic
-            if active_qty == 0:
-                restriction = "Risk" if res['risk_budget_rem'] < res['exposure_budget_rem'] else "Exposure"
-                action_text = f"[bold reverse cyan] PROPOSED BUY: {int(res['adjustment'])} SHARES [/]\n[dim](Limit: {restriction} | R:{active_max_r}% E:{active_max_exp}%)[/]"
-            else:
-                action_text = ('[bold red]STOP BREACHED. EXIT POSITION.[/]' if res['is_breached'] else (f'Room to add [bold]+{int(res['adjustment'])}[/] shares' if res['adjustment'] > 0 else (f'Trim by [bold]{int(abs(res['adjustment']))}[/] shares' if res['adjustment'] < 0 else '[bold]Max limit reached[/]')))
-
-            audit_content = f"STATUS: {status_display}\n  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n  - Action: {action_text}"
-            
+            # 2. Execution Strategy
             atr_v = hypo_atr if hypo_atr is not None else pos.atr
-            if atr_v > 0:
-                daily_atr = atr_v
-                if disc and disc['rows']:
-                    daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), atr_v)
-                
-                pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp)
-                entry_t = (hypo_entry_type or pos.entry_type)
+            daily_atr = atr_v
+            if disc and disc['rows']:
+                daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), atr_v)
+            
+            pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp)
+            entry_t = (hypo_entry_type or pos.entry_type)
+            
+            # 3. Build Unified Execution Content
+            if res['is_breached']:
+                exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
+            else:
                 if entry_t == 'SCALE_IN':
                     s2_add = max(0, int(pilot['full_target_qty'] * 2/3) - int(pos.qty))
                     s3_add = max(0, int(pilot['full_target_qty']) - (int(pos.qty) + s2_add))
-                    roadmap_content = f"  - Current:   {int(pos.qty)} sh (@ {active_entry:,.2f})\n  - [dim green]{'✓' if s2_add<=0 else ' '} Stage 2 @:  {pilot['stage2_price']:,.2f}[/] {'(Add +'+str(s2_add)+' sh)' if s2_add>0 else '(Filled)'}\n  - [dim green]{'✓' if s3_add<=0 else ' '} Stage 3 @:  {pilot['stage3_price']:,.2f}[/] {'(Add +'+str(s3_add)+' sh)' if s3_add>0 else '(Filled)'}\n  - [cyan]Target Outlay: {pilot['scale_in_outlay']:,.0f} {pos.ccy}[/]\n  - [yellow]Remaining Cap: {max(0, pilot['scale_in_outlay'] - (pos.qty * active_entry * pos.multiplier)):,.0f} {pos.ccy}[/]"
+                    exec_plan = (
+                        f"  - [dim green]{'✓' if s2_add<=0 else ' '} Stage 2 @:  {pilot['stage2_price']:,.2f}[/] {'(Add +'+str(s2_add)+' sh)' if s2_add>0 else '(Filled)'}\n"
+                        f"  - [dim green]{'✓' if s3_add<=0 else ' '} Stage 3 @:  {pilot['stage3_price']:,.2f}[/] {'(Add +'+str(s3_add)+' sh)' if s3_add>0 else '(Filled)'}"
+                    )
                 else:
-                    roadmap_content = f"  - Current:   {int(pos.qty)} sh (@ {active_entry:,.2f})\n  - Target:    {pilot['full_target_qty']} sh ({active_max_exp}% Exp Limit)\n  - [cyan]Target Outlay: {pilot['single_outlay']:,.0f} {pos.ccy}[/]\n  - [yellow]Remaining Cap: {max(0, (pilot['full_target_qty'] - pos.qty) * cur_p * pos.multiplier):,.0f} {pos.ccy}[/]"
-                
-                pilot_content = f"--------------------------------------\nPOSITION ROADMAP:{' [bold yellow](STAGE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n{roadmap_content}\n  - Pilot Stop: [bold]{pilot['stop']:,.2f}[/] (assigned ATR)\n  - Scale Step: [bold]{(hypo_scale_step or pos.scale_step)}x ATR[/]"
-        
+                    room = int(res['adjustment'])
+                    if room > 0:
+                        exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {int(pilot['full_target_qty'])} sh)"
+                    elif room < 0:
+                        exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"
+                    else:
+                        exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
+
+            # 4. Final Layout Assembly
+            audit_content = (
+                f"STATUS: {status_display}\n"
+                f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
+                f"  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n"
+                f"  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n"
+                f"--------------------------------------\n"
+                f"EXECUTION PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
+                f"{exec_plan}\n"
+                f"  - Target Outlay: {pilot['scale_in_outlay'] if entry_t=='SCALE_IN' else pilot['single_outlay']:,.0f} {pos.ccy}\n"
+                f"  - Remaining Cap: {max(0, (pilot['full_target_qty'] - pos.qty) * cur_p * pos.multiplier):,.0f} {pos.ccy}\n"
+                f"  - Pilot Stop:    [bold]{pilot['stop']:,.2f}[/]"
+            )
+            if entry_t == 'SCALE_IN':
+                audit_content += f"\n  - Scale Step:    [bold]{(hypo_scale_step or pos.scale_step)}x ATR[/]"
+
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"
         audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})\nINCEPTION: [bold cyan]{incep_str}[/]"
         if is_modeling:
             audit_header = "[bold reverse yellow] MODELING STRATEGY [/]\n" + audit_header
             
-        audit_text = f"{audit_header}\n--------------------------------------\nINTEGRITY: {integ_content}\n--------------------------------------\nDUAL-AUDIT:\n{audit_content}{pilot_content}"
+        audit_text = f"{audit_header}\n--------------------------------------\nINTEGRITY: {integ_content}\n--------------------------------------\n{audit_content}"
         self.query_one("#position-context", Static).update(audit_text)
 
     @work(exclusive=True, thread=True)
@@ -559,11 +576,19 @@ class RiskWorkspace(App):
             if e_m:
                 m_e = float(e_m.group(1))
                 raw = raw.replace(e_m.group(0), "").strip()
-            s_m = re.search(r"\bS\s*([0-9\.]*)", raw)
-            if s_m:
-                e_type = "SCALE_IN"
-                step = float(s_m.group(1)) if s_m.group(1) else step
-                raw = raw.replace(s_m.group(0), "").strip()
+            
+            # 1. Handle S0 / Scale-In Explicitly
+            if "S0" in raw:
+                e_type = "STANDARD"
+                raw = raw.replace("S0", "").strip()
+            else:
+                s_m = re.search(r"\bS\s*([0-9\.]*)", raw)
+                if s_m:
+                    val = s_m.group(1)
+                    e_type = "SCALE_IN"
+                    step = float(val) if val else step
+                    raw = raw.replace(s_m.group(0), "").strip()
+            
             if 'T' in raw:
                 s_type = "TRAILING"
                 raw = raw.replace('T', "").strip()

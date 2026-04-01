@@ -10,37 +10,37 @@ This document provides a comprehensive technical and strategic overview of the T
 *   **Institutional Consolidation:** Positions are consolidated across all accounts by default to provide a unified portfolio view.
 *   **Cost Basis Healing:** Recovers historical entry prices from the global ledger when broker snapshots are incomplete or accounts differ.
 *   **Reset-on-Zero:** When a position's quantity hits zero, its cost basis is wiped, allowing for a clean re-entry tracking.
-*   **Docs-as-Code:** Risk procedures and session logs are integrated as metadata-rich documentation. 
+*   **Docs-as-Code:** Risk procedures and session logs are integrated as metadata-rich documentation.
 *   **Learning-as-Systems:** Contains a built-in "Advanced Python Systems" course using the project as source material.
 
 ## 2. Technical Architecture
 
 ### Core Stack
-*   **Language:** Python 3 (managed via uv)        
+*   **Language:** Python 3 (managed via uv)
 *   **Databases:**
     *   trade_journal.db: Primary ledger, historical **Risk Profiles**, and the **Asset Master (ticker_info)**. Derived exclusively from broker data (Single Source of Truth).
     *   prices.db: Persistent historical price/volume cache (OneDrive).
 *   **Data Processing:** pandas and numpy
-*   **Market Data:** yfinance with local caching.  
-*   **UI/CLI:** Textual for the non-blocking Trading Cockpit and the interactive **Risk Workspace**.  
+*   **Market Data:** yfinance with local caching.
+*   **UI/CLI:** Textual for the non-blocking Trading Cockpit and the interactive **Risk Workspace**.
 
 ### Module Structure
 #### Orchestration
 *   **main.py**: The Entry Point. Implements a Minimalist CLI (Sync All, Risk Workspace, View Dashboard, Kids Fund, Maintenance, Watch List).
-*   **watch_list_workspace.py**: The Technical Audit Desk. 
+*   **watch_list_workspace.py**: The Technical Audit Desk.
     * **Comprehensive Confluence Audit**: Evaluates distances between Price/Stops and 8 indicators (EMA/DMA 200, 100, 50, 10).
     * **Volatility-Adjusted Proximity**: Measures confluence zones in Daily ATR units (< 0.25R) to ensure cross-asset mathematical consistency.
     * **Undisturbed Trend Engine**: Tracks 200-DMA direction changes with a 21-day "Confirmed Trend" trigger (🟢 BUY / 🔴 SELL).
 *   **core/portfolio_manager.py**: The Portfolio Hub. Handles multi-account consolidation and institutional enrichment.
-* **risk_workspace.py**: The Audit Terminal.       
-    * **Elegant Split Discovery**: Separates Fixed and Trailing stop strategies into dedicated modules with synced scrolling.
-    * **Adaptive Stacking Layout**: Automatically toggles between Horizontal and Vertical input containers based on screen width to prevent UI clipping.
+* **risk_workspace.py**: The Audit Terminal.
+    * **Unified Execution Desk**: Merges Risk Audit and Roadmap planning into a single "Institutional Execution Desk." Forced mathematical alignment between compliance checks and stage-based milestones.
+    * **Synchronized Price Anchoring**: Both compliance and planning use the **Current Market Price** as the primary anchor for "Shares to Add" calculations, bypassing legacy inception price confusion.
+    * **Institutional Strategy Lab**: Supports the **`S0`** flag to explicitly disable Scale-In steps and revert to a Standard entry type with a single target.
+    * **Optimized Layout Split**: Implements a **55/45** horizontal and vertical distribution to maximize information density on professional-grade monitors.
     * **Institutional Sizing Discovery**: Added a **QTY** column to ATR Discovery tables, showing required shares for each volatility timeframe based on NAV limits.
     * **Persistent NAV Summary**: Displays total Portfolio NAV at the top of the screen for real-time risk sanity checks.
-    * **Scrollable Context Sidebar**: Implements a high-water mark stable audit sidebar with scrollable roadmaps for 3-stage Scale-Ins.
-    * **Modular Strategy Lab**: Supports partial updates (e.g., `R:0.5` or `15 T`) using sticky defaults.
     * **Dual-Constraint Auditing**: Evaluates both Risk-at-Stop and Capital Exposure limits.
-*   **dashboard.py**: The Trading Cockpit. Implements a 60s background refresh and high-visibility breach indicators (Price cell highlighting) to match the Audit Terminal's rigor.     
+*   **dashboard.py**: The Trading Cockpit. Implements a 60s background refresh and high-visibility breach indicators (Price cell highlighting) to match the Audit Terminal's rigor.
 
 #### Learning & Development
 * **course/**: A standalone curriculum for rebuilding the system from scratch to teach advanced Python and Algorithm concepts.
@@ -62,15 +62,15 @@ This document provides a comprehensive technical and strategic overview of the T
     * **Bond Point Correction**: Automatically scales transfer-derived prices by 100x to maintain standard "Percentage of Par" pricing.
 
 ## 3. Data Management
-*   **Price Persistence**: OHLCV data is indexed by (Conid, Date) in the persistent prices.db.        
+*   **Price Persistence**: OHLCV data is indexed by (Conid, Date) in the persistent prices.db.
 *   **Risk Metrics**:
     * **ATR Standards**: Uses institutional timeframes: Daily (14), Weekly (12), Monthly (12), Quarterly (8). Standardized on Wilder ATR with SMA for audit.
-    * **R (% NAV)**: Institutional Risk-at-Stop. Calculated as (Entry Price - Stop Price) * Qty / NAV. Implements **Quantity-First Auditing** where capital requirements are secondary to risk-unit limits. 
+    * **R (% NAV)**: Institutional Risk-at-Stop. Calculated as (Entry Price - Stop Price) * Qty / NAV. Implements **Quantity-First Auditing** where capital requirements are secondary to risk-unit limits.
     * **RR Efficiency**: Reward-to-Risk ratio. Calculated as (TP - Price) / (Price - Stop). Signal: < 1.0 (Exit). Color-coded thresholds: 🟢 > 1.0%, 🟡 > 0.5%.
     * **Drafting Workflow**: Supports in-memory draft state for bulk risk strategy updates.
-*   **Database Schema (trade_journal.db)**:        
-    * `trades`: Activity ledger. Includes `multiplier` for accurate valuation of options and bonds.   
-    * `ticker_info`: Asset Master. Single Source of Truth for metadata (ISIN, multiplier, exchange).  
+*   **Database Schema (trade_journal.db)**:
+    * `trades`: Activity ledger. Includes `multiplier` for accurate valuation of options and bonds.
+    * `ticker_info`: Asset Master. Single Source of Truth for metadata (ISIN, multiplier, exchange).
     * `risk_profiles`: Historical and active risk strategies.
     * `kids_config`: Parity-adjusted unit baselines and birthdates.
 
