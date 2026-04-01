@@ -412,16 +412,24 @@ class RiskWorkspace(App):
                         f"  - [dim green]{'✓' if s2_add<=0 else ' '} Stage 2 @:  {pilot['stage2_price']:,.2f}[/] {'(Add +'+str(s2_add)+' sh)' if s2_add>0 else '(Filled)'}\n"
                         f"  - [dim green]{'✓' if s3_add<=0 else ' '} Stage 3 @:  {pilot['stage3_price']:,.2f}[/] {'(Add +'+str(s3_add)+' sh)' if s3_add>0 else '(Filled)'}"
                     )
+                    planned_add = s2_add + s3_add
+                    target_qty = int(pilot['full_target_qty'])
                 else:
                     room = int(res['adjustment'])
+                    planned_add = max(0, room)
+                    target_qty = int(pos.qty + room)
                     if room > 0:
-                        exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {int(pilot['full_target_qty'])} sh)"
+                        exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {target_qty} sh)"
                     elif room < 0:
                         exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"
                     else:
                         exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
 
             # 4. Final Layout Assembly
+            market_val = (pos.qty * cur_p * pos.multiplier)
+            target_outlay = pilot['scale_in_outlay'] if entry_t == 'SCALE_IN' else (target_qty * cur_p * pos.multiplier)
+            remaining_cap = (planned_add * cur_p * pos.multiplier)
+
             audit_content = (
                 f"STATUS: {status_display}\n"
                 f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
@@ -430,8 +438,9 @@ class RiskWorkspace(App):
                 f"--------------------------------------\n"
                 f"EXECUTION PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
                 f"{exec_plan}\n"
-                f"  - Target Outlay: {pilot['scale_in_outlay'] if entry_t=='SCALE_IN' else pilot['single_outlay']:,.0f} {pos.ccy}\n"
-                f"  - Remaining Cap: {max(0, (pilot['full_target_qty'] - pos.qty) * cur_p * pos.multiplier):,.0f} {pos.ccy}\n"
+                f"  - Market Value:  {market_val:,.0f} {pos.ccy}\n"
+                f"  - Target Outlay: {target_outlay:,.0f} {pos.ccy}\n"
+                f"  - Remaining Cap: {remaining_cap:,.0f} {pos.ccy}\n"
                 f"  - Pilot Stop:    [bold]{pilot['stop']:,.2f}[/]"
             )
             if entry_t == 'SCALE_IN':

@@ -45,8 +45,16 @@ class RiskEngine:
         
         # 4. Share Adjustment (Quantity-First Auditing)
         # Calculate how many shares we can ADD (+) or must TRIM (-) to hit the risk / exposure limits.
-        risk_dist = abs(entry_price - stop) * multiplier
-        # If risk_dist is 0 (stop at entry), risk constraint is effectively infinite shares allowed.
+        
+        # Mandate: Use Current Market Price for all "Shares to Add" calculations.
+        if risk_budget_rem > 0:
+            # ADDING: The risk distance for new shares is current_price to stop.
+            risk_dist = abs(current_price - stop) * multiplier
+        else:
+            # TRIMMING: Removing shares reduces risk by the original inception distance (avg cost to stop).
+            risk_dist = abs(entry_price - stop) * multiplier
+
+        # If risk_dist is 0 (stop at entry/price), risk constraint is effectively infinite shares allowed.
         risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else float('inf')
         exp_adj = exposure_budget_rem / (current_price * multiplier) if current_price > 0 else 0
         
