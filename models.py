@@ -46,7 +46,7 @@ class Position:
     conid: str
     asset_class: str
     ccy: str
-    date_entry: datetime
+    date_entry: Optional[datetime]
     qty: float
     entry_price: float
     inception_price: float = 0.0
