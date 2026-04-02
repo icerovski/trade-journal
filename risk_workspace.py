@@ -404,6 +404,8 @@ class RiskWorkspace(App):
             # 3. Build Unified Execution Content
             if res['is_breached']:
                 exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
+                planned_add = -pos.qty
+                target_qty = 0
             else:
                 if entry_t == 'SCALE_IN':
                     s2_add = max(0, int(pilot['full_target_qty'] * 2/3) - int(pos.qty))
