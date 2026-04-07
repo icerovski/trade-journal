@@ -26,14 +26,16 @@ This document provides a comprehensive technical and strategic overview of the T
 
 ### Module Structure
 #### Orchestration
-*   **main.py**: The Entry Point. Implements a Minimalist CLI (Sync All, Risk Workspace, View Dashboard, Kids Fund, Maintenance, Watch List).
+*   **main.py**: The Entry Point. Implements a Minimalist CLI (Sync All, Risk Workspace, View Dashboard, Kids Fund, Maintenance, Watch List). Includes real-time **Watch List Counter** for instant prospect awareness.
 *   **watch_list_workspace.py**: The Technical Audit Desk.
+    * **Institutional Timing Dashboard**: Enhanced prospects table showing real-time **Price**, **Buffer to Stop (%)**, and **Risk-at-Stop (% NAV)** for all monitored ideas.
     * **Comprehensive Confluence Audit**: Evaluates distances between Price/Stops and 8 indicators (EMA/DMA 200, 100, 50, 10).
     * **Volatility-Adjusted Proximity**: Measures confluence zones in Daily ATR units (< 0.25R) to ensure cross-asset mathematical consistency.
     * **Undisturbed Trend Engine**: Tracks 200-DMA direction changes with a 21-day "Confirmed Trend" trigger (🟢 BUY / 🔴 SELL).
 *   **core/portfolio_manager.py**: The Portfolio Hub. Handles multi-account consolidation and institutional enrichment.
 * **risk_workspace.py**: The Audit Terminal.
     * **Unified Execution Desk**: Merges Risk Audit and Roadmap planning into a single "Institutional Execution Desk." Forced mathematical alignment between compliance checks and stage-based milestones.
+    * **Asymmetric Action Indicators**: Implements a conviction-based **ACTION** column that suggests adds (10% threshold) or trims (5% threshold) while filtering out transaction noise.
     * **Synchronized Price Anchoring**: Both compliance and planning use the **Current Market Price** as the primary anchor for "Shares to Add" calculations, bypassing legacy inception price confusion.
     * **Institutional Strategy Lab**: Supports the **`S0`** flag to explicitly disable Scale-In steps and revert to a Standard entry type with a single target.
     * **Optimized Layout Split**: Implements a **55/45** horizontal and vertical distribution to maximize information density on professional-grade monitors.
@@ -77,5 +79,5 @@ This document provides a comprehensive technical and strategic overview of the T
 ## 4. Operational Protocols
 *   **Startup:** smart_sync() ensures local config is up to date with OneDrive.
 *   **Exit:** backup mirrors logs and config to OneDrive automatically.
-*   **Risk Workspace:** Asynchronous background data fetching with instant multiplier (1.5) and percentage (10%) input parsing. Focus-optimized TAB navigation.
+*   **Risk Workspace:** Asynchronous background data fetching with instant multiplier (1.5) and percentage (10%) input parsing. Focus-optimized TAB navigation. Implements **Asymmetric Scaling Sensitivity** (10% Buy / 5% Trim) to prioritize risk reduction over expansion.
 *   **Dynamic Cockpit:** Supports in-memory **Sorting** (Keys 1-4) and **Mnemonic Filtering** (Keys: a, s, o, b, t). Uses high-contrast price highlighting (Bold Red/Green) to signal breaches or target achievements.

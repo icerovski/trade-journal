@@ -50,6 +50,10 @@ def print_watch_list_summary():
     console.print(table)
 
 def show_menu(nav_info=None):
+    from db import get_watch_list_profiles
+    watch_count = len(get_watch_list_profiles())
+    watch_label = f"WATCH LIST ({watch_count})" if watch_count > 0 else "WATCH LIST"
+
     menu_text = Text()
     menu_text.append("\n[1] ", style="bold green")
     menu_text.append("SYNC ALL         ", style="bold white")
@@ -77,7 +81,7 @@ def show_menu(nav_info=None):
     menu_text.append("(Surgical Rebuilds & System Tools)\n", style="dim")
     
     menu_text.append("[6] ", style="bold yellow")
-    menu_text.append("WATCH LIST       ", style="bold white")
+    menu_text.append(f"{watch_label:<17}", style="bold white")
     menu_text.append("(Monitor & Manage Prospective Ideas)\n", style="dim")
     
     menu_text.append("\n[0] EXIT", style="bold red")

@@ -58,6 +58,17 @@ class HelpScreen(ModalScreen):
                         "• [b]Risk Limit (Default 1.0%):[/] Potential Loss from Entry to Stop.\n"
                         "• [b]Exposure Limit (Default 5.0%):[/] Total Position Value limit.\n"
                     )
+                with TabPane("Watch List & Entry", id="tab-watchlist"):
+                    yield Static(
+                        "[bold yellow]THE WATCH LIST LIFECYCLE[/]\n"
+                        "1. [b]Drafting:[/] Type a ticker in the 'Discover' input to research its ATR volatility.\n"
+                        "2. [b]Commit to Watch:[/] Press [bold cyan]Ctrl+Enter[/] to save the strategy to the Watch List.\n"
+                        "3. [b]Monitoring:[/] The ticker stays on watch (marked [PROSPECT]) until you buy it or delete it.\n"
+                        "4. [b]Auto-Promotion:[/] When a real trade is ingested via IBKR sync, the system detects it and promotes the [WATCH] profile to [ACTIVE] status automatically.\n\n"
+                        "[bold yellow]ENTRY TIMING DECISIONS[/]\n"
+                        "• Watch List items show current price relative to your modeled stops.\n"
+                        "• Look for [bold green]RR > 3.0[/] and favorable [bold]Buffer%[/] to determine entry quality.\n"
+                    )
                 with TabPane("Strategy Lab", id="tab-syntax"):
                     yield Static(
                         "Format: [bold cyan]VALUE [F/T] [S] [Step] [R:MaxR] [E:MaxExp][/]\n\n"
@@ -243,6 +254,7 @@ class RiskWorkspace(App):
         table.add_column("% NAV", key="col_nav_pct")
         table.add_column("R", key="col_r")
         table.add_column("RR", key="col_rr")
+        table.add_column("ACTION", key="col_action")
         
         # Setup Fixed Stop Table
         table_f = self.query_one("#fixed-stop-table", DataTable)
@@ -331,7 +343,42 @@ class RiskWorkspace(App):
             rr_display = f"{rr_val:.2f}" if has_risk else "---"
             rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
             
-            table.add_row(ticker_display, f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", f"{row['ATR']:.2f}" if has_risk else "---", f"{row['SL_Price']:,.2f}" if has_risk else "---", f"{row['sl_pct_base']:.1f}%" if has_risk else "---", pl_display, cur_p_display, f"[{exp_color}]{nav_val}[/]", f"[{r_color}]{r_val}[/]", f"[{rr_color}]{rr_display}[/]", key=conid_str)
+            # Meaningful Action Indicator
+            action_display = ""
+            if has_risk and self.total_nav > 0:
+                effective_entry = row['Entry'] if row['Entry'] > 0 else row['Price']
+                res = RiskEngine.audit_position_risk(
+                    cur_p_val, sl_p, effective_entry, row['Qty'], row.get('Multiplier', 1.0), 
+                    self.total_nav, max_r_pct=max_r_pct, max_exp_pct=max_exp_pct
+                )
+                adj = res['adjustment']
+                qty = row['Qty']
+                
+                if qty == 0: # Prospect
+                    action_display = f"[bold cyan]BUY {int(adj)}[/]"
+                else:
+                    add_threshold = max(1, int(qty * 0.10))
+                    trim_threshold = max(1, int(qty * 0.05))
+                    
+                    if adj > add_threshold:
+                        action_display = f"[bold green]+{int(adj)}[/]"
+                    elif adj < -trim_threshold:
+                        action_display = f"[bold red]{int(adj)}[/]"
+
+            table.add_row(
+                ticker_display, 
+                f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", 
+                f"{row['ATR']:.2f}" if has_risk else "---", 
+                f"{row['SL_Price']:,.2f}" if has_risk else "---", 
+                f"{row['sl_pct_base']:.1f}%" if has_risk else "---", 
+                pl_display, 
+                cur_p_display, 
+                f"[{exp_color}]{nav_val}[/]", 
+                f"[{r_color}]{r_val}[/]", 
+                f"[{rr_color}]{rr_display}[/]",
+                action_display,
+                key=conid_str
+            )
 
     @on(DataTable.RowHighlighted, "#portfolio-table")
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:

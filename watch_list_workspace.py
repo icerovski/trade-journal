@@ -104,10 +104,12 @@ class WatchListWorkspace(App):
 
     def on_mount(self) -> None:
         table = self.query_one("#prospects-table", DataTable)
-        table.add_column("TICKER")
-        table.add_column("STATUS")
-        table.add_column("STRATEGY")
-        table.add_column("ATR")
+        table.add_column("TICKER", key="col_ticker")
+        table.add_column("STATUS", key="col_status")
+        table.add_column("PRICE", key="col_price")
+        table.add_column("BUFFER %", key="col_buffer")
+        table.add_column("RISK %", key="col_risk")
+        table.add_column("ATR", key="col_atr")
         
         c_table = self.query_one("#confluence-table", DataTable)
         c_table.add_column("Indicator")
@@ -121,23 +123,40 @@ class WatchListWorkspace(App):
     def load_prospects(self) -> None:
         table = self.query_one("#prospects-table", DataTable)
         table.clear()
-        profiles = get_all_monitored_profiles()
         
-        if not profiles:
+        # Get total NAV for risk calculation
+        nav_res = self.pm.fetch_nav_data()
+        total_nav = nav_res[0] if nav_res else 0.0
+        
+        # Use PortfolioManager to get enriched watch list data
+        df, _ = self.pm.get_dashboard_df(include_watch=True, total_nav=total_nav, silent=True)
+        if df.empty:
             self.notify("No monitored profiles found. Add tickers in the Risk Workspace.")
             return
 
-        for p in profiles:
-            status_display = "[bold green]OWNED[/]" if p['status'] == 'ACTIVE' else "[bold yellow]WATCH[/]"
+        # Sort: Prospects first, then Active
+        df['SortOrder'] = df['account_id'].apply(lambda x: 0 if x == 'WATCHLIST' else 1)
+        df = df.sort_values(['SortOrder', 'Ticker'])
+
+        for _, row in df.iterrows():
+            status_display = "[bold yellow]WATCH[/]" if row['account_id'] == 'WATCHLIST' else "[bold green]OWNED[/]"
+            
+            # Formatting metrics
+            price_val = row['Price']
+            buffer_val = row['Down_Pct']
+            risk_val = row['risk_pct_nav']
+            
             table.add_row(
-                f"[bold cyan]{p['ticker']}[/]",
+                f"[bold cyan]{row['Ticker']}[/]",
                 status_display,
-                p['stop_type'],
-                str(p['atr_value']),
-                key=p['ticker']
+                f"{price_val:,.2f}",
+                f"{buffer_val:,.1f}%",
+                f"{risk_val:.1f}%",
+                f"{row['ATR']:.2f}",
+                key=row['Ticker']
             )
         
-        if profiles:
+        if not df.empty:
             table.focus()
 
     @on(DataTable.RowHighlighted, "#prospects-table")
