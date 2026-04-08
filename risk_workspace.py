@@ -357,14 +357,14 @@ class RiskWorkspace(App):
                 if qty == 0: # Prospect
                     action_display = f"[bold cyan]BUY {int(adj)}[/]"
                 else:
+                    adj_pct = (adj / qty) * 100
                     add_threshold = max(1, int(qty * 0.10))
                     trim_threshold = max(1, int(qty * 0.05))
-                    
-                    if adj > add_threshold:
-                        action_display = f"[bold green]+{int(adj)}[/]"
-                    elif adj < -trim_threshold:
-                        action_display = f"[bold red]{int(adj)}[/]"
 
+                    if adj > add_threshold:
+                        action_display = f"[bold green]+{adj_pct:.1f}%[/]"
+                    elif adj < -trim_threshold:
+                        action_display = f"[bold red]{adj_pct:.1f}%[/]"
             table.add_row(
                 ticker_display, 
                 f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", 
