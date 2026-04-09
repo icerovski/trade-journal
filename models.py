@@ -88,6 +88,11 @@ class Position:
     max_r_pct: float = 1.0
     max_exp_pct: float = 5.0
 
+    @property
+    def hcm_value(self) -> float:
+        """Higher of Cost Value (Entry) or Market Value (Current) for conservative exposure."""
+        return max(self.entry_price, self.current_price) * self.qty * self.multiplier
+
     def reset(self):
         """Clears all position data (used when quantity hits zero)."""
         self.qty = 0.0

@@ -347,7 +347,7 @@ class RiskWorkspace(App):
                         cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), 
                         row['Entry'], row['ATR'], row.get('ScaleStep', 0.5), 
                         max_r_pct=max_r_pct, max_exp_pct=max_exp_pct,
-                        base_price=incep
+                        base_price=incep, current_qty=row['Qty']
                     )
                     # Trigger if we have room to add AND price reached next milestone
                     if row['Qty'] < pilot['full_target_qty'] * 0.95:
@@ -447,7 +447,7 @@ class RiskWorkspace(App):
             if disc and disc['rows']:
                 daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), atr_v)
             
-            pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp)
+            pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp, current_qty=active_qty)
             entry_t = (hypo_entry_type or pos.entry_type)
             
             # 3. Build Unified Execution Content
@@ -684,10 +684,15 @@ class RiskWorkspace(App):
             risk_v = (sl_p - hypo_entry) * calc_q * pos.multiplier
             hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
             
+            # HCM Exposure for Modeling
+            modeled_qty = pos.qty if pos.qty > 0 else calc_q
+            modeled_hcm_val = max(hypo_entry, cur_p_d) * modeled_qty * pos.multiplier
+            modeled_nav_pct = (modeled_hcm_val / self.total_nav * 100) if self.total_nav > 0 else 0
+
             table = self.query_one("#portfolio-table", DataTable)
             t_pfx = f"[{s_type[:1]}{'/S' if e_type == 'SCALE_IN' else ''}]"
             display_ticker = f"[bold yellow]* {'[PROSPECT]' if str(self.current_conid).startswith('PROSPECT:') else t_pfx} {pos.ticker}"
-            if hypo_r > m_r or (calc_q * cur_p_d * pos.multiplier / self.total_nav * 100) > m_e:
+            if hypo_r > m_r or modeled_nav_pct > m_e:
                 display_ticker += " [bold red]⚠[/]"
 
             table.update_cell(self.current_conid, "col_ticker", display_ticker)
@@ -697,7 +702,7 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_sl_pct", f"{(f_atr/base_p*100 if base_p>0 else 0):.1f}%")
             table.update_cell(self.current_conid, "col_pl_stop", f"[{'green' if risk_v >= 0 else 'red'}]{risk_v:,.0f}[/]")
             table.update_cell(self.current_conid, "col_cur_p", f"{cur_p_d:,.2f}")
-            table.update_cell(self.current_conid, "col_nav_pct", f"{( (pos.qty if pos.qty > 0 else calc_q) * cur_p_d * pos.multiplier / self.total_nav * 100):.1f}% ({m_e:.1f}%)")
+            table.update_cell(self.current_conid, "col_nav_pct", f"{modeled_nav_pct:.1f}% ({m_e:.1f}%)")
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             
             self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e}

@@ -19,6 +19,7 @@ class RiskEngine:
         """
         Evaluate a position against two hard limits: Risk-at-Stop and Total Market Exposure.
         Returns the remaining capital budget for both constraints.
+        Implements HCM (Higher of Cost or Market) for exposure limits.
         """
         if nav <= 0:
             return {
@@ -30,7 +31,8 @@ class RiskEngine:
 
         # 1. Current State
         risk_val = (entry_price - stop) * qty * multiplier
-        exposure_val = current_price * qty * multiplier
+        # HCM logic: Use higher of Cost (entry * qty) or Market (current * qty)
+        exposure_val = max(entry_price, current_price) * qty * multiplier
 
         risk_pct = (risk_val / nav) * 100
         exposure_pct = (exposure_val / nav) * 100
@@ -87,20 +89,34 @@ class RiskEngine:
     def calculate_pilot_entry(current_price: float, assigned_atr: float, nav: float, multiplier: float, 
                               entry_price: float, daily_atr: float, scale_step: float = 0.5, 
                               max_r_pct: float = 1.0, max_exp_pct: float = 5.0,
-                              base_price: float = None) -> dict:
+                              base_price: float = None, current_qty: float = 0.0) -> dict:
         """
         Calculates the Pilot Entry roadmap based on custom Risk and Exposure limits.
         If base_price is provided (e.g. Inception Price), targets are anchored to it.
+        Implements HCM (Higher of Cost or Market) for target quantity calculation.
         """
         if nav <= 0 or current_price <= 0 or assigned_atr <= 0:
             return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
             
         # 1. Dual-Constraint Target Calculation (Matches Audit Logic)
         risk_dist = assigned_atr * multiplier
+        # Total Risk-at-Stop constraint
         qty_by_risk = (nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else 0
-        qty_by_exposure = (nav * (max_exp_pct / 100.0)) / (current_price * multiplier) if current_price > 0 else 0
         
-        full_target_qty = int(min(qty_by_risk, qty_by_exposure))
+        # Total Exposure constraint (HCM-aware)
+        max_exposure_cap = nav * (max_exp_pct / 100.0)
+        
+        if current_price >= entry_price or current_qty == 0:
+            # Winner or Fresh: Market value is the constraint
+            target_total_qty = max_exposure_cap / (current_price * multiplier) if current_price > 0 else 0
+        else:
+            # Loser: Anchor existing shares to entry_price (HCM)
+            existing_hcm_val = entry_price * current_qty * multiplier
+            remaining_cap = max(0, max_exposure_cap - existing_hcm_val)
+            additional_qty = remaining_cap / (current_price * multiplier) if current_price > 0 else 0
+            target_total_qty = current_qty + additional_qty
+        
+        full_target_qty = int(min(qty_by_risk, target_total_qty))
         unit_shares = int(full_target_qty / 3.0)
         
         # 2. Financial Milestones (Based on the 14d Daily ATR Heartbeat)

@@ -107,7 +107,7 @@ class PortfolioManager:
         denominator = total_nav if (total_nav and total_nav > 0) else total_mv
 
         for p in positions:
-            p.nav_pct = (p.market_value / denominator * 100) if denominator != 0 else 0
+            p.nav_pct = (p.hcm_value / denominator * 100) if denominator != 0 else 0
             
             # Calculate Risk-at-Stop (% of NAV)
             if p.entry_price > 0 and p.sl_price:
