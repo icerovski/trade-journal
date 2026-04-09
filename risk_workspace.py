@@ -245,6 +245,7 @@ class RiskWorkspace(App):
         table = self.query_one("#portfolio-table", DataTable)
         table.cursor_type = "row"
         table.add_column("TICKER", key="col_ticker")
+        table.add_column("ACTION", key="col_action")
         table.add_column("STOP BASE", key="col_base")
         table.add_column("ATR", key="col_atr")
         table.add_column("STOP P", key="col_stop_p")
@@ -254,7 +255,6 @@ class RiskWorkspace(App):
         table.add_column("% NAV", key="col_nav_pct")
         table.add_column("R", key="col_r")
         table.add_column("RR", key="col_rr")
-        table.add_column("ACTION", key="col_action")
         
         # Setup Fixed Stop Table
         table_f = self.query_one("#fixed-stop-table", DataTable)
@@ -303,13 +303,37 @@ class RiskWorkspace(App):
                 max_r_pct = d.get('max_r_pct', max_r_pct)
                 max_exp_pct = d.get('max_exp_pct', max_exp_pct)
             
-            # Add WARNING icon if limits are exceeded
-            if risk_above_limit or exp_above_limit:
-                ticker_display += " [bold red]⚠[/]"
-
+            # 1. Base Variables
             cur_p_val = row['Price']
             sl_p = row['SL_Price']
             tp_p = row.get('TP_Price')
+
+            # 2. Meaningful Action & Warning Logic
+            action_display = ""
+            adj = 0
+            if has_risk and self.total_nav > 0:
+                effective_entry = row['Entry'] if row['Entry'] > 0 else row['Price']
+                res = RiskEngine.audit_position_risk(
+                    cur_p_val, sl_p, effective_entry, row['Qty'], row.get('Multiplier', 1.0), 
+                    self.total_nav, max_r_pct=max_r_pct, max_exp_pct=max_exp_pct
+                )
+                adj = res['adjustment']
+                qty = row['Qty']
+                
+                if qty == 0: # Prospect
+                    action_display = f"[bold cyan]BUY {int(adj)}[/]"
+                else:
+                    adj_pct = (adj / qty) * 100
+                    add_threshold = max(1, int(qty * 0.10))
+                    trim_threshold = max(1, int(qty * 0.10))
+
+                    if adj > add_threshold:
+                        action_display = f"[bold green]+{adj_pct:.1f}%[/]"
+                    elif adj < -trim_threshold:
+                        action_display = f"[bold red]{adj_pct:.1f}%[/]"
+                        # Add WARNING icon only if the trimming threshold is breached
+                        ticker_display += " [bold red]⚠[/]"
+
             cur_p_display = f"{cur_p_val:,.2f}"
             if has_risk and pd.notnull(sl_p) and cur_p_val <= sl_p:
                 cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
@@ -343,30 +367,9 @@ class RiskWorkspace(App):
             rr_display = f"{rr_val:.2f}" if has_risk else "---"
             rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
             
-            # Meaningful Action Indicator
-            action_display = ""
-            if has_risk and self.total_nav > 0:
-                effective_entry = row['Entry'] if row['Entry'] > 0 else row['Price']
-                res = RiskEngine.audit_position_risk(
-                    cur_p_val, sl_p, effective_entry, row['Qty'], row.get('Multiplier', 1.0), 
-                    self.total_nav, max_r_pct=max_r_pct, max_exp_pct=max_exp_pct
-                )
-                adj = res['adjustment']
-                qty = row['Qty']
-                
-                if qty == 0: # Prospect
-                    action_display = f"[bold cyan]BUY {int(adj)}[/]"
-                else:
-                    adj_pct = (adj / qty) * 100
-                    add_threshold = max(1, int(qty * 0.10))
-                    trim_threshold = max(1, int(qty * 0.05))
-
-                    if adj > add_threshold:
-                        action_display = f"[bold green]+{adj_pct:.1f}%[/]"
-                    elif adj < -trim_threshold:
-                        action_display = f"[bold red]{adj_pct:.1f}%[/]"
             table.add_row(
                 ticker_display, 
+                action_display,
                 f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", 
                 f"{row['ATR']:.2f}" if has_risk else "---", 
                 f"{row['SL_Price']:,.2f}" if has_risk else "---", 
@@ -376,7 +379,6 @@ class RiskWorkspace(App):
                 f"[{exp_color}]{nav_val}[/]", 
                 f"[{r_color}]{r_val}[/]", 
                 f"[{rr_color}]{rr_display}[/]",
-                action_display,
                 key=conid_str
             )
 

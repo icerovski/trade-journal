@@ -79,5 +79,5 @@ This document provides a comprehensive technical and strategic overview of the T
 ## 4. Operational Protocols
 *   **Startup:** smart_sync() ensures local config is up to date with OneDrive.
 *   **Exit:** backup mirrors logs and config to OneDrive automatically.
-*   **Risk Workspace:** Asynchronous background data fetching with instant multiplier (1.5) and percentage (10%) input parsing. Focus-optimized TAB navigation. Implements **Asymmetric Scaling Sensitivity** (10% Buy / 5% Trim) to prioritize risk reduction over expansion.
+*   **Risk Workspace:** Asynchronous background data fetching with instant multiplier (1.5) and percentage (10%) input parsing. Focus-optimized TAB navigation. Implements **High-Conviction Scaling** (10% threshold for both Adds and Trims) to prioritize meaningful rebalancing over transaction noise.
 *   **Dynamic Cockpit:** Supports in-memory **Sorting** (Keys 1-4) and **Mnemonic Filtering** (Keys: a, s, o, b, t). Uses high-contrast price highlighting (Bold Red/Green) to signal breaches or target achievements.
