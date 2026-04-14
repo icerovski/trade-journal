@@ -103,16 +103,17 @@ class PortfolioManager:
             self.risk.calculate_position_risk(p, risk_settings)
 
         # Calculate NAV Exposure %
-        total_mv = sum(p.market_value for p in positions)
+        total_mv = sum(p.market_value * p.fx_rate for p in positions)
         denominator = total_nav if (total_nav and total_nav > 0) else total_mv
 
         for p in positions:
-            p.nav_pct = (p.hcm_value / denominator * 100) if denominator != 0 else 0
+            # HCM Exposure (Normalized to NAV Currency)
+            p.nav_pct = (p.hcm_value * p.fx_rate / denominator * 100) if denominator != 0 else 0
             
-            # Calculate Risk-at-Stop (% of NAV)
+            # Risk-at-Stop (Normalized to NAV Currency)
             if p.entry_price > 0 and p.sl_price:
                 risk_amt = (p.entry_price - p.sl_price) * p.qty * p.multiplier
-                p.risk_pct_nav = (risk_amt / denominator) * 100 if denominator != 0 else 0
+                p.risk_pct_nav = (risk_amt * p.fx_rate / denominator) * 100 if denominator != 0 else 0
             else:
                 p.risk_pct_nav = 0.0
 

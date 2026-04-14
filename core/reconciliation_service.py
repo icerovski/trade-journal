@@ -111,7 +111,8 @@ class ReconciliationService:
             entry_price=v['Entry'],
             inception_price=0.0,
             multiplier=v.get('Multiplier', 1.0),
-            mark_price=v['MarkPrice']
+            mark_price=v['MarkPrice'],
+            fx_rate=v.get('FXRateToEUR', 1.0)
         )
 
     def _heal_from_ledger(self, pos: Position, by_key: Dict, by_conid: Dict, by_global: Dict):

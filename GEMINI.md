@@ -40,6 +40,7 @@ This document provides a comprehensive technical and strategic overview of the T
     * **Institutional Strategy Lab**: Supports the **`S0`** flag to explicitly disable Scale-In steps and revert to a Standard entry type with a single target.
     * **Optimized Layout Split**: Implements a **55/45** horizontal and vertical distribution to maximize information density on professional-grade monitors.
     * **Institutional Sizing Discovery**: Added a **QTY** column to ATR Discovery tables, showing required shares for each volatility timeframe based on NAV limits.
+    * **Auditability Enhancements**: Added **AVG COST** column to the main grid and **Cost Value** (Inception Valuation) to the execution desk for direct performance audit.
     * **Persistent NAV Summary**: Displays total Portfolio NAV at the top of the screen for real-time risk sanity checks.
     * **Dual-Constraint Auditing**: Evaluates both Risk-at-Stop and Capital Exposure limits.
 *   **dashboard.py**: The Trading Cockpit. Implements a 60s background refresh and high-visibility breach indicators (Price cell highlighting) to match the Audit Terminal's rigor.
@@ -65,10 +66,10 @@ This document provides a comprehensive technical and strategic overview of the T
 
 ## 3. Data Management
 *   **Price Persistence**: OHLCV data is indexed by (Conid, Date) in the persistent prices.db.
-*   **Risk Metrics**:
+* **Risk Metrics**:
     * **ATR Standards**: Uses institutional timeframes: Daily (14), Weekly (12), Monthly (12), Quarterly (8). Standardized on Wilder ATR with SMA for audit.
     * **HCM Exposure (Conservative)**: Anchors capital exposure to the **Higher of Cost or Market** value. Prevents "averaging down" traps for underwater positions while maintaining mark-to-market discipline for winners.
-    * **R (% NAV)**: Institutional Risk-at-Stop. Calculated as (Entry Price - Stop Price) * Qty / NAV. Implements **Quantity-First Auditing** where capital requirements are secondary to risk-unit limits.
+    * **R (% NAV)**: Institutional Risk-at-Stop. Calculated as (Entry Price - Stop Price) * Qty / NAV. Implements **Quantity-First Auditing** where capital requirements are secondary to risk-unit limits. Metrics are automatically **normalized to the NAV currency** using live FX rates from the broker snapshot.
     * **RR Efficiency**: Reward-to-Risk ratio. Calculated as (TP - Price) / (Price - Stop). Signal: < 1.0 (Exit). Color-coded thresholds: 🟢 > 1.0%, 🟡 > 0.5%.
     * **Drafting Workflow**: Supports in-memory draft state for bulk risk strategy updates.
 *   **Database Schema (trade_journal.db)**:

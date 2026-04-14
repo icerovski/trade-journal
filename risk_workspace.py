@@ -252,6 +252,7 @@ class RiskWorkspace(App):
         table.add_column("SL %", key="col_sl_pct")
         table.add_column("P/L STOP", key="col_pl_stop")
         table.add_column("CUR P", key="col_cur_p")
+        table.add_column("AVG COST", key="col_avg_cost")
         table.add_column("% NAV", key="col_nav_pct")
         table.add_column("R", key="col_r")
         table.add_column("RR", key="col_rr")
@@ -376,6 +377,7 @@ class RiskWorkspace(App):
                 f"{row['sl_pct_base']:.1f}%" if has_risk else "---", 
                 pl_display, 
                 cur_p_display, 
+                f"{row['Entry']:,.2f}" if row['Entry'] > 0 else "---",
                 f"[{exp_color}]{nav_val}[/]", 
                 f"[{r_color}]{r_val}[/]", 
                 f"[{rr_color}]{rr_display}[/]",
@@ -430,7 +432,7 @@ class RiskWorkspace(App):
             is_safe = cur_p > effective_stop
             buffer = ((cur_p - effective_stop) / cur_p * 100) if cur_p > 0 else 0
             integ_content = f"[bold {'green' if is_safe else 'red'}]Price {' > ' if is_safe else ' <= '} Stop[/] | {'[SAFE]' if is_safe else '[BREACHED]'} [dim]({buffer:.1f}% Buffer)[/]"
-            res = RiskEngine.audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp)
+            res = RiskEngine.audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp, fx_rate=pos.fx_rate)
             
             atr_width = hypo_atr or pos.atr
             efficiency = ( (effective_stop+(3*atr_width)-cur_p)/(cur_p-effective_stop) if cur_p>effective_stop else 0)
@@ -447,7 +449,7 @@ class RiskWorkspace(App):
             if disc and disc['rows']:
                 daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), atr_v)
             
-            pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp, current_qty=active_qty)
+            pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp, current_qty=active_qty, fx_rate=pos.fx_rate)
             entry_t = (hypo_entry_type or pos.entry_type)
             
             # 3. Build Unified Execution Content
@@ -477,9 +479,16 @@ class RiskWorkspace(App):
                         exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
 
             # 4. Final Layout Assembly
+            cost_val = (pos.qty * active_entry * pos.multiplier)
             market_val = (pos.qty * cur_p * pos.multiplier)
+            
+            # HCM Exposure: Use higher of cost or market for capital budgeting
+            hcm_exposure = max(cost_val, market_val)
+            
             target_outlay = pilot['scale_in_outlay'] if entry_t == 'SCALE_IN' else (target_qty * cur_p * pos.multiplier)
-            remaining_cap = (planned_add * cur_p * pos.multiplier)
+            
+            # Remaining Cap: Budget remaining based on HCM discipline
+            remaining_cap = max(0, target_outlay - hcm_exposure)
 
             audit_content = (
                 f"STATUS: {status_display}\n"
@@ -489,6 +498,7 @@ class RiskWorkspace(App):
                 f"--------------------------------------\n"
                 f"EXECUTION PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
                 f"{exec_plan}\n"
+                f"  - Cost Value:    {cost_val:,.0f} {pos.ccy}\n"
                 f"  - Market Value:  {market_val:,.0f} {pos.ccy}\n"
                 f"  - Target Outlay: {target_outlay:,.0f} {pos.ccy}\n"
                 f"  - Remaining Cap: {remaining_cap:,.0f} {pos.ccy}\n"
@@ -598,7 +608,7 @@ class RiskWorkspace(App):
         if not any(p.conid == self.current_conid for p in self.positions):
             self.positions.append(phantom)
         if self.current_conid not in [r.value for r in table.rows]:
-            table.add_row(f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---", key=self.current_conid)
+            table.add_row(f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", key=self.current_conid)
         table.move_cursor(row=table.get_row_index(self.current_conid))
         self.fetch_atr_data(None, ticker=ticker)
 
@@ -702,6 +712,7 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_sl_pct", f"{(f_atr/base_p*100 if base_p>0 else 0):.1f}%")
             table.update_cell(self.current_conid, "col_pl_stop", f"[{'green' if risk_v >= 0 else 'red'}]{risk_v:,.0f}[/]")
             table.update_cell(self.current_conid, "col_cur_p", f"{cur_p_d:,.2f}")
+            table.update_cell(self.current_conid, "col_avg_cost", f"{hypo_entry:,.2f}")
             table.update_cell(self.current_conid, "col_nav_pct", f"{modeled_nav_pct:.1f}% ({m_e:.1f}%)")
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             

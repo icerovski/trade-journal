@@ -15,11 +15,12 @@ class RiskEngine:
     """
 
     @staticmethod
-    def audit_position_risk(current_price: float, stop: float, entry_price: float, qty: float, multiplier: float, nav: float, max_r_pct: float = 1.0, max_exp_pct: float = 5.0) -> dict:
+    def audit_position_risk(current_price: float, stop: float, entry_price: float, qty: float, multiplier: float, nav: float, max_r_pct: float = 1.0, max_exp_pct: float = 5.0, fx_rate: float = 1.0) -> dict:
         """
         Evaluate a position against two hard limits: Risk-at-Stop and Total Market Exposure.
         Returns the remaining capital budget for both constraints.
         Implements HCM (Higher of Cost or Market) for exposure limits.
+        Normalizes all values to NAV currency using fx_rate.
         """
         if nav <= 0:
             return {
@@ -29,10 +30,10 @@ class RiskEngine:
                 "is_breached": False
             }
 
-        # 1. Current State
-        risk_val = (entry_price - stop) * qty * multiplier
+        # 1. Current State (Normalized to NAV Currency)
+        risk_val = (entry_price - stop) * qty * multiplier * fx_rate
         # HCM logic: Use higher of Cost (entry * qty) or Market (current * qty)
-        exposure_val = max(entry_price, current_price) * qty * multiplier
+        exposure_val = max(entry_price, current_price) * qty * multiplier * fx_rate
 
         risk_pct = (risk_val / nav) * 100
         exposure_pct = (exposure_val / nav) * 100
@@ -41,24 +42,22 @@ class RiskEngine:
         max_risk_cap = nav * (max_r_pct / 100.0)
         max_exposure_cap = nav * (max_exp_pct / 100.0)
 
-        # 3. Remaining Budget (In Dollars/Euros)
+        # 3. Remaining Budget (In NAV Currency)
         risk_budget_rem = max_risk_cap - risk_val
         exposure_budget_rem = max_exposure_cap - exposure_val
         
         # 4. Share Adjustment (Quantity-First Auditing)
-        # Calculate how many shares we can ADD (+) or must TRIM (-) to hit the risk / exposure limits.
-        
         # Mandate: Use Current Market Price for all "Shares to Add" calculations.
         if risk_budget_rem > 0:
             # ADDING: The risk distance for new shares is current_price to stop.
-            risk_dist = abs(current_price - stop) * multiplier
+            risk_dist = abs(current_price - stop) * multiplier * fx_rate
         else:
             # TRIMMING: Removing shares reduces risk by the original inception distance (avg cost to stop).
-            risk_dist = abs(entry_price - stop) * multiplier
+            risk_dist = abs(entry_price - stop) * multiplier * fx_rate
 
         # If risk_dist is 0 (stop at entry/price), risk constraint is effectively infinite shares allowed.
         risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else float('inf')
-        exp_adj = exposure_budget_rem / (current_price * multiplier) if current_price > 0 else 0
+        exp_adj = exposure_budget_rem / (current_price * multiplier * fx_rate) if current_price > 0 else 0
         
         # Use the most restrictive constraint.
         adjustment = min(risk_adj, exp_adj)
@@ -89,17 +88,18 @@ class RiskEngine:
     def calculate_pilot_entry(current_price: float, assigned_atr: float, nav: float, multiplier: float, 
                               entry_price: float, daily_atr: float, scale_step: float = 0.5, 
                               max_r_pct: float = 1.0, max_exp_pct: float = 5.0,
-                              base_price: float = None, current_qty: float = 0.0) -> dict:
+                              base_price: float = None, current_qty: float = 0.0, fx_rate: float = 1.0) -> dict:
         """
         Calculates the Pilot Entry roadmap based on custom Risk and Exposure limits.
         If base_price is provided (e.g. Inception Price), targets are anchored to it.
         Implements HCM (Higher of Cost or Market) for target quantity calculation.
+        Normalizes values using fx_rate.
         """
         if nav <= 0 or current_price <= 0 or assigned_atr <= 0:
             return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
             
         # 1. Dual-Constraint Target Calculation (Matches Audit Logic)
-        risk_dist = assigned_atr * multiplier
+        risk_dist = assigned_atr * multiplier * fx_rate
         # Total Risk-at-Stop constraint
         qty_by_risk = (nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else 0
         
@@ -108,12 +108,12 @@ class RiskEngine:
         
         if current_price >= entry_price or current_qty == 0:
             # Winner or Fresh: Market value is the constraint
-            target_total_qty = max_exposure_cap / (current_price * multiplier) if current_price > 0 else 0
+            target_total_qty = max_exposure_cap / (current_price * multiplier * fx_rate) if current_price > 0 else 0
         else:
             # Loser: Anchor existing shares to entry_price (HCM)
-            existing_hcm_val = entry_price * current_qty * multiplier
+            existing_hcm_val = entry_price * current_qty * multiplier * fx_rate
             remaining_cap = max(0, max_exposure_cap - existing_hcm_val)
-            additional_qty = remaining_cap / (current_price * multiplier) if current_price > 0 else 0
+            additional_qty = remaining_cap / (current_price * multiplier * fx_rate) if current_price > 0 else 0
             target_total_qty = current_qty + additional_qty
         
         full_target_qty = int(min(qty_by_risk, target_total_qty))

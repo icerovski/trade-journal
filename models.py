@@ -56,6 +56,7 @@ class Position:
     listing_exchange: str = ""
     underlying_symbol: str = ""
     account_id: str = "U0000000"
+    fx_rate: float = 1.0  # Rate to convert CCY to NAV Currency (e.g. USD -> EUR)
     
     # Market Data (Enriched later)
     current_price: float = 0.0
@@ -130,13 +131,16 @@ class Position:
 
     def calculate_financial_metrics(self):
         """Calculates core P/L and growth metrics."""
-        self.market_value = self.current_price * self.qty * self.multiplier
-        self.unrealized_pl = (self.current_price - self.entry_price) * self.qty * self.multiplier
-        self.pl_pct = ((self.current_price - self.entry_price) / self.entry_price * 100) if self.entry_price > 0 else 0
+        # Institutional Fallback: Use mark_price if current_price (YF) is unavailable
+        effective_price = self.current_price if (self.current_price and self.current_price > 0) else self.mark_price
+        
+        self.market_value = effective_price * self.qty * self.multiplier
+        self.unrealized_pl = (effective_price - self.entry_price) * self.qty * self.multiplier
+        self.pl_pct = ((effective_price - self.entry_price) / self.entry_price * 100) if self.entry_price > 0 else 0
         
         # Daily performance (Compared to last close / mark_price from DB)
-        self.daily_pl = (self.current_price - self.mark_price) * self.qty * self.multiplier if self.mark_price > 0 else 0
-        self.daily_pl_pct = ((self.current_price - self.mark_price) / self.mark_price * 100) if self.mark_price > 0 else 0
+        self.daily_pl = (effective_price - self.mark_price) * self.qty * self.multiplier if self.mark_price > 0 else 0
+        self.daily_pl_pct = ((effective_price - self.mark_price) / self.mark_price * 100) if self.mark_price > 0 else 0
         
         # Age & Growth
         today = pd.Timestamp.now()
@@ -144,7 +148,7 @@ class Position:
         years = max(self.age_days / 365.25, 0.04) # Floor at ~2 weeks for AAGR stability
         
         if self.entry_price > 0:
-            growth_factor = self.current_price / self.entry_price
+            growth_factor = effective_price / self.entry_price
             if growth_factor > 0:
                 self.aagr = ((growth_factor ** (1 / years)) - 1) * 100
             else:

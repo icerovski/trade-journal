@@ -162,6 +162,7 @@ class DataLoader:
             df['Multiplier'] = pd.to_numeric(df.get('Multiplier', 1.0), errors='coerce')
             df['Multiplier'] = df['Multiplier'].replace(0, np.nan).fillna(1.0)
             df['PercentOfNAV'] = pd.to_numeric(df['PercentOfNAV'], errors='coerce')
+            df['FXRateToEUR'] = pd.to_numeric(df['FXRateToBase'], errors='coerce').fillna(1.0)
             
             summaries = df[df['LevelOfDetail'] == 'SUMMARY'].copy()
             if summaries.empty:
@@ -240,7 +241,8 @@ class DataLoader:
                     'UnderlyingSymbol': group['UnderlyingSymbol'].iloc[0],
                     'ISIN': isin_val, 
                     'MarkPrice': group['MarkPrice'].iloc[0],
-                    'NavPct': group['PercentOfNAV'].sum()
+                    'NavPct': group['PercentOfNAV'].sum(),
+                    'FXRateToEUR': group['FXRateToEUR'].iloc[0]
                 }
             
             logger.info(f"Successfully loaded {len(broker_data)} positions from {path.name}")
