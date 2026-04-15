@@ -67,8 +67,9 @@ This document provides a comprehensive technical and strategic overview of the T
 ## 3. Data Management
 *   **Price Persistence**: OHLCV data is indexed by (Conid, Date) in the persistent prices.db.
 * **Risk Metrics**:
-    * **ATR Standards**: Uses institutional timeframes: Daily (14), Weekly (12), Monthly (12), Quarterly (8). Standardized on Wilder ATR with SMA for audit.
-    * **HCM Exposure (Conservative)**: Anchors capital exposure to the **Higher of Cost or Market** value. Prevents "averaging down" traps for underwater positions while maintaining mark-to-market discipline for winners.
+    *   **ATR Standards**: Uses institutional timeframes: Daily (14), Weekly (12), Monthly (12), Quarterly (8). Standardized on Wilder ATR with SMA for audit.
+    *   **Volatility Buffer**: Implements a "Fixed Dollar" stop loss strategy. Percentages entered are converted to a fixed dollar amount (`atr_value`) to maintain consistent risk units throughout a trend, effectively tightening the percentage stop as prices rise.
+    *   **HCM Exposure (Conservative)**: Anchors capital exposure to the **Higher of Cost or Market** value. Prevents "averaging down" traps for underwater positions while maintaining mark-to-market discipline for winners.
     * **R (% NAV)**: Institutional Risk-at-Stop. Calculated as (Entry Price - Stop Price) * Qty / NAV. Implements **Quantity-First Auditing** where capital requirements are secondary to risk-unit limits. Metrics are automatically **normalized to the NAV currency** using live FX rates from the broker snapshot.
     * **RR Efficiency**: Reward-to-Risk ratio. Calculated as (TP - Price) / (Price - Stop). Signal: < 1.0 (Exit). Color-coded thresholds: 🟢 > 1.0%, 🟡 > 0.5%.
     * **Drafting Workflow**: Supports in-memory draft state for bulk risk strategy updates.

@@ -69,3 +69,20 @@ Allows for per-position Risk-at-Stop and Exposure limits, moving the system from
 *   **Risk Engine Integration**: The `audit_position_risk` and `calculate_pilot_entry` methods accept dynamic limit parameters, ensuring that roadmap quantity targets and action signals (Add/Trim) are always aligned with the position's specific conviction profile.
 
 ---
+
+## 4. Stop Loss Philosophy: Fixed Dollar vs. Constant Percentage
+
+The system implements an institutional "Volatility Buffer" approach to stop loss management, prioritizing statistical breathing room over static percentage targets.
+
+### Operational Logic
+1.  **Fixed Dollar (Volatility Buffer)**: When a stop loss is assigned (e.g., "15% Fixed"), the system performs a one-time calculation to determine the absolute dollar distance (e.g., $15.00). 
+    *   This dollar amount is stored as the `atr_value`.
+    *   Subsequent monitoring subtracts this fixed amount from the **Stop Base** (Entry Price or High-Water Mark).
+2.  **Trailing Dynamics**: As the price of an asset increases, the **Exit Price** moves up by the same fixed dollar amount.
+    *   **Result**: The **SL %** (percentage distance to stop) naturally decreases as the price rises.
+    *   **Rationale**: This effectively "tightens" the stop in percentage terms while maintaining a consistent risk-unit ($) buffer. It prevents "giving back" excessive profits by keeping the stop anchored to the asset's original volatility profile rather than allowing the dollar risk to expand as the position grows in value.
+
+### Technical Implementation Details
+*   **Storage**: The calculated dollar distance is persisted in the `atr_value` column of the `risk_profiles` table.
+*   **Monitoring**: The `RiskEngine.calculate_position_risk` method uses this fixed `atr_value` to derive the `sl_price` and `tp_price` during every dashboard refresh.
+*   **Manual Re-anchoring**: If a user wishes to "reset" the stop to a constant percentage after a significant price move, they must manually re-enter the percentage in the **Strategy Lab** (e.g., `15 T`), which triggers a new dollar calculation based on the current (higher) price.
