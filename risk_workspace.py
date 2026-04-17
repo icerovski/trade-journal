@@ -11,85 +11,13 @@ from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
 from core.risk_engine import get_atr_discovery_data, RiskEngine
+from core.ui_utils import UIUtils
+from services.ui_components import HelpScreen
 from db import set_position_risk
 from logger import logger
 
 # =============================================================================
-# 1. HELP OVERLAY (The "F1" Pop-up)
-# =============================================================================
-class HelpScreen(ModalScreen):
-    """An overlay screen providing definitions and shortcuts."""
-    BINDINGS = [Binding("escape,f1", "dismiss", "Close")]
-
-    def compose(self) -> ComposeResult:
-        try:
-            with open("docs/TECHNICAL_DOCS.md", "r", encoding="utf-8") as f:
-                tech_docs = f.read()
-        except Exception:
-            tech_docs = "Documentation file not found."
-
-        with Vertical(id="help-modal"):
-            yield Label("HELP DESK & GLOSSARY", classes="panel-header")
-            with TabbedContent(initial="tab-visuals"):
-                with TabPane("Visual Glossary", id="tab-visuals"):
-                    yield Static(
-                        "[bold cyan]TABLE ICONS[/]\n"
-                        "• [b][T/F/-][/]: Stop type (Trailing, Fixed, None)\n"
-                        "• [b]\\[/S][/]: Scale-In Strategy is active\n"
-                        "• [b][bold yellow]*[/][/]: Unsaved draft in the Sandbox\n\n"
-                        "[bold cyan]ACTION TRIGGERS[/]\n"
-                        "• [b][on red] Price [/][/]: [bold red]EMERGENCY.[/] Stop breached. Exit position.\n"
-                        "• [b][bold cyan]★[/][/]: [bold cyan]TAKE PROFIT HIT.[/] Price reached 3x ATR target.\n"
-                        "• [b][bold green]⬆[/][/]: [bold green]SCALE-IN TRIGGERED.[/] Add shares to reach next stage.\n"
-                        "• [b][bold red]⚠[/][/]: [bold red]LIMIT EXCEEDED.[/] Risk or Exposure above your Max limit.\n\n"
-                        "[bold cyan]COLOR METRICS[/]\n"
-                        "• [b]Risk (% NAV):[/] [green]< Max R[/] | [yellow]Max R - 1.5x Max R[/] | [red]> 1.5x Max R[/]\n"
-                        "• [b]RR (Efficiency):[/] [green]> 3.0[/] | [yellow]1.0 - 3.0[/] | [red]< 1.0[/]\n"
-                    )
-                with TabPane("Metrics & Audit", id="tab-metrics"):
-                    yield Static(
-                        "[bold cyan]RISK DEFINITIONS[/]\n"
-                        "• [b]Stop Base:[/] Reference point (Avg Cost for Fixed | Max High for Trailing).\n"
-                        "• [b]Stop P:[/] The absolute exit price (Base - ATR).\n"
-                        "• [b]SL %:[/] Percentage decrease from BASE needed to hit stop.\n"
-                        "• [b]R (% NAV):[/] Risk at Stop. Total potential loss as a % of your portfolio.\n"
-                        "• [b]RR (Efficiency):[/] Reward-to-Risk Ratio. (TP - Price) / (Price - Stop).\n\n"
-                        "[bold cyan]DUAL-CONSTRAINT AUDIT[/]\n"
-                        "• [b]Risk Limit (Default 1.0%):[/] Potential Loss from Entry to Stop.\n"
-                        "• [b]Exposure Limit (Default 5.0%):[/] Total Position Value limit.\n"
-                    )
-                with TabPane("Watch List & Entry", id="tab-watchlist"):
-                    yield Static(
-                        "[bold yellow]THE WATCH LIST LIFECYCLE[/]\n"
-                        "1. [b]Drafting:[/] Type a ticker in the 'Discover' input to research its ATR volatility.\n"
-                        "2. [b]Commit to Watch:[/] Press [bold cyan]Ctrl+Enter[/] to save the strategy to the Watch List.\n"
-                        "3. [b]Monitoring:[/] The ticker stays on watch (marked [PROSPECT]) until you buy it or delete it.\n"
-                        "4. [b]Auto-Promotion:[/] When a real trade is ingested via IBKR sync, the system detects it and promotes the [WATCH] profile to [ACTIVE] status automatically.\n\n"
-                        "[bold yellow]ENTRY TIMING DECISIONS[/]\n"
-                        "• Watch List items show current price relative to your modeled stops.\n"
-                        "• Look for [bold green]RR > 3.0[/] and favorable [bold]Buffer%[/] to determine entry quality.\n"
-                    )
-                with TabPane("Strategy Lab", id="tab-syntax"):
-                    yield Static(
-                        "Format: [bold cyan]VALUE [F/T] [S] [Step] [R:MaxR] [E:MaxExp][/]\n\n"
-                        "• [b]VALUE:[/] Width of your stop. Numbers are treated as % by default (e.g., '15' = 15%).\n"
-                        "• [b][F/T]:[/] Stop Type. 'F' = Fixed. 'T' = Trailing.\n"
-                        "• [b][S]:[/] (Optional) Scale-In Flag. Activates the 3-Stage Pilot roadmap.\n"
-                        "• [b][Step]:[/] (Optional) Scale-In Multiplier (e.g., 0.5 or 1.0).\n"
-                        "• [b][R:MaxR]:[/] (Optional) Custom Risk Limit (e.g., 'R:0.5').\n"
-                        "• [b][E:MaxExp]:[/] (Optional) Custom Exposure Limit (e.g., 'E:10.0').\n\n"
-                        "[bold yellow]PARTIAL UPDATES[/]\n"
-                        "You can update metrics individually (e.g., type 'R:0.5' to only change the risk limit).\n\n"
-                        "[bold yellow]CONTROLS[/]\n"
-                        "• [bold]ENTER:[/] Model hypothetically in the Lab and Grid.\n"
-                        "• [bold]CTRL+ENTER:[/] Save permanently to Database.\n"
-                    )
-                with TabPane("Technical Documentation", id="tab-tech"):
-                    yield Static(tech_docs)
-            yield Label("Press ESC or F1 to Close", id="close-hint")
-
-# =============================================================================
-# 2. UI COMPONENTS
+# 1. UI COMPONENTS
 # =============================================================================
 class AdaptiveInputContainer(Container):
     """
@@ -362,8 +290,8 @@ class RiskWorkspace(App):
             nav_val = f"{row['NavPct']:.1f}% ({max_exp_pct:.1f}%)"
             r_color = "red" if row['risk_pct_nav'] > (max_r_pct * 1.5) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
             exp_color = "red" if row['NavPct'] > (max_exp_pct * 1.1) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
-            pl_color = "green" if row['Risk_Val'] >= 0 else "red"
-            pl_display = f"[{pl_color}]{row['Risk_Val']:,.0f}[/]" if has_risk else "---"
+            
+            pl_display = UIUtils.color_fmt(row['Risk_Val']) if has_risk else "---"
             rr_val = row['RR_Ratio']
             rr_display = f"{rr_val:.2f}" if has_risk else "---"
             rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
@@ -490,11 +418,27 @@ class RiskWorkspace(App):
             # Remaining Cap: Budget remaining based on HCM discipline
             remaining_cap = max(0, target_outlay - hcm_exposure)
 
+            # Inception Stop Info
+            incep_stop_str = f"{pos.inception_stop:,.2f}" if pos.inception_stop else "---"
+            trailed_dist = (pos.sl_price - pos.inception_stop) if (pos.inception_stop and pos.sl_price) else 0
+            trailed_str = f" [bold green](+{trailed_dist:,.2f} trailed)[/]" if trailed_dist > 0 else ""
+
+            # Inception ATR Info
+            incep_atr_str = f"{pos.inception_atr:.2f}" if pos.inception_atr else "---"
+            vol_delta_str = ""
+            if pos.inception_atr and pos.inception_atr > 0:
+                vol_delta = (atr_v / pos.inception_atr - 1) * 100
+                vol_color = "red" if vol_delta > 10 else ("green" if vol_delta < -10 else "white")
+                vol_delta_str = f" [bold {vol_color}]({'+' if vol_delta>0 else ''}{vol_delta:.1f}%)[/]"
+
             audit_content = (
                 f"STATUS: {status_display}\n"
                 f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
                 f"  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n"
                 f"  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n"
+                f"--------------------------------------\n"
+                f"INCEPTION STOP: [bold]{incep_stop_str}[/]{trailed_str}\n"
+                f"INCEPTION ATR:  [bold]{incep_atr_str}[/]{vol_delta_str}\n"
                 f"--------------------------------------\n"
                 f"EXECUTION PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
                 f"{exec_plan}\n"
@@ -716,7 +660,7 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_nav_pct", f"{modeled_nav_pct:.1f}% ({m_e:.1f}%)")
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e}
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': f_atr}
             self.refresh_risk_checklist(sl_p, f_atr, e_type, step, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
             
         except Exception as e:
@@ -726,7 +670,7 @@ class RiskWorkspace(App):
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True)
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
                 self.notify(f"COMMITTED: {d['ticker']}")
                 self.query_one("#atr-input", Input).value = ""
                 self.query_one("#discover-input", Input).value = ""
@@ -737,7 +681,7 @@ class RiskWorkspace(App):
         if not self.drafts:
             return
         for cid, d in self.drafts.items():
-            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True)
+            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
         self.drafts.clear()
         self.load_portfolio()

@@ -2,6 +2,7 @@
 import sqlite3
 from config import DB_PATH
 from logger import logger
+from models import RiskProfile
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -49,6 +50,9 @@ def init_db():
             conid TEXT NOT NULL,
             ticker TEXT NOT NULL,
             atr_value REAL NOT NULL,
+            stop_price REAL,
+            inception_stop REAL,
+            inception_atr REAL,
             stop_type TEXT NOT NULL,
             entry_type TEXT DEFAULT 'SINGLE',
             scale_step REAL DEFAULT 0.5,
@@ -69,6 +73,15 @@ def init_db():
     except Exception: pass
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN max_exp_pct REAL DEFAULT 5.0")
+    except Exception: pass
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN stop_price REAL")
+    except Exception: pass
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN inception_stop REAL")
+    except Exception: pass
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN inception_atr REAL")
     except Exception: pass
     
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
@@ -113,57 +126,72 @@ def wipe_trades_only():
     conn.close()
     init_db()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None):
     """Saves or updates a risk profile (ACTIVE or WATCH) for a conid."""
     conn = get_conn()
     conid = str(conid)
-    cursor = conn.execute("SELECT id FROM risk_profiles WHERE conid = ? AND status = ?", (conid, status))
+    cursor = conn.execute("SELECT id, inception_stop, inception_atr FROM risk_profiles WHERE conid = ? AND status = ?", (conid, status))
     existing = cursor.fetchone()
 
     if existing:
         sql = """UPDATE risk_profiles SET atr_value = ?, stop_type = ?, entry_type = ?, 
                  scale_step = ?, max_r_pct = ?, max_exp_pct = ?, ticker = ?"""
         params = [float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), ticker.upper()]
+        
+        # Only update inception_stop if it's currently NULL and a value is provided
+        if existing['inception_stop'] is None and inception_stop is not None:
+            sql += ", inception_stop = ?"
+            params.append(float(inception_stop))
+            
+        # Only update inception_atr if it's currently NULL. Fallback to current atr if no explicit inception_atr provided.
+        if existing['inception_atr'] is None:
+            sql += ", inception_atr = ?"
+            params.append(float(inception_atr) if inception_atr is not None else float(atr))
+            
         if reset_sl:
             sql += ", highest_sl = 0.0"
         sql += " WHERE id = ?"
         params.append(existing['id'])
         conn.execute(sql, tuple(params))
     else:
+        # For new profiles, use provided values or current atr/stop as inception
+        i_stop = float(inception_stop) if inception_stop is not None else None
+        i_atr = float(inception_atr) if inception_atr is not None else float(atr)
+        
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr))
     
     conn.commit()
     conn.close()
 
 def get_watch_list_profiles():
     conn = get_conn()
-    cursor = conn.execute("SELECT conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status FROM risk_profiles WHERE status = 'WATCH'")
+    cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'WATCH'")
     rows = cursor.fetchall()
     conn.close()
-    return rows
+    return [RiskProfile(**dict(r)) for r in rows]
 
 def get_all_monitored_profiles():
     """Retrieves all risk profiles with status 'WATCH' or 'ACTIVE'."""
     conn = get_conn()
-    cursor = conn.execute("SELECT conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status FROM risk_profiles WHERE status IN ('WATCH', 'ACTIVE') ORDER BY ticker ASC")
+    cursor = conn.execute("SELECT * FROM risk_profiles WHERE status IN ('WATCH', 'ACTIVE') ORDER BY ticker ASC")
     rows = cursor.fetchall()
     conn.close()
-    return rows
+    return [RiskProfile(**dict(r)) for r in rows]
 
 def promote_prospect_to_active(ticker, real_conid):
     conn = get_conn()
-    cursor = conn.execute("SELECT id, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct FROM risk_profiles WHERE ticker = ? AND status = 'WATCH'", (ticker.upper(),))
+    cursor = conn.execute("SELECT id, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, inception_stop, inception_atr FROM risk_profiles WHERE ticker = ? AND status = 'WATCH'", (ticker.upper(),))
     prospect = cursor.fetchone()
     if prospect:
         conn.execute("UPDATE risk_profiles SET status = 'CLOSED', end_date = CURRENT_TIMESTAMP WHERE id = ?", (prospect['id'],))
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status, start_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP)
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status, start_date, inception_stop, inception_atr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP, ?, ?)
         """, (str(real_conid), ticker.upper(), prospect['atr_value'], prospect['stop_type'], 
-              prospect['entry_type'], prospect['scale_step'], prospect['max_r_pct'], prospect['max_exp_pct']))
+              prospect['entry_type'], prospect['scale_step'], prospect['max_r_pct'], prospect['max_exp_pct'], prospect['inception_stop'], prospect['inception_atr']))
         conn.commit()
         logger.info(f"PROMOTED: Prospect {ticker} is now ACTIVE with conid {real_conid}")
     conn.close()
@@ -188,10 +216,10 @@ def update_high_water_mark(conid, sl_price):
 
 def get_all_risk_settings():
     conn = get_conn()
-    cursor = conn.execute("SELECT conid, atr_value, stop_type, highest_sl, entry_type, scale_step, max_r_pct, max_exp_pct, start_date FROM risk_profiles WHERE status = 'ACTIVE'")
+    cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'ACTIVE'")
     rows = cursor.fetchall()
     conn.close()
-    return {r['conid']: (r['atr_value'], r['stop_type'], r['highest_sl'], r['entry_type'], r['scale_step'], r['max_r_pct'], r['max_exp_pct'], r['start_date']) for r in rows}
+    return {r['conid']: RiskProfile(**dict(r)) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False

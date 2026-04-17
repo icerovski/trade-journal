@@ -88,10 +88,9 @@ class PortfolioManager:
         for p in positions:
             conid_str = str(p.conid)
             if conid_str in risk_settings:
-                # settings: (..., start_date) is at index 7
-                s = risk_settings[conid_str]
-                if len(s) >= 8 and s[7]:
-                    profile_date = pd.to_datetime(s[7])
+                profile = risk_settings[conid_str]
+                if profile.start_date:
+                    profile_date = pd.to_datetime(profile.start_date)
                     if pd.notnull(profile_date):
                         p.date_entry = profile_date
 
@@ -178,7 +177,7 @@ class PortfolioManager:
             open_list = [p for p in open_list if p.asset_class.upper() in filters]
             
         if account_id:
-            open_list = [p for p in open_list if p.account_id == account_id]
+            open_list = [p for p in account_id if p.account_id == account_id]
             
         return open_list
 
@@ -205,6 +204,8 @@ class PortfolioManager:
             p.entry_type = r['entry_type']
             p.scale_step = r['scale_step']
             p.max_r_pct = r['max_r_pct']
+            p.inception_stop = r.get('inception_stop')
+            p.inception_atr = r.get('inception_atr')
             watch_list.append(p)
             
         if asset_class_filter:

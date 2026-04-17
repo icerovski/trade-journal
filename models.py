@@ -39,6 +39,26 @@ class ATRDiscoveryRow:
     qty: float = 0.0
 
 @dataclass
+class RiskProfile:
+    """Represents a position's risk configuration from the database."""
+    conid: str
+    ticker: str
+    atr_value: float
+    stop_type: str
+    id: Optional[int] = None
+    stop_price: Optional[float] = None
+    highest_sl: float = 0.0
+    entry_type: str = "SINGLE"
+    scale_step: float = 0.5
+    max_r_pct: float = 1.0
+    max_exp_pct: float = 5.0
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    inception_stop: Optional[float] = None
+    inception_atr: Optional[float] = None
+    status: str = "ACTIVE"
+
+@dataclass
 class Position:
     """Represents an aggregated holding derived from trade history."""
     name: str
@@ -78,6 +98,8 @@ class Position:
     entry_type: str = "SINGLE"
     scale_step: float = 0.5
     sl_price: Optional[float] = None
+    inception_stop: Optional[float] = None
+    inception_atr: Optional[float] = None
     tp_price: Optional[float] = None
     down_pct: float = 0.0
     up_pct: float = 0.0
@@ -180,6 +202,7 @@ class Position:
             'CCY': self.ccy,
             'AssetClass': self.asset_class,
             'ATR': self.atr,
+            'InceptionATR': self.inception_atr,
             'StopType': self.stop_type,
             'EntryType': self.entry_type,
             'ScaleStep': self.scale_step,

@@ -31,8 +31,15 @@ class AssetRegistry:
         return position
 
     @classmethod
-    def get_valuation_multiplier(cls, asset_class: str, current_multiplier: float) -> float:
-        """Returns the correct multiplier for an asset class if not already set."""
-        if asset_class.upper() in cls.PERCENT_OF_PAR_ASSETS and current_multiplier == 1.0:
-            return 10.0
-        return current_multiplier
+    def standardize_asset_quantity_and_multiplier(cls, asset_class: str, qty: float, multiplier: float) -> tuple[float, float]:
+        """
+        Standardizes quantity and multiplier based on asset class rules.
+        Specifically handles Bond/Bill scaling (Face Value -> Shares).
+        """
+        asset_upper = asset_class.upper()
+        if asset_upper in cls.PERCENT_OF_PAR_ASSETS:
+            # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+            qty = qty / 1000.0
+            if multiplier == 1.0:
+                multiplier = 10.0
+        return qty, multiplier

@@ -76,7 +76,7 @@ This document provides a comprehensive technical and strategic overview of the T
 *   **Database Schema (trade_journal.db)**:
     * `trades`: Activity ledger. Includes `multiplier` for accurate valuation of options and bonds.
     * `ticker_info`: Asset Master. Single Source of Truth for metadata (ISIN, multiplier, exchange).
-    * `risk_profiles`: Historical and active risk strategies.
+    * `risk_profiles`: Historical and active risk strategies. Includes `inception_stop` and `inception_atr` as permanent risk anchors for auditing.
     * `kids_config`: Parity-adjusted unit baselines and birthdates.
 
 ## 4. Operational Protocols

@@ -4,6 +4,7 @@ from typing import List
 import db
 from models import Trade
 from logger import logger, log_system_milestone
+from core.asset_registry import AssetRegistry
 
 # Log the recent improvement
 log_system_milestone("Implemented centralized DataLoader for DB and CSV snapshots")
@@ -201,11 +202,8 @@ class DataLoader:
                 asset_cat = str(group['AssetClass'].iloc[0]).upper()
                 multiplier = group['Multiplier'].iloc[0]
 
-                # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
-                if asset_cat in ['BOND', 'BILL', 'FIXED']:
-                    qty = qty / 1000.0
-                    if multiplier == 1.0:
-                        multiplier = 10.0
+                # Standardize Qty and Multiplier
+                qty, multiplier = AssetRegistry.standardize_asset_quantity_and_multiplier(asset_cat, qty, multiplier)
 
                 if abs(qty) < 0.0000001:
                     continue

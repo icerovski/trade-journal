@@ -150,25 +150,17 @@ class RiskEngine:
         Implements the 'Ratchet' rule: Stop Loss only moves in the trader's favor.
         """
         if str(position.conid) in risk_settings:
-            settings = risk_settings[str(position.conid)]
+            profile = risk_settings[str(position.conid)]
             
-            # Handle tuple unpacking for different versions of the DB schema
-            max_r_pct = 1.0
-            max_exp_pct = 5.0
-            if len(settings) >= 7:
-                # settings: (atr, type, highest_sl, entry_type, scale_step, max_r, max_exp, [start_date])
-                atr, s_type, highest_sl, e_type, scale_step, max_r_pct, max_exp_pct = settings[:7]
-            elif len(settings) == 6:
-                atr, s_type, highest_sl, e_type, scale_step, max_r_pct = settings
-            elif len(settings) == 5:
-                atr, s_type, highest_sl, e_type, scale_step = settings
-            elif len(settings) == 4:
-                atr, s_type, highest_sl, e_type = settings
-                scale_step = 0.5
-            else:
-                atr, s_type, highest_sl = settings[:3]
-                e_type = 'SINGLE'
-                scale_step = 0.5
+            atr = profile.atr_value
+            s_type = profile.stop_type
+            e_type = profile.entry_type
+            scale_step = profile.scale_step
+            max_r_pct = profile.max_r_pct
+            max_exp_pct = profile.max_exp_pct
+            highest_sl = profile.highest_sl
+            inception_stop = profile.inception_stop
+            inception_atr = profile.inception_atr
             
             # 1. Base Stop Loss Calculation
             # Robust Base: Use highest of Entry, Current, or Mark price
@@ -189,6 +181,8 @@ class RiskEngine:
             position.scale_step = scale_step
             position.max_r_pct = max_r_pct
             position.max_exp_pct = max_exp_pct
+            position.inception_stop = inception_stop
+            position.inception_atr = inception_atr
             
             # 2. Ratchet Rule (High-Water Mark)
             final_sl = max(calculated_sl, highest_sl)

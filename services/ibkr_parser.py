@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 import db
 from logger import logger
+from core.asset_registry import AssetRegistry
 
 class IBKRParser:
     """
@@ -45,11 +46,8 @@ class IBKRParser:
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
-                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
-                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
-                        qty = qty / 1000.0
-                        if multiplier == 1.0:
-                            multiplier = 10.0
+                    # Standardize Qty and Multiplier
+                    qty, multiplier = AssetRegistry.standardize_asset_quantity_and_multiplier(asset_cat, qty, multiplier)
                 except Exception as e:
                     logger.warning(f"Skipping confirmation row for {ticker}: {e}")
                     continue
@@ -130,11 +128,8 @@ class IBKRParser:
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
-                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
-                    if asset_cat in ['BOND', 'BILL', 'FIXED']:
-                        qty = qty / 1000.0
-                        if multiplier == 1.0:
-                            multiplier = 10.0
+                    # Standardize Qty and Multiplier
+                    qty, multiplier = AssetRegistry.standardize_asset_quantity_and_multiplier(asset_cat, qty, multiplier)
 
                     # Normalize Conid
                     conid_raw = row.get('Conid')

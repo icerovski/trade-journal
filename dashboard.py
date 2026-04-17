@@ -139,14 +139,19 @@ class TradingCockpit(App):
         self.refresh_thread = threading.Thread(target=self.refresh_loop, daemon=True)
         self.refresh_thread.start()
 
+    def on_unmount(self) -> None:
+        """Ensure background thread stops when app is closed."""
+        self._exit_flag.set()
+
     def action_refresh_manual(self) -> None:
         """Manually trigger a refresh."""
-        threading.Thread(target=self.fetch_data, daemon=True).start()
+        if not self._exit_flag.is_set():
+            threading.Thread(target=self.fetch_data, daemon=True).start()
 
     def action_sort(self, sort_field: str) -> None:
         """Update sort preference and refresh UI immediately."""
         self.sort_by = sort_field
-        if not self.df.empty:
+        if not self.df.empty and not self._exit_flag.is_set():
             df_view = self.process_and_sort(self.df)
             self.update_ui(df_view, self.total_nav, self.report_date)
 
@@ -157,7 +162,7 @@ class TradingCockpit(App):
         else:
             self.asset_filter = asset_class
             
-        if not self.df.empty:
+        if not self.df.empty and not self._exit_flag.is_set():
             df_view = self.process_and_sort(self.df)
             self.update_ui(df_view, self.total_nav, self.report_date)
 
@@ -165,10 +170,15 @@ class TradingCockpit(App):
         """Background loop running in a dedicated thread (60s heartbeat)."""
         while not self._exit_flag.is_set():
             self.fetch_data()
+            if self._exit_flag.is_set():
+                break
             self._exit_flag.wait(timeout=60) # Fixed institutional refresh interval
 
     def fetch_data(self) -> None:
         """The actual heavy-lifting data fetch (Hybrid Method)."""
+        if self._exit_flag.is_set():
+            return
+            
         try:
             self.update_status("[yellow]REFRESHING MARKET DATA...[/yellow]")
             disable_console_logging()
@@ -179,6 +189,9 @@ class TradingCockpit(App):
             else:
                 real_nav, _, _, r_date = 0.0, "???", [], "---"
             
+            if self._exit_flag.is_set():
+                return
+
             # Always fetch ALL to allow dynamic in-memory filtering.
             df, _ = self.pm.get_dashboard_df(
                 asset_class_filter=None, 
@@ -187,16 +200,23 @@ class TradingCockpit(App):
             )
             enable_console_logging()
 
+            if self._exit_flag.is_set():
+                return
+
             # Swift Swap: Always use current sort AND filter preference
             df_view = self.process_and_sort(df) if not df.empty else df
             self.post_message(self.DataRefreshed(df, df_view, real_nav, r_date))
             
         except Exception as e:
-            logger.error(f"Fetch Error: {e}")
-            self.update_status(f"[red]REFRESH ERROR: {e}[/red]")
+            if not self._exit_flag.is_set():
+                logger.error(f"Fetch Error: {e}")
+                self.update_status(f"[red]REFRESH ERROR: {e}[/red]")
 
     def update_status(self, msg: str):
         """Thread-safe status update."""
+        if self._exit_flag.is_set():
+            return
+
         def _update():
             try:
                 widget = self.query_one("#status-bar")
@@ -205,10 +225,14 @@ class TradingCockpit(App):
             except Exception:
                 pass
 
-        if threading.get_ident() == self._thread_id:
-            _update()
-        else:
-            self.call_from_thread(_update)
+        try:
+            if threading.get_ident() == self._thread_id:
+                _update()
+            else:
+                self.call_from_thread(_update)
+        except RuntimeError:
+            # App is probably not running anymore
+            self._exit_flag.set()
 
     @on(DataRefreshed)
     def handle_data_refresh(self, message: DataRefreshed) -> None:
@@ -275,6 +299,12 @@ class TradingCockpit(App):
                 # Volatility relative to Cost Basis (Initial Entry)
                 atr_pct_cost = (atr_val / row['Entry'] * 100) if row['Entry'] > 0 else 0
 
+                # Inception Stop Info
+                incep_stop = row.get('inception_stop')
+                incep_stop_str = f"{incep_stop:,.2f}" if (pd.notnull(incep_stop) and incep_stop > 0) else "---"
+                trailed_dist = (row['SL_Price'] - incep_stop) if (pd.notnull(incep_stop) and incep_stop > 0 and pd.notnull(row['SL_Price'])) else 0
+                trailed_str = f" [bold green](+{trailed_dist:,.2f})[/]" if trailed_dist > 0 else ""
+
                 details = (
                     f"[bold yellow]{row['Name']}[/bold yellow]\n"
                     f"{'-'*35}\n"
@@ -288,6 +318,8 @@ class TradingCockpit(App):
                     f"ATR (% of cost): {atr_val:.2f} ({atr_pct_cost:.1f}%)\n"
                     f"Stop Type:      {s_type}\n"
                     f"Stop Price:     [bold red]{row['SL_Price']:,.2f}[/]\n"
+                    f"Inception Stop: {incep_stop_str}{trailed_str}\n"
+                    f"Initial ATR:    {row.get('InceptionATR', 0.0):.2f}\n"
                     f"P/L at Stop:    {self.color_fmt(row['Risk_Val'], ',.0f')}\n"
                     f"Buffer to SL:   {self.color_fmt(row['Down_Pct'], '.1f', '%')}\n\n"
 
