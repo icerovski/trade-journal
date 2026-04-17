@@ -8,11 +8,7 @@ from .asset_registry import AssetRegistry
 from .reconciliation_service import ReconciliationService
 from db import get_all_risk_settings
 from models import Position
-from logger import logger, log_system_milestone
-
-# Log the recent architectural improvements
-log_system_milestone("Migrated to Batch Market Data Fetching via yfinance (Phase 2 Refactor)")
-log_system_milestone("Formalized 'Position' and 'Trade' models using Dataclasses")
+from logger import logger
 
 class PortfolioManager:
     """
@@ -29,27 +25,39 @@ class PortfolioManager:
 
     @property
     def loader(self):
-        return self._loader or DataLoader()
+        if self._loader is None:
+            self._loader = DataLoader()
+        return self._loader
 
     @property
     def mapper(self):
-        return self._mapper or TickerMapper()
+        if self._mapper is None:
+            self._mapper = TickerMapper()
+        return self._mapper
 
     @property
     def ledger(self):
-        return self._ledger or LedgerEngine()
+        if self._ledger is None:
+            self._ledger = LedgerEngine()
+        return self._ledger
 
     @property
     def market_data(self):
-        return self._market_data or MarketDataService()
+        if self._market_data is None:
+            self._market_data = MarketDataService()
+        return self._market_data
 
     @property
     def risk(self):
-        return self._risk or RiskEngine()
+        if self._risk is None:
+            self._risk = RiskEngine()
+        return self._risk
 
     @property
     def recon(self):
-        return self._recon or ReconciliationService()
+        if self._recon is None:
+            self._recon = ReconciliationService()
+        return self._recon
 
     def get_dashboard_df(self, asset_class_filter: str | list[str] | None = None, total_nav: float | None = None, silent: bool = False, account_id: str | None = None, include_watch: bool = False):
         """
@@ -177,7 +185,7 @@ class PortfolioManager:
             open_list = [p for p in open_list if p.asset_class.upper() in filters]
             
         if account_id:
-            open_list = [p for p in account_id if p.account_id == account_id]
+            open_list = [p for p in open_list if p.account_id == account_id]
             
         return open_list
 

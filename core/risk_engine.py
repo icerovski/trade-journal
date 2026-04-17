@@ -266,130 +266,144 @@ class RiskEngine:
             "zones": confluence_zones
         }
 
-def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None, qty=0.0, inst_multiplier=1.0, total_nav=0.0, max_r_pct=1.0, max_exp_pct=5.0):
+def _fetch_price_data(yf_ticker, conid, entry_date_str, entry_price, price_service):
+    """Fetches current price, max-since-entry, and daily OHLCV. Returns (effective_entry, max_price, current_price)."""
+    if conid:
+        df_daily = price_service.fetch_and_store(conid, yf_ticker)
+    else:
+        df_daily = yf.Ticker(yf_ticker).history(period="3y")
+
+    if df_daily.empty:
+        return None
+
+    current_price = df_daily['Close'].iloc[-1]
+
+    if conid:
+        max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
+    else:
+        try:
+            entry_dt = pd.to_datetime(entry_date_str)
+            if df_daily.index.tz:
+                entry_dt = entry_dt.tz_localize(df_daily.index.tz)
+            df_since = df_daily[df_daily.index >= entry_dt]
+            max_price = df_since['High'].max() if not df_since.empty else entry_price
+        except Exception:
+            max_price = entry_price
+
+    # Prospect: if entry unknown, assume buying at market
+    effective_entry = entry_price if entry_price > 0 else current_price
+    max_price = max(effective_entry, max_price)
+
+    return effective_entry, max_price, current_price
+
+
+def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_price,
+                      multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
+                      price_service):
+    """Computes ATRDiscoveryRow objects for all timeframes and stop types."""
+    intervals = [
+        ("14d", 14, 'daily'),
+        ("12w", 12, 'weekly'),
+        ("12m", 12, 'monthly'),
+        ("12q", 12, 'quarterly'),
+    ]
+
+    yf_params = {
+        'daily':     ("3y",  "1d"),
+        'weekly':    ("5y",  "1wk"),
+        'monthly':   ("10y", "1mo"),
+        'quarterly': ("max", "3mo"),
+    }
+
+    results = []
+    for label, window, tf in intervals:
+        if conid:
+            df = price_service.get_prices(conid, timeframe=tf)
+        else:
+            period, interval = yf_params[tf]
+            df = yf.Ticker(yf_ticker).history(period=period, interval=interval)
+
+        if len(df) < 2:
+            continue
+
+        actual_window = min(window, len(df) - 1)
+        df['PrevClose'] = df['Close'].shift(1)
+        df['TR'] = np.maximum(
+            df['High'] - df['Low'],
+            np.maximum(abs(df['High'] - df['PrevClose']), abs(df['Low'] - df['PrevClose']))
+        )
+        atr_wilder = df['TR'].ewm(com=actual_window - 1, min_periods=actual_window, adjust=False).mean().iloc[-1]
+        atr_sma = df['TR'].rolling(window=actual_window).mean().iloc[-1]
+        final_wilder = atr_wilder * multiplier
+
+        for s_type in ('FIXED', 'TRAILING'):
+            base_price = max_price if s_type == 'TRAILING' else effective_entry
+            stop_price = base_price - final_wilder
+            atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
+
+            calc_qty = qty
+            if calc_qty == 0 and total_nav > 0:
+                risk_dist = abs(effective_entry - stop_price) * inst_multiplier
+                risk_q = (total_nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else float('inf')
+                exp_q = (total_nav * (max_exp_pct / 100.0)) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0
+                calc_qty = int(min(risk_q, exp_q))
+
+            risk_amt = (effective_entry - stop_price) * calc_qty * inst_multiplier
+            results.append(ATRDiscoveryRow(
+                label=label,
+                stop_type=s_type,
+                atr_wilder=final_wilder,
+                atr_sma=atr_sma * multiplier,
+                stop_price=stop_price,
+                atr_base_pct=atr_pct,
+                pl_at_stop=(stop_price - effective_entry) * calc_qty * inst_multiplier,
+                buffer_pct=((current_price - stop_price) / current_price * 100) if current_price > 0 else 0,
+                pl_pct_nav=(risk_amt / total_nav * 100) if total_nav > 0 else 0,
+                qty=calc_qty,
+            ))
+
+    return results
+
+
+def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None,
+                           qty=0.0, inst_multiplier=1.0, total_nav=0.0, max_r_pct=1.0,
+                           max_exp_pct=5.0, mapper=None):
     """
     Returns raw ATR analysis data for both FIXED and TRAILING stop types.
-    Calculates Risk % of NAV (R) for each scenario based on customizable Risk and Exposure limits.
+    Pass mapper= to avoid a redundant PortfolioManager instantiation when the caller already holds one.
     """
-    from .portfolio_manager import PortfolioManager
     try:
-        manager = PortfolioManager()
-        yf_ticker = manager.mapper.resolve_yf_ticker(ticker_symbol, conid=conid)
+        if mapper is None:
+            from .portfolio_manager import PortfolioManager
+            mapper = PortfolioManager().mapper
+
+        yf_ticker = mapper.resolve_yf_ticker(ticker_symbol, conid=conid)
         price_service = PriceService()
-        
-        if conid:
-            df_daily = price_service.fetch_and_store(conid, yf_ticker)
-        else:
-            df_daily = yf.Ticker(yf_ticker).history(period="3y")
-        
-        if df_daily.empty:
+
+        price_data = _fetch_price_data(yf_ticker, conid, entry_date_str, entry_price, price_service)
+        if price_data is None:
             return None
+        effective_entry, max_price, current_price = price_data
 
-        if conid:
-            max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
-        else:
-            try:
-                entry_dt = pd.to_datetime(entry_date_str).tz_localize(df_daily.index.tz) if df_daily.index.tz else pd.to_datetime(entry_date_str)
-                df_since = df_daily[df_daily.index >= entry_dt]
-                max_price = df_since['High'].max() if not df_since.empty else entry_price
-            except Exception:
-                max_price = entry_price
-        
-        current_price = df_daily['Close'].iloc[-1] if not df_daily.empty else entry_price
+        rows = _compute_atr_rows(
+            yf_ticker, conid, effective_entry, max_price, current_price,
+            multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
+            price_service,
+        )
 
-        # Prospect logic: If entry_price is unknown (0.0), assume we buy at current market price
-        effective_entry = entry_price if entry_price > 0 else current_price
-        
-        # Ensure max_price is never 0 for simulation; default to effective entry
-        max_price = max(effective_entry, max_price)
-
-        intervals = [
-            ("14d", 14, 'daily'),
-            ("12w", 12, 'weekly'),
-            ("12m", 12, 'monthly'),
-            ("12q", 12, 'quarterly')
-        ]
-
-        results = []
-        for label, window, tf in intervals:
-            if conid:
-                df = price_service.get_prices(conid, timeframe=tf)
-            else:
-                yf_period = "3y" if tf == 'daily' else ("5y" if tf == 'weekly' else ("10y" if tf == 'monthly' else "max"))
-                yf_interval = "1d" if tf == 'daily' else ("1wk" if tf == 'weekly' else ("1mo" if tf == 'monthly' else "3mo"))
-                if tf == 'quarterly':
-                    yf_period = "max"
-                df = yf.Ticker(yf_ticker).history(period=yf_period, interval=yf_interval)
-
-            # Adaptive Window: Use the requested window, or the max available history (min 2 periods)
-            # This prevents 12q from disappearing for tickers with 3-5 years of history
-            if len(df) < 2:
-                continue
-            
-            # If we have less than window+1, we use a smaller window for the calculation
-            # but we keep the label so the user knows which timeframe we are looking at.
-            actual_window = min(window, len(df) - 1)
-
-            df['PrevClose'] = df['Close'].shift(1)
-            df['TR'] = np.maximum(df['High'] - df['Low'], 
-                        np.maximum(abs(df['High'] - df['PrevClose']), 
-                                   abs(df['Low'] - df['PrevClose'])))
-
-            # Wilder ATR (EMA equivalent) using the adaptive window
-            atr_wilder = df['TR'].ewm(com=actual_window - 1, min_periods=actual_window, adjust=False).mean().iloc[-1]
-            # Simple Moving Average ATR
-            atr_sma = df['TR'].rolling(window=actual_window).mean().iloc[-1]
-            
-            final_wilder = atr_wilder * multiplier
-
-            # Calculate for both types
-            for s_type in ['FIXED', 'TRAILING']:
-                base_price = max_price if s_type == 'TRAILING' else effective_entry
-                stop_price = base_price - final_wilder
-                atr_pct = (final_wilder / base_price * 100) if base_price > 0 else 0
-                
-                # --- SIZING FOR PROSPECTS ---
-                calc_qty = qty
-                if calc_qty == 0 and total_nav > 0:
-                    risk_dist = abs(effective_entry - stop_price) * inst_multiplier
-                    # Dual-Constraint Sizing
-                    risk_q = (total_nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else float('inf')
-                    exp_q = (total_nav * (max_exp_pct / 100.0)) / (effective_entry * inst_multiplier) if effective_entry > 0 else 0
-                    calc_qty = int(min(risk_q, exp_q))
-
-                # P/L at Stop (Total profit/loss from entry)
-                pl_at_stop = (stop_price - effective_entry) * calc_qty * inst_multiplier
-                
-                # R (Risk % of NAV) = Potential Loss relative to Entry / Total NAV
-                risk_amt = (effective_entry - stop_price) * calc_qty * inst_multiplier
-                pl_pct_nav = (risk_amt / total_nav * 100) if total_nav > 0 else 0
-                
-                buffer_pct = ((current_price - stop_price) / current_price * 100) if current_price > 0 else 0
-                
-                results.append(ATRDiscoveryRow(
-                    label=label,
-                    stop_type=s_type,
-                    atr_wilder=final_wilder,
-                    atr_sma=atr_sma * multiplier,
-                    stop_price=stop_price,
-                    atr_base_pct=atr_pct,
-                    pl_at_stop=pl_at_stop,
-                    buffer_pct=buffer_pct,
-                    pl_pct_nav=pl_pct_nav,
-                    qty=calc_qty
-                ))
-            
-        trend_data = price_service.get_trend_analysis(conid if conid else f"PROSPECT:{ticker_symbol}", yf_ticker)
+        trend_data = price_service.get_trend_analysis(
+            conid if conid else f"PROSPECT:{ticker_symbol}", yf_ticker
+        )
 
         return {
             'ticker': ticker_symbol,
             'entry_price': effective_entry,
             'max_price': max_price,
             'current_price': current_price,
-            'rows': results,
+            'rows': rows,
             'max_r_pct': max_r_pct,
             'max_exp_pct': max_exp_pct,
-            'trend_data': trend_data
+            'trend_data': trend_data,
         }
     except Exception as e:
         logger.error(f"ATR Discovery Data Error: {e}")

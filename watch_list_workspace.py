@@ -178,7 +178,7 @@ class WatchListWorkspace(App):
     def run_background_math(self, ticker: str) -> None:
         try:
             # We use total_nav=0 because we just want the raw indicators, not sizing.
-            data = get_atr_discovery_data(ticker, pd.Timestamp.now().strftime("%Y-%m-%d"), 0.0)
+            data = get_atr_discovery_data(ticker, pd.Timestamp.now().strftime("%Y-%m-%d"), 0.0, mapper=self.pm.mapper)
             if data:
                 self.post_message(self.AnalysisLoaded(ticker, data))
         except Exception as e:

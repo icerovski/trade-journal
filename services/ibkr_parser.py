@@ -60,7 +60,8 @@ class IBKRParser:
                     conid = str(conid_raw)
 
                 if not conid or conid == 'nan':
-                    conid = ticker # Fallback
+                    logger.warning(f"Missing conid for confirmation row {ticker} — using ticker as fallback")
+                    conid = ticker
 
                 # 2. Update Asset Master (Metadata)
                 db.save_ticker_info(
@@ -91,7 +92,7 @@ class IBKRParser:
                     count += 1
             return count
         except Exception as e:
-            print(f"ERROR: IBKR CONFIRMATION Parsing Error: {e}")
+            logger.error(f"IBKR CONFIRMATION Parsing Error: {e}")
             return 0
 
     @staticmethod
@@ -139,7 +140,8 @@ class IBKRParser:
                         conid = str(conid_raw)
 
                     if not conid or conid == 'nan':
-                        conid = ticker # Fallback to ticker if Conid is missing
+                        logger.warning(f"Missing conid for trade row {ticker} — using ticker as fallback")
+                        conid = ticker
 
                     # 2. Update Asset Master (Metadata)
                     db.save_ticker_info(
@@ -174,7 +176,7 @@ class IBKRParser:
                     continue
             return count
         except Exception as e:
-            print(f"ERROR: IBKR TRADES CSV Parsing Error: {e}")
+            logger.error(f"IBKR TRADES CSV Parsing Error: {e}")
             return 0
 
     @staticmethod
@@ -228,7 +230,8 @@ class IBKRParser:
                         conid = str(conid_raw)
 
                     if not conid or conid == 'nan':
-                        conid = ticker # Fallback
+                        logger.warning(f"Missing conid for transfer row {ticker} — using ticker as fallback")
+                        conid = ticker
 
                     # 2. Update Asset Master (Metadata)
                     db.save_ticker_info(
@@ -267,7 +270,7 @@ class IBKRParser:
                     continue
             return count
         except Exception as e:
-            print(f"ERROR: IBKR TRANSFER CSV Parsing Error: {e}")
+            logger.error(f"IBKR TRANSFER CSV Parsing Error: {e}")
             return 0
 
     @staticmethod
@@ -345,7 +348,7 @@ class IBKRParser:
                     continue
             return count
         except Exception as e:
-            print(f"ERROR: IBKR CORP ACTION CSV Parsing Error: {e}")
+            logger.error(f"IBKR CORP ACTION CSV Parsing Error: {e}")
             return 0
 
     @staticmethod

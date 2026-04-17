@@ -106,10 +106,15 @@ class LedgerEngine:
                         if qty <= 0.0001:
                             qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
                     elif side == 'SPLIT':
+                        # Use signed quantity: positive = forward split (more shares, lower price)
+                        # negative = reverse split (fewer shares, higher price)
+                        split_qty = t.quantity
                         if qty > 0:
-                            split_ratio = qty / (qty + q)
-                            first_price = first_price * split_ratio
-                        qty += q
+                            new_qty = qty + split_qty
+                            if new_qty > 0.0001:
+                                first_price = first_price * (qty / new_qty)
+                            qty = max(0.0, new_qty)
+                        # total_cost unchanged — corporate action, not a purchase
             
             if qty > 0.0001:
                 latest = group[-1]
