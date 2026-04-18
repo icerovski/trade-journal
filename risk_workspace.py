@@ -15,6 +15,7 @@ from core.ui_utils import UIUtils
 from services.ui_components import HelpScreen
 from db import set_position_risk
 from logger import logger
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER
 
 # =============================================================================
 # 1. UI COMPONENTS
@@ -288,8 +289,8 @@ class RiskWorkspace(App):
             
             r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
             nav_val = f"{row['NavPct']:.1f}% ({max_exp_pct:.1f}%)"
-            r_color = "red" if row['risk_pct_nav'] > (max_r_pct * 1.5) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
-            exp_color = "red" if row['NavPct'] > (max_exp_pct * 1.1) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
+            r_color = "red" if row['risk_pct_nav'] > (max_r_pct * RISK_RED_MULTIPLIER) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
+            exp_color = "red" if row['NavPct'] > (max_exp_pct * EXPOSURE_RED_MULTIPLIER) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
             
             pl_display = UIUtils.color_fmt(row['Risk_Val']) if has_risk else "---"
             rr_val = row['RR_Ratio']

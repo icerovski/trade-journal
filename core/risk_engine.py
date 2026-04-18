@@ -6,6 +6,10 @@ from models import Position, ATRDiscoveryRow
 from db import update_high_water_mark
 from services.price_service import PriceService
 from logger import logger
+from constants import (
+    CONFLUENCE_ATR_THRESHOLD, CONFLUENCE_FORTRESS_THRESHOLD,
+    RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE,
+)
 
 console = Console()
 
@@ -65,7 +69,7 @@ class RiskEngine:
         is_breached = current_price <= stop
 
         # Audit thresholds scale with the custom limits
-        if is_breached or risk_pct > (max_r_pct * 1.5) or exposure_pct > (max_exp_pct * 1.1):
+        if is_breached or risk_pct > (max_r_pct * RISK_RED_MULTIPLIER) or exposure_pct > (max_exp_pct * EXPOSURE_RED_MULTIPLIER):
             status_color = "RED"
         elif risk_pct > max_r_pct or exposure_pct > max_exp_pct:
             status_color = "YELLOW"
@@ -194,7 +198,7 @@ class RiskEngine:
             position.sl_price = final_sl
             
             # 3. Take Profit (Standard 3x ATR from SL)
-            position.tp_price = position.sl_price + (3 * atr)
+            position.tp_price = position.sl_price + (TP_ATR_MULTIPLE * atr)
             
             # 4. Percentage Metrics
             if position.current_price > 0:
@@ -235,7 +239,7 @@ class RiskEngine:
             dist_to_price = abs(price - dma_val)
             atr_dist_price = dist_to_price / atr
             
-            if atr_dist_price < 0.25:
+            if atr_dist_price < CONFLUENCE_ATR_THRESHOLD:
                 strength_score += 1
                 confluence_zones.append({
                     "type": "ENTRY",
@@ -243,14 +247,14 @@ class RiskEngine:
                     "dma_val": dma_val,
                     "atr_distance": atr_dist_price,
                     "pct_distance": (dist_to_price / price) * 100 if price > 0 else 0,
-                    "is_fortress": atr_dist_price < 0.10
+                    "is_fortress": atr_dist_price < CONFLUENCE_FORTRESS_THRESHOLD
                 })
                 
             # Check Stop Confluence
             dist_to_stop = abs(stop_price - dma_val)
             atr_dist_stop = dist_to_stop / atr
             
-            if atr_dist_stop < 0.25:
+            if atr_dist_stop < CONFLUENCE_ATR_THRESHOLD:
                 strength_score += 1
                 confluence_zones.append({
                     "type": "STOP",
@@ -258,7 +262,7 @@ class RiskEngine:
                     "dma_val": dma_val,
                     "atr_distance": atr_dist_stop,
                     "pct_distance": (dist_to_stop / stop_price) * 100 if stop_price > 0 else 0,
-                    "is_fortress": atr_dist_stop < 0.10
+                    "is_fortress": atr_dist_stop < CONFLUENCE_FORTRESS_THRESHOLD
                 })
                 
         return {

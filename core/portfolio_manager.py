@@ -9,6 +9,7 @@ from .reconciliation_service import ReconciliationService
 from db import get_all_risk_settings
 from models import Position
 from logger import logger
+from constants import QTY_ZERO_THRESHOLD
 
 class PortfolioManager:
     """
@@ -159,7 +160,7 @@ class PortfolioManager:
                     p_qty = p.qty
                     new_qty = old_qty + p_qty
 
-                    if new_qty > 0.0001:
+                    if new_qty > QTY_ZERO_THRESHOLD:
                         # Institutional Weighted Average Cost (WAC)
                         # total_cost = (Q1 * P1 * M1) + (Q2 * P2 * M2)
                         # entry_price = total_cost / (TotalQty * M_final)

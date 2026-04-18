@@ -1,6 +1,7 @@
 import pandas as pd
 from typing import List
 from models import Position, Trade
+from constants import QTY_ZERO_THRESHOLD
 
 class LedgerEngine:
     """
@@ -63,7 +64,7 @@ class LedgerEngine:
                 inflows = [t for t in transfers if t.side == 'TRANSFER_IN']
                 inflow_qty_sum = sum(t.quantity for t in inflows)
                 
-                if inflow_qty_sum > 0.0001:
+                if inflow_qty_sum > QTY_ZERO_THRESHOLD:
                     rep_transfer_price = sum(t.price * t.quantity for t in inflows) / inflow_qty_sum
                 elif transfers:
                     rep_transfer_price = transfers[0].price
@@ -71,7 +72,7 @@ class LedgerEngine:
                     rep_transfer_price = 0
                 
                 active_day_trades = other_trades
-                if abs(net_transfer_qty) > 0.0001:
+                if abs(net_transfer_qty) > QTY_ZERO_THRESHOLD:
                     # Create a synthetic net transfer trade
                     side = 'TRANSFER_IN' if net_transfer_qty > 0 else 'TRANSFER_OUT'
                     active_day_trades.append(Trade(
@@ -94,7 +95,7 @@ class LedgerEngine:
                         continue
                     
                     if side in ['BUY', 'TRANSFER_IN']:
-                        if qty <= 0.0001:
+                        if qty <= QTY_ZERO_THRESHOLD:
                             first_date = t.date
                             first_price = p
                             multiplier = m
@@ -103,7 +104,7 @@ class LedgerEngine:
                     elif side in ['SELL', 'TRANSFER_OUT'] and qty > 0:
                         total_cost -= q * (total_cost / qty)
                         qty -= q
-                        if qty <= 0.0001:
+                        if qty <= QTY_ZERO_THRESHOLD:
                             qty, total_cost, first_date, first_price, multiplier = 0.0, 0.0, None, 0.0, 1.0
                     elif side == 'SPLIT':
                         # Use signed quantity: positive = forward split (more shares, lower price)
@@ -111,12 +112,12 @@ class LedgerEngine:
                         split_qty = t.quantity
                         if qty > 0:
                             new_qty = qty + split_qty
-                            if new_qty > 0.0001:
+                            if new_qty > QTY_ZERO_THRESHOLD:
                                 first_price = first_price * (qty / new_qty)
                             qty = max(0.0, new_qty)
                         # total_cost unchanged — corporate action, not a purchase
             
-            if qty > 0.0001:
+            if qty > QTY_ZERO_THRESHOLD:
                 latest = group[-1]
                 # Entry price should be the average price in 'points' (e.g. 98.5)
                 # total_cost is in dollars (Price * Qty * Mult)

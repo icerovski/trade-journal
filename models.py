@@ -2,6 +2,7 @@ import pandas as pd
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+from constants import QTY_ZERO_THRESHOLD, AAGR_MIN_YEARS
 
 @dataclass
 class Trade:
@@ -123,34 +124,6 @@ class Position:
         self.inception_price = 0.0
         self.date_entry = None
 
-    def apply_trade(self, side: str, q: float, p: float, m: float, t_date=None):
-        """
-        Updates the position based on a single trade.
-        Implements Weighted Average Cost (WAC) and Reset-on-Zero.
-        """
-        side = side.upper()
-        if side in ['BUY', 'TRANSFER_IN']:
-            if self.qty <= 0.0001:
-                self.date_entry = pd.to_datetime(t_date) if t_date else None
-                self.inception_price = p
-                self.multiplier = m
-            
-            new_qty = self.qty + q
-            # WAC calculation
-            if (new_qty * m) != 0:
-                self.entry_price = ((self.qty * self.entry_price * self.multiplier) + (q * p * m)) / (new_qty * m)
-            self.qty = new_qty
-            self.multiplier = m
-            
-        elif side in ['SELL', 'TRANSFER_OUT']:
-            self.qty = max(0, self.qty - q)
-            if self.qty <= 0.0001:
-                self.reset()
-                
-        elif side == 'SPLIT':
-            # Split increases qty but keeps total cost basis the same
-            self.qty += q
-
     def calculate_financial_metrics(self):
         """Calculates core P/L and growth metrics."""
         # Institutional Fallback: Use mark_price if current_price (YF) is unavailable
@@ -167,7 +140,7 @@ class Position:
         # Age & Growth
         today = pd.Timestamp.now()
         self.age_days = (today - self.date_entry).days if pd.notnull(self.date_entry) else 0
-        years = max(self.age_days / 365.25, 0.04) # Floor at ~2 weeks for AAGR stability
+        years = max(self.age_days / 365.25, AAGR_MIN_YEARS)
         
         if self.entry_price > 0:
             growth_factor = effective_price / self.entry_price
@@ -178,48 +151,32 @@ class Position:
         else:
             self.aagr = 0.0
 
+    # Maps Position field name → DataFrame column name consumed by the view layer.
+    # Update this mapping when renaming a field; column names are part of the UI contract.
+    _COLUMN_MAP = {
+        'name': 'Name', 'ticker': 'Ticker', 'conid': 'conid',
+        'account_id': 'account_id', 'date_entry': 'Date', 'qty': 'Qty',
+        'multiplier': 'Multiplier', 'entry_price': 'Entry',
+        'inception_price': 'Inception', 'market_value': 'MarketValue',
+        'unrealized_pl': 'PL_Inc', 'pl_pct': 'PL_Inc_Pct',
+        'daily_pl': 'PL_Daily', 'daily_pl_pct': 'PL_Daily_Pct',
+        'aagr': 'AAGR', 'age_days': 'Age_Days', 'ccy': 'CCY',
+        'asset_class': 'AssetClass', 'atr': 'ATR', 'inception_atr': 'InceptionATR',
+        'stop_type': 'StopType', 'entry_type': 'EntryType', 'scale_step': 'ScaleStep',
+        'max_r_pct': 'MaxRPct', 'max_exp_pct': 'MaxExpPct',
+        'sl_price': 'SL_Price', 'tp_price': 'TP_Price',
+        'down_pct': 'Down_Pct', 'up_pct': 'Up_Pct',
+        'risk_val': 'Risk_Val', 'reward_val': 'Reward_Val', 'rr_ratio': 'RR_Ratio',
+        'sl_pct_base': 'sl_pct_base', 'risk_pct_nav': 'risk_pct_nav',
+        'max_since_entry': 'MaxSinceEntry', 'nav_pct': 'NavPct',
+        'listing_exchange': 'ListingExchange',
+        'underlying_symbol': 'UnderlyingSymbol', 'isin': 'ISIN',
+    }
+
     def to_dict(self):
         """Converts to a dictionary for DataFrame compatibility."""
-        return {
-            'Name': self.name,
-            'Ticker': self.ticker,
-            'conid': self.conid,
-            'account_id': self.account_id,
-            'Date': self.date_entry,
-            'Qty': self.qty,
-            'Multiplier': self.multiplier,
-            'Entry': self.entry_price,
-            'Inception': self.inception_price,
-            'Price': self.current_price or self.mark_price,
-            'MarketValue': self.market_value,
-            'CostBasis': self.entry_price * self.qty * self.multiplier,
-            'PL_Inc': self.unrealized_pl,
-            'PL_Inc_Pct': self.pl_pct,
-            'PL_Daily': self.daily_pl,
-            'PL_Daily_Pct': self.daily_pl_pct,
-            'AAGR': self.aagr,
-            'Age_Days': self.age_days,
-            'CCY': self.ccy,
-            'AssetClass': self.asset_class,
-            'ATR': self.atr,
-            'InceptionATR': self.inception_atr,
-            'StopType': self.stop_type,
-            'EntryType': self.entry_type,
-            'ScaleStep': self.scale_step,
-            'MaxRPct': self.max_r_pct,
-            'MaxExpPct': self.max_exp_pct,
-            'SL_Price': self.sl_price,
-            'TP_Price': self.tp_price,
-            'Down_Pct': self.down_pct,
-            'Up_Pct': self.up_pct,
-            'Risk_Val': self.risk_val,
-            'Reward_Val': self.reward_val,
-            'RR_Ratio': self.rr_ratio,
-            'sl_pct_base': self.sl_pct_base,
-            'risk_pct_nav': self.risk_pct_nav,
-            'MaxSinceEntry': self.max_since_entry,
-            'NavPct': self.nav_pct,
-            'ListingExchange': self.listing_exchange,
-            'UnderlyingSymbol': self.underlying_symbol,
-            'ISIN': self.isin
-        }
+        result = {col: getattr(self, field) for field, col in self._COLUMN_MAP.items()}
+        # Computed and special-case fields not directly mapped from a single attribute
+        result['Price'] = self.current_price or self.mark_price
+        result['CostBasis'] = self.entry_price * self.qty * self.multiplier
+        return result

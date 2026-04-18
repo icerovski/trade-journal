@@ -11,6 +11,7 @@ from core.portfolio_manager import PortfolioManager
 from core.risk_engine import get_atr_discovery_data, RiskEngine
 from db import get_all_monitored_profiles, delete_risk_profile
 from logger import logger
+from constants import CONFLUENCE_ATR_THRESHOLD
 
 class WatchListWorkspace(App):
     """
@@ -247,8 +248,8 @@ class WatchListWorkspace(App):
             atr_s = dist_s / atr_14 if atr_14 > 0 else 0
             
             # Highlight if very close (Confluence)
-            p_style = "bold green" if atr_p < 0.25 else "white"
-            s_style = "bold cyan" if atr_s < 0.25 else "white"
+            p_style = "bold green" if atr_p < CONFLUENCE_ATR_THRESHOLD else "white"
+            s_style = "bold cyan" if atr_s < CONFLUENCE_ATR_THRESHOLD else "white"
             
             # Add Row: Indicator, Price Dist (%), Price Dist (ATR), Stop Dist (%), Stop Dist (ATR)
             c_table.add_row(
@@ -260,13 +261,13 @@ class WatchListWorkspace(App):
             )
 
         # Update Confluence Strength (Point count)
-        # Strength = how many indicators are within 0.25 ATR of price or stop
+        # Strength = how many indicators are within CONFLUENCE_ATR_THRESHOLD ATR of price or stop
         strength = 0
         for name in indicators:
             val = dmas.get(name)
             if val:
-                if abs(data['current_price'] - val) / atr_14 < 0.25: strength += 1
-                if abs(stop_price - val) / atr_14 < 0.25: strength += 1
+                if abs(data['current_price'] - val) / atr_14 < CONFLUENCE_ATR_THRESHOLD: strength += 1
+                if abs(stop_price - val) / atr_14 < CONFLUENCE_ATR_THRESHOLD: strength += 1
         
         score_color = "green" if strength >= 3 else ("yellow" if strength >= 1 else "red")
         self.query_one("#confluence-strength", Static).update(f"[{score_color}]{strength}-Point Cluster Detected[/]")

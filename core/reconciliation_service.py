@@ -2,6 +2,7 @@ import pandas as pd
 from typing import List, Dict, Optional, Tuple
 from models import Position, Trade
 from dataclasses import replace as dc_replace
+from constants import QTY_ZERO_THRESHOLD
 
 class ReconciliationService:
     """
@@ -23,8 +24,11 @@ class ReconciliationService:
         # 1. Filter for trades occurring AFTER the report date      
         pending_deltas = self._filter_pending_deltas(all_trades, report_date)
 
-        # 2. Pre-calculate ledger positions for cost-basis recovery 
-        ledger_by_key, ledger_by_conid, ledger_by_global = self._prepare_ledger_lookups(all_trades, ledger_engine)
+        # 2. Pre-calculate ledger positions for cost-basis recovery.
+        # Exclude post-report-date confirmation trades so healing is not contaminated
+        # by deltas that will be applied separately in step 3.
+        healing_trades = [t for t in all_trades if t not in pending_deltas]
+        ledger_by_key, ledger_by_conid, ledger_by_global = self._prepare_ledger_lookups(healing_trades, ledger_engine)
 
         open_list = []
         matched_keys = set()
@@ -37,9 +41,9 @@ class ReconciliationService:
             self._heal_from_ledger(pos, ledger_by_key, ledger_by_conid, ledger_by_global)
 
             # --- APPLY INTRADAY DELTAS ---
-            self._apply_intraday_deltas(pos, pending_deltas)        
+            self._apply_intraday_deltas(pos, pending_deltas, ledger_engine)
 
-            if pos.qty > 0.0001:
+            if pos.qty > QTY_ZERO_THRESHOLD:
                 # Final fallback for date if still missing
                 if not pos.date_entry or pd.isna(pos.date_entry):   
                     pos.date_entry = report_date
@@ -138,14 +142,27 @@ class ReconciliationService:
         # 3. Inception Healing: Always trace back to the very first global purchase
         pos.inception_price = gp.inception_price if gp else (lp.inception_price if lp else pos.entry_price)
 
-    def _apply_intraday_deltas(self, pos: Position, deltas: List[Trade]):
+    def _apply_intraday_deltas(self, pos: Position, deltas: List[Trade], ledger_engine) -> None:
         """Applies relevant intraday trades to a position's quantity and cost basis."""
         adjustments = [t for t in deltas if str(t.conid) == pos.conid and t.account_id == pos.account_id]
-        for t in adjustments:
-            pos.apply_trade(
-                side=t.side,
-                q=t.quantity,
-                p=t.price,
-                m=t.multiplier,
-                t_date=t.date
-            )
+        if not adjustments:
+            return
+
+        # Represent the healed snapshot as a synthetic BUY, then replay through
+        # the ledger so WAC and reset-on-zero logic live in one place only.
+        snapshot_date = pos.date_entry.strftime("%Y-%m-%d") if pos.date_entry else "2000-01-01"
+        synthetic = Trade(
+            date=snapshot_date, ticker=pos.ticker, side='BUY',
+            quantity=pos.qty, price=pos.entry_price,
+            conid=pos.conid, account_id=pos.account_id,
+            multiplier=pos.multiplier, source='SNAPSHOT',
+        )
+        new_positions = ledger_engine.calculate_positions([synthetic] + adjustments)
+        if new_positions:
+            new_pos = new_positions[0]
+            pos.qty = new_pos.qty
+            pos.entry_price = new_pos.entry_price
+            # Preserve inception_price and date_entry from the healed snapshot
+        else:
+            pos.qty = 0.0
+            pos.entry_price = 0.0
