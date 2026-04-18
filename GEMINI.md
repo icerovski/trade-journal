@@ -50,9 +50,9 @@ This document provides a comprehensive technical and strategic overview of the T
     * **Module 1: Foundation**: Data modeling, immutability, and database persistence.
 
 #### Core Logic (core/)
-*   **ledger_engine.py**: The Accounting Engine. Implements "Reset-on-Zero" ledger replay and dynamic `SPLIT` proportionality to maintain correct inception prices.
+*   **ledger_engine.py**: The Accounting Engine. Implements "Reset-on-Zero" ledger replay and dynamic `SPLIT` proportionality to maintain correct inception prices. Handles both forward splits (positive qty) and reverse splits (negative qty) using signed quantity from the Trade object.
 *   **reconciliation_service.py**: The Healer. Reconciles broker snapshots with manual trades using a dual-pass "Global Ledger" to wash out internal account transfers, recovering the true, original cost basis.
-*   **risk_engine.py**: The Risk Engine. Calculates Stop Losses and Take Profits based on **ACTIVE Risk Profiles**. Supports structured ATR analysis and Dual-Constraint Auditing.
+*   **risk_engine.py**: The Risk Engine. Calculates Stop Losses and Take Profits based on **ACTIVE Risk Profiles**. Supports structured ATR analysis and Dual-Constraint Auditing. `get_atr_discovery_data()` is decomposed into `_fetch_price_data()` (I/O) and `_compute_atr_rows()` (computation); accepts a `mapper=` parameter to avoid redundant service instantiation when called from a workspace that already holds a `PortfolioManager`.
 *   **asset_registry.py**: The Rule Registry. Centralizes asset-specific heuristics (e.g., 10.0 multiplier for Bonds).
 *   **kids_fund_engine.py**: The Trustee. Calculates individual ownership units and Glide Path compliance. Implements **Parity-Based Distribution** to ensure equal purchasing power at age 18 (adjusted for 3.5% inflation).
 
