@@ -214,8 +214,8 @@ class WatchListWorkspace(App):
         
         # Pull the specific Watch List prospect to get its configured stop
         profiles = get_all_monitored_profiles()
-        p_cfg = next((p for p in profiles if p['ticker'] == message.ticker), None)
-        assigned_atr = p_cfg['atr_value'] if p_cfg else atr_14
+        p_cfg = next((p for p in profiles if p.ticker == message.ticker), None)
+        assigned_atr = p_cfg.atr_value if p_cfg else atr_14
         
         stop_price = data['current_price'] - assigned_atr
         
@@ -277,9 +277,9 @@ class WatchListWorkspace(App):
             return
         # Find the conid for this ticker in the DB
         profiles = get_all_monitored_profiles()
-        p_cfg = next((p for p in profiles if p['ticker'] == self.current_ticker), None)
+        p_cfg = next((p for p in profiles if p.ticker == self.current_ticker), None)
         if p_cfg:
-            delete_risk_profile(p_cfg['conid'])
+            delete_risk_profile(p_cfg.conid)
             self.notify(f"Stopped monitoring {self.current_ticker}.")
             self.analysis_cache.pop(self.current_ticker, None)
             self.load_prospects()
