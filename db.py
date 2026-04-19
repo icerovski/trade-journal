@@ -298,9 +298,28 @@ def get_asset_details_from_trades(conid):
     """
     conn = get_conn()
     cursor = conn.execute("""
-        SELECT isin, asset_class as asset_category, listing_exchange, currency, underlying_symbol 
+        SELECT isin, asset_class as asset_category, listing_exchange, currency, underlying_symbol
         FROM ticker_info WHERE conid = ?
     """, (str(conid),))
     row = cursor.fetchone()
     conn.close()
     return row
+
+def get_kids_config():
+    """Returns all rows from kids_config as a list of dicts."""
+    import pandas as pd
+    conn = get_conn()
+    df = pd.read_sql("SELECT * FROM kids_config", conn)
+    conn.close()
+    return df
+
+def get_kids_trades(account_id, after_date):
+    """Returns BUY/SELL trades for the kids account after a given date."""
+    import pandas as pd
+    conn = get_conn()
+    df = pd.read_sql(
+        "SELECT side, quantity, price, multiplier FROM trades WHERE account_id = ? AND date > ?",
+        conn, params=(account_id, after_date)
+    )
+    conn.close()
+    return df

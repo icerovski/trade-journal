@@ -168,37 +168,6 @@ class TickerMapper:
             # 1. Exchange Suffixes
             for key, suffix in cls.EXCHANGE_SUFFIXES.items():
                 if key in exchange:
-                    t = underlying if (key == 'IBIS' and underlying and str(underlying) != 'nan') else ticker
-                    return f"{t}{suffix}"
-            
-            # 2. Currency Fallbacks
-            if ccy == 'USD':
-                if ' PR' in ticker:
-                    return ticker.replace(' PR ', '-P').replace(' PR', '-P').replace(' ', '-')
-                return ticker.replace(' ', '-').replace('.', '-')
-            
-            if ccy in cls.CURRENCY_SUFFIXES:
-                return f"{ticker}{cls.CURRENCY_SUFFIXES[ccy]}"
-        
-        return ticker
-
-    @classmethod
-    def _apply_heuristics(cls, ticker, details):
-        """Applies rule-based mapping when online search fails."""
-        asset = details.get('asset') or 'STK'
-        exchange = details.get('exchange') or ''
-        ccy = details.get('ccy') or 'USD'
-        underlying = details.get('underlying') or ''
-
-        # A. Check Asset-Specific Lambda Rules (Crypto/Options)
-        if asset in cls.ASSET_RULES:
-            return cls.ASSET_RULES[asset](ticker, details)
-        
-        # B. STK/ETF/FUND Logic
-        if asset in ['STK', 'ETF', 'FUND']:
-            # 1. Exchange Suffixes
-            for key, suffix in cls.EXCHANGE_SUFFIXES.items():
-                if key in exchange:
                     # Special Case: IBIS often uses underlying for the YF ticker
                     t = underlying if (key == 'IBIS' and underlying and str(underlying) != 'nan') else ticker
                     return f"{t}{suffix}"

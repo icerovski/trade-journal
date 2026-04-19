@@ -11,6 +11,46 @@ class IBKRParser:
     Separates the 'Knowledge of Columns' from the 'Networking' layer.
     """
 
+    # --- Private Helpers ---
+
+    @staticmethod
+    def _load_csv(file_path, filter_symbol=True, execution_only=False):
+        """Reads a Flex CSV, strips headers, and applies standard row filters."""
+        df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
+        df.columns = df.columns.str.strip()
+        if filter_symbol and 'Symbol' in df.columns:
+            df = df[df['Symbol'] != 'Symbol'].dropna(subset=['Symbol'])
+        if execution_only and 'LevelOfDetail' in df.columns:
+            df = df[df['LevelOfDetail'] == 'EXECUTION']
+        return df
+
+    @staticmethod
+    def _normalize_conid(conid_raw, ticker):
+        """Parses raw conid value; falls back to ticker with a warning if missing."""
+        try:
+            conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
+        except Exception:
+            conid = str(conid_raw)
+        if not conid or conid == 'nan':
+            logger.warning(f"Missing conid for {ticker} — using ticker as fallback")
+            conid = ticker
+        return conid
+
+    @staticmethod
+    def _update_asset_master(row, conid, ticker, asset_cat, multiplier=None):
+        """Upserts a row into the ticker_info Asset Master."""
+        db.save_ticker_info(
+            conid=conid,
+            ticker_ibkr=ticker,
+            isin=str(row.get('ISIN', '')),
+            asset_class=asset_cat,
+            multiplier=multiplier,
+            description=row.get('Description', ticker),
+            listing_exchange=str(row.get('ListingExchange', '')),
+            currency=str(row.get('CurrencyPrimary', '')),
+            underlying_symbol=str(row.get('UnderlyingSymbol', ''))
+        )
+
     @staticmethod
     def parse_confirmations_csv(file_path):
         """Parses real-time Trade Confirmations and replaces matching manual entries."""
@@ -18,24 +58,14 @@ class IBKRParser:
             return 0
 
         try:
-            # Handle multiple redundant headers typical in Flex CSV
-            df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
-            df.columns = df.columns.str.strip()
-            
-            if 'Symbol' in df.columns:
-                df = df[df['Symbol'] != 'Symbol'].dropna(subset=['Symbol'])
-            
-            # Filter for EXECUTION rows only
-            if 'LevelOfDetail' in df.columns:
-                df = df[df['LevelOfDetail'] == 'EXECUTION']
-            
+            df = IBKRParser._load_csv(file_path, filter_symbol=True, execution_only=True)
             count = 0
             for _, row in df.iterrows():
                 ticker = str(row.get('Symbol', '')).upper()
                 side = str(row.get('Buy/Sell', '')).upper()
                 date_val = str(row.get('TradeDate', ''))
                 qty = abs(float(row.get('Quantity', 0)))
-                
+
                 if not ticker or side not in ['BUY', 'SELL'] or qty == 0:
                     continue
 
@@ -45,49 +75,22 @@ class IBKRParser:
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
-
-                    # Standardize Qty and Multiplier
                     qty, multiplier = AssetRegistry.standardize_asset_quantity_and_multiplier(asset_cat, qty, multiplier)
                 except Exception as e:
                     logger.warning(f"Skipping confirmation row for {ticker}: {e}")
                     continue
 
+                conid = IBKRParser._normalize_conid(row.get('Conid'), ticker)
+                IBKRParser._update_asset_master(row, conid, ticker, asset_cat, multiplier)
 
-
-                # Normalize Conid
-                conid_raw = row.get('Conid')
-                try:
-                    conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                except Exception:
-                    conid = str(conid_raw)
-
-                if not conid or conid == 'nan':
-                    logger.warning(f"Missing conid for confirmation row {ticker} — using ticker as fallback")
-                    conid = ticker
-
-                # 2. Update Asset Master (Metadata)
-                db.save_ticker_info(
-                    conid=conid,
-                    ticker_ibkr=ticker,
-                    isin=str(row.get('ISIN', '')),
-                    asset_class=asset_cat,
-                    multiplier=multiplier,
-                    description=row.get('Description', ''),
-                    listing_exchange=str(row.get('ListingExchange', '')),
-                    currency=str(row.get('CurrencyPrimary', '')),
-                    underlying_symbol=str(row.get('UnderlyingSymbol', ''))
-                )
-
-                # 3. Ingest Official Trade (Activity Only)
                 ib_id = row.get('TradeID') or row.get('ExecID')
                 ext_id = str(ib_id) if ib_id else f"CONF-{date_normalized}-{ticker}-{qty}"
 
                 if not db.trade_exists(ext_id):
                     db.add_trade(
-                        date=date_normalized, ticker=ticker, side=side, 
+                        date=date_normalized, ticker=ticker, side=side,
                         quantity=qty, price=price, conid=conid,
-                        account_id=account_id,
-                        multiplier=multiplier,
+                        account_id=account_id, multiplier=multiplier,
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
                         source="IBKR_CONFIRMATION", external_id=ext_id
                     )
@@ -104,22 +107,13 @@ class IBKRParser:
             return 0
 
         try:
-            df = pd.read_csv(file_path)
-            df.columns = df.columns.str.strip()
-            
-            if 'Symbol' in df.columns:
-                df = df.dropna(subset=['Symbol'])
-            
-            # MANDATORY: Filter for EXECUTION level to avoid summary rows double counting
-            if 'LevelOfDetail' in df.columns:
-                df = df[df['LevelOfDetail'] == 'EXECUTION']
-            
+            df = IBKRParser._load_csv(file_path, filter_symbol=True, execution_only=True)
             count = 0
             for _, row in df.iterrows():
                 ticker = row.get('Symbol')
                 side = str(row.get('Buy/Sell', '')).upper()
                 date_raw = str(row.get('TradeDate', '')).replace('-', '')
-                
+
                 if not ticker or side not in ['BUY', 'SELL']:
                     continue
 
@@ -130,35 +124,11 @@ class IBKRParser:
                     multiplier = float(row.get('Multiplier', 1.0))
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
-
-                    # Standardize Qty and Multiplier
                     qty, multiplier = AssetRegistry.standardize_asset_quantity_and_multiplier(asset_cat, qty, multiplier)
 
-                    # Normalize Conid
-                    conid_raw = row.get('Conid')
-                    try:
-                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                    except Exception:
-                        conid = str(conid_raw)
+                    conid = IBKRParser._normalize_conid(row.get('Conid'), ticker)
+                    IBKRParser._update_asset_master(row, conid, ticker, asset_cat, multiplier)
 
-                    if not conid or conid == 'nan':
-                        logger.warning(f"Missing conid for trade row {ticker} — using ticker as fallback")
-                        conid = ticker
-
-                    # 2. Update Asset Master (Metadata)
-                    db.save_ticker_info(
-                        conid=conid,
-                        ticker_ibkr=ticker,
-                        isin=str(row.get('ISIN', '')),
-                        asset_class=asset_cat,
-                        multiplier=multiplier,
-                        description=row.get('Description', ''),
-                        listing_exchange=str(row.get('ListingExchange', '')),
-                        currency=str(row.get('CurrencyPrimary', '')),
-                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
-                    )
-
-                    # 3. Ingest Trade (Activity Only)
                     ib_id = row.get('IBOrderID') or row.get('TradeID')
                     ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
 
@@ -166,10 +136,9 @@ class IBKRParser:
                         continue
 
                     db.add_trade(
-                        date=date_str, ticker=ticker, side=side, 
+                        date=date_str, ticker=ticker, side=side,
                         quantity=qty, price=price, conid=conid,
-                        account_id=account_id,
-                        multiplier=multiplier,
+                        account_id=account_id, multiplier=multiplier,
                         notes=f"IBKR TRADES Import {datetime.now().date()}",
                         source="IBKR_TRADES_CSV", external_id=ext_id
                     )
@@ -189,19 +158,15 @@ class IBKRParser:
             return 0
 
         try:
-            df = pd.read_csv(file_path)
-            df.columns = df.columns.str.strip()
-            
-            # Filter for valid transfer types
+            df = IBKRParser._load_csv(file_path, filter_symbol=True, execution_only=False)
             if 'Type' in df.columns:
-                allowed_types = ['INTERCOMPANY', 'INTERNAL', 'ADJUSTMENT']
-                df = df[df['Type'].isin(allowed_types)]
-            
+                df = df[df['Type'].isin(['INTERCOMPANY', 'INTERNAL', 'ADJUSTMENT'])]
+
             count = 0
             for _, row in df.iterrows():
                 ticker = row.get('Symbol')
-                direction = str(row.get('Direction', '')).upper() # IN / OUT
-                
+                direction = str(row.get('Direction', '')).upper()
+
                 if not ticker or direction not in ['IN', 'OUT']:
                     continue
 
@@ -212,59 +177,28 @@ class IBKRParser:
                     asset_cat = str(row.get('AssetClass', 'STK')).upper()
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
 
-                    # Calculate price from PositionAmount (Cost Basis)
                     pos_amt = abs(float(row.get('PositionAmount', 0)))
                     price = (pos_amt / qty) / multiplier if (qty * multiplier) > 0 else 0.0
 
-                    # Bond/Bill Scaling: IBKR reports Face Value, but we want 'Shares' ($1000 par)
+                    # Bond/Bill Scaling: IBKR reports Face Value; convert to $1000-par shares and Points
                     if asset_cat in ['BOND', 'BILL', 'FIXED']:
                         qty = qty / 1000.0
                         if multiplier == 1.0:
                             multiplier = 10.0
-                        # Institutional Correction: Transfers report total value, but trades use 'Points' (Percentage of Par)
-                        # We multiply by 100 to convert decimal (0.85) to Points (85.0)
                         price = price * 100.0
-                    
-                    # Normalize Conid
-                    conid_raw = row.get('Conid')
-                    try:
-                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                    except Exception:
-                        conid = str(conid_raw)
 
-                    if not conid or conid == 'nan':
-                        logger.warning(f"Missing conid for transfer row {ticker} — using ticker as fallback")
-                        conid = ticker
+                    conid = IBKRParser._normalize_conid(row.get('Conid'), ticker)
+                    IBKRParser._update_asset_master(row, conid, ticker, asset_cat, multiplier)
 
-                    # 2. Update Asset Master (Metadata)
-                    db.save_ticker_info(
-                        conid=conid,
-                        ticker_ibkr=ticker,
-                        isin=str(row.get('ISIN', '')),
-                        asset_class=asset_cat,
-                        multiplier=multiplier,
-                        description=row.get('Description', ''),
-                        listing_exchange=str(row.get('ListingExchange', '')),
-                        currency=str(row.get('CurrencyPrimary', '')),
-                        underlying_symbol=str(row.get('UnderlyingSymbol', ''))
-                    )
-
-                    # 3. Ingest Transfer (Activity Only)
                     side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
-                    
-                    # Use unique ID that includes account and side to prevent internal transfers from colliding
                     raw_id = row.get('TransactionID')
-                    if raw_id:
-                        ext_id = f"{raw_id}-{account_id}-{side}"
-                    else:
-                        ext_id = f"XFER-{date_str}-{ticker}-{qty}-{account_id}-{side}"
+                    ext_id = f"{raw_id}-{account_id}-{side}" if raw_id else f"XFER-{date_str}-{ticker}-{qty}-{account_id}-{side}"
 
                     if not db.trade_exists(ext_id):
                         db.add_trade(
-                            date=date_str, ticker=ticker, side=side, 
+                            date=date_str, ticker=ticker, side=side,
                             quantity=qty, price=price, conid=conid,
-                            account_id=account_id,
-                            multiplier=multiplier,
+                            account_id=account_id, multiplier=multiplier,
                             notes=f"IBKR TRANSFER Import ({row.get('Type')})",
                             source="IBKR_TRANSFER_CSV", external_id=ext_id
                         )
@@ -284,66 +218,38 @@ class IBKRParser:
             return 0
 
         try:
-            # Handle multiple headers by ignoring rows that repeat the header
-            df = pd.read_csv(file_path, on_bad_lines='skip')
-            df.columns = df.columns.str.strip()
-            
-            # Remove rows where Symbol is the column name itself (redundant headers)
-            if 'Symbol' in df.columns:
-                df = df[df['Symbol'] != 'Symbol']
-            
+            df = IBKRParser._load_csv(file_path, filter_symbol=True, execution_only=False)
             count = 0
             for _, row in df.iterrows():
                 ticker = row.get('Symbol')
                 if not ticker or str(ticker) == '-':
                     continue
-                
-                # Check different possible column names for Type/Description
+
                 action_desc = str(row.get('ActionDescription', row.get('Type', ''))).upper()
-                
                 if 'SPLIT' not in action_desc:
                     continue
 
                 try:
-                    # Check different possible column names for Date
                     raw_date = row.get('Report Date', row.get('Date'))
                     date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
                     qty = float(row.get('Quantity', 0))
                     account_id = str(row.get('ClientAccountID', row.get('AccountId', 'U0000000')))
-                    
-                    # Ensure qty is non-zero and account is real
+
                     if qty == 0 or account_id == '-':
                         continue
 
-                    # Normalize Conid
-                    conid_raw = row.get('Conid')
-                    try:
-                        conid = str(int(float(str(conid_raw)))) if pd.notna(conid_raw) else ''
-                    except Exception:
-                        conid = str(conid_raw)
+                    conid = IBKRParser._normalize_conid(row.get('Conid'), ticker)
+                    asset_cat = str(row.get('AssetClass', 'STK')).upper()
+                    IBKRParser._update_asset_master(row, conid, ticker, asset_cat)
 
-                    # 2. Update Asset Master (Metadata)
-                    db.save_ticker_info(
-                        conid=conid,
-                        ticker_ibkr=ticker,
-                        isin=str(row.get('ISIN', '')),
-                        asset_class=str(row.get('AssetClass', 'STK')).upper(),
-                        description=ticker # Fallback
-                    )
-
-                    # 3. Ingest Split (Activity Only)
                     raw_id = row.get('TransactionID')
-                    if raw_id:
-                        ext_id = f"{raw_id}-{account_id}"
-                    else:
-                        ext_id = f"CORP-{date_str}-{ticker}-{qty}-{account_id}"
+                    ext_id = f"{raw_id}-{account_id}" if raw_id else f"CORP-{date_str}-{ticker}-{qty}-{account_id}"
 
                     if not db.trade_exists(ext_id):
                         db.add_trade(
-                            date=date_str, ticker=ticker, side='SPLIT', 
+                            date=date_str, ticker=ticker, side='SPLIT',
                             quantity=qty, price=0.0, conid=conid,
-                            account_id=account_id,
-                            multiplier=1.0,
+                            account_id=account_id, multiplier=1.0,
                             notes=f"IBKR CORP ACTION: {action_desc[:100]}",
                             source="IBKR_CORP_CSV", external_id=ext_id
                         )

@@ -76,10 +76,9 @@ class PortfolioManager:
         if not positions:
             return pd.DataFrame(), []
 
-        # 1. Metdata Healing & Rule Enrichment
+        # 1. Metadata Healing & Rule Enrichment
         self._heal_inception_dates(positions, risk_settings)
-        for p in positions:
-            AssetRegistry.enrich_position_metadata(p)
+        self._enrich_asset_metadata(positions)
         
         # 2. Batch Market Data Enrichment
         if not silent:
@@ -91,6 +90,11 @@ class PortfolioManager:
 
         # Convert list of objects back to DataFrame for the View layer
         return pd.DataFrame([p.to_dict() for p in enriched_positions]), enriched_positions
+
+    def _enrich_asset_metadata(self, positions: list[Position]):
+        """Applies asset-registry rules (multipliers, asset class corrections) to each position."""
+        for p in positions:
+            AssetRegistry.enrich_position_metadata(p)
 
     def _heal_inception_dates(self, positions: list[Position], risk_settings: dict):
         """Force priority to Risk Profile Start Date for Inception if available."""

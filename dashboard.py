@@ -10,6 +10,7 @@ from textual import on
 
 from logger import logger, disable_console_logging, enable_console_logging
 from core.portfolio_manager import PortfolioManager
+from core.ui_utils import UIUtils
 
 class TradingCockpit(App):
     """
@@ -80,9 +81,7 @@ class TradingCockpit(App):
 
     @staticmethod
     def color_fmt(val, fmt=",.0f", suffix=""):
-        """Centralized color scheme: Green for positive, Red for negative."""
-        color = "green" if val >= 0 else "red"
-        return f"[{color}]{val:{fmt}}{suffix}[/]"
+        return UIUtils.color_fmt(val, fmt, suffix)
 
     class DataRefreshed(Message):
         """Internal message to update UI after background fetch."""

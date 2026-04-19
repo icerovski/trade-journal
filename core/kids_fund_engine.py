@@ -1,7 +1,6 @@
-import pandas as pd
 from datetime import datetime
 from config import KIDS_ACCOUNT_ID, KIDS_GLIDE_PATH
-import db
+from db import get_kids_config, get_kids_trades
 
 class KidsFundEngine:
     """
@@ -15,32 +14,19 @@ class KidsFundEngine:
         Calculates the unit-based ownership split for the kids.
         Base Units (JSON) + 33/33/33 split for everything after March 5, 2026.
         """
-        conn = db.get_conn()
-        
-        # 1. Load Base Configuration
-        config_df = pd.read_sql("SELECT * FROM kids_config", conn)
+        config_df = get_kids_config()
         if config_df.empty:
-            conn.close()
             return {}
-            
+
         kids_data = {row['name']: {
             'base_units': row['base_units'],
             'birthdate': row['birthdate'],
             'base_date': row['base_date'],
             'current_units': row['base_units']
         } for _, row in config_df.iterrows()}
-        
-        # 2. Add New Units from Trades
-        # We look for trades in the Kids Account after the base date
+
         base_date_str = config_df['base_date'].iloc[0]
-        trades_query = f"""
-            SELECT side, quantity, price, multiplier 
-            FROM trades 
-            WHERE account_id = '{KIDS_ACCOUNT_ID}' 
-            AND date > '{base_date_str}'
-        """
-        new_trades = pd.read_sql(trades_query, conn)
-        conn.close()
+        new_trades = get_kids_trades(KIDS_ACCOUNT_ID, base_date_str)
         
         # Healing: Handle NULL multipliers from older or manual entries
         if not new_trades.empty:
