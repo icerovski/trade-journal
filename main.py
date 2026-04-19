@@ -88,26 +88,29 @@ def show_menu(nav_info=None):
 
     console.print(Panel(menu_text, title="[bold]TRADE JOURNAL & RISK MANAGEMENT[/bold]", subtitle="CEO Dashboard v2.0", border_style="blue"))
 
-def handle_sync_all():
+def _refresh_broker_snapshot(manager):
+    """Downloads fresh broker data and ingests confirmations into the ledger."""
+    fetch_open_positions()
+    print_nav_table(manager, force_download=True)
+    fetch_trade_confirmations()
+    process_confirmations()
+
+
+def handle_sync_all(manager):
     """Unified command for full system refresh."""
     console.print("\n[bold green]>>> Step 1: Syncing with Interactive Brokers...[/bold green]")
     fetch_trade_history()
-    fetch_open_positions()
-    fetch_trade_confirmations()
-    
-    manager = PortfolioManager()
-    print_nav_table(manager, force_download=True)
-    
-    console.print("\n[bold green]>>> Step 2: Ingesting Trades into trade_journal.db...[/bold green]")
+    _refresh_broker_snapshot(manager)
+
+    console.print("\n[bold green]>>> Step 2: Ingesting Full Trade History...[/bold green]")
     process_all_local_history()
-    process_confirmations()
-    
+
     console.print("\n[bold green]>>> Step 3: Syncing Historical Prices (prices.db)...[/bold green]")
-    handle_sync_prices(silent=True)
-    
+    handle_sync_prices(manager, silent=True)
+
     console.print("\n[bold green]SUCCESS: Full system sync complete.[/bold green]")
 
-def handle_maintenance():
+def handle_maintenance(manager):
     while True:
         console.print("\n[bold magenta]--- SYSTEM MAINTENANCE ---[/bold magenta]")
         print("1. Rebuild Trades (Surgical wipe, preserve risk profiles)")
@@ -115,7 +118,7 @@ def handle_maintenance():
         print("3. Re-ingest ALL local CSVs (Full History Replay)")
         print("4. Sync Historical Prices (Manual)")
         print("0. Back")
-        
+
         choice = input("\nChoice: ").strip()
         if choice == '1':
             handle_rebuild_db()
@@ -124,15 +127,14 @@ def handle_maintenance():
         elif choice == '3':
             process_local_csvs()
         elif choice == '4':
-            handle_sync_prices()
+            handle_sync_prices(manager)
         elif choice == '0':
             break
 
-def handle_sync_prices(silent=False):
+def handle_sync_prices(manager, silent=False):
     if not silent:
         console.print("\n[bold cyan]--- SYNC HISTORICAL PRICES ---[/bold cyan]")
-    
-    manager = PortfolioManager()
+
     open_positions = manager.get_open_positions_hybrid()
     
     if not open_positions:
@@ -176,23 +178,17 @@ def handle_atr_calculator():
     from risk_workspace import run_risk_workspace
     run_risk_workspace()
 
-def handle_view_dashboard():
+def handle_view_dashboard(manager):
     """Direct-launch institutional dashboard."""
     console.print("\n[bold cyan]--- VIEW DASHBOARD ---[/bold cyan]")
-    
-    # 1. Real-Time Refresh Prompt (Broker Sync)
+
     refresh_broker = input("Sync with IBKR (Fresh Snapshots + Intraday)? [y/N]: ").strip().lower()
     if refresh_broker in ['y', 'yes']:
         console.print("[bold green]>>> Syncing broker data...[/bold green]")
-        fetch_open_positions()
-        manager = PortfolioManager()
-        print_nav_table(manager, force_download=True)
-        fetch_trade_confirmations()
-        process_confirmations()
-        
-    # 2. Direct Launch (No more prompts for Layout/Method/View)
+        _refresh_broker_snapshot(manager)
+
     console.print("[cyan]Launching Trading Cockpit...[/cyan]")
-    run_live_dashboard(PortfolioManager())
+    run_live_dashboard(manager)
 
 def handle_kids_fund():
     """Launch the Kids Fund Dashboard."""
@@ -214,16 +210,16 @@ def main():
         show_menu(nav_info)
         choice = input("\nSelect option: ").strip()
         if choice == '1':
-            handle_sync_all()
-            nav_info = manager.fetch_nav_data() # Refresh after sync
+            handle_sync_all(manager)
+            nav_info = manager.fetch_nav_data()
         elif choice == '2':
             handle_atr_calculator()
         elif choice == '3':
-            handle_view_dashboard()
+            handle_view_dashboard(manager)
         elif choice == '4':
             handle_kids_fund()
         elif choice == '5':
-            handle_maintenance()
+            handle_maintenance(manager)
         elif choice == '6':
             handle_watch_list()
         elif choice == '0':
