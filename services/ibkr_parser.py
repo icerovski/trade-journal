@@ -52,6 +52,8 @@ class IBKRParser:
                     logger.warning(f"Skipping confirmation row for {ticker}: {e}")
                     continue
 
+
+
                 # Normalize Conid
                 conid_raw = row.get('Conid')
                 try:
@@ -172,7 +174,8 @@ class IBKRParser:
                         source="IBKR_TRADES_CSV", external_id=ext_id
                     )
                     count += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Skipping trade row for {ticker}: {e}")
                     continue
             return count
         except Exception as e:
@@ -266,7 +269,8 @@ class IBKRParser:
                             source="IBKR_TRANSFER_CSV", external_id=ext_id
                         )
                         count += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Skipping transfer row for {ticker}: {e}")
                     continue
             return count
         except Exception as e:

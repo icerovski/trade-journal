@@ -90,7 +90,7 @@ class LedgerEngine:
                     p = abs(t.price)
                     m = float(t.multiplier) if t.multiplier is not None else 1.0
                     
-                    if 'OPENING_BALANCE' in t.source.upper() if hasattr(t, 'source') else False:
+                    if 'OPENING_BALANCE' in t.source.upper():
                         qty, total_cost, first_date, first_price, multiplier = q, q * p * m, t.date, p, m
                         continue
                     

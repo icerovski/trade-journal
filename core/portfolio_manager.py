@@ -146,40 +146,7 @@ class PortfolioManager:
 
         # Consolidation Logic & Prospect Promotion
         if not account_id:
-            consolidated = {}
-            for p in open_list:
-                # Bridge: Promote prospects if a real conid is now present
-                promote_prospect_to_active(p.ticker, p.conid)
-                
-                c_id = str(p.conid) # Force string for robust mapping
-                if c_id not in consolidated:
-                    consolidated[c_id] = p
-                else:
-                    existing = consolidated[c_id]
-                    old_qty = existing.qty
-                    p_qty = p.qty
-                    new_qty = old_qty + p_qty
-
-                    if new_qty > QTY_ZERO_THRESHOLD:
-                        # Institutional Weighted Average Cost (WAC)
-                        # total_cost = (Q1 * P1 * M1) + (Q2 * P2 * M2)
-                        # entry_price = total_cost / (TotalQty * M_final)
-                        total_cost = (existing.entry_price * old_qty * existing.multiplier) + \
-                                     (p.entry_price * p_qty * p.multiplier)
-                        
-                        existing.qty = new_qty
-                        existing.entry_price = total_cost / (new_qty * existing.multiplier)
-                        
-                        # Inception Priority: Use the earlier entry date/price
-                        if p.date_entry and (not existing.date_entry or p.date_entry < existing.date_entry):
-                            existing.date_entry = p.date_entry
-                            existing.inception_price = p.inception_price
-                    else:
-                        existing.qty = 0.0
-                        existing.entry_price = 0.0
-                    
-                    existing.account_id = "CONSOLIDATED"
-            open_list = list(consolidated.values())
+            open_list = self._consolidate_positions(open_list)
 
         if asset_class_filter:
             filters = [asset_class_filter.upper()] if isinstance(asset_class_filter, str) else [f.upper() for f in asset_class_filter]
@@ -187,8 +154,38 @@ class PortfolioManager:
             
         if account_id:
             open_list = [p for p in open_list if p.account_id == account_id]
-            
+
         return open_list
+
+    def _consolidate_positions(self, open_list: list[Position]) -> list[Position]:
+        """Merges positions sharing the same conid across accounts using WAC."""
+        from db import promote_prospect_to_active
+        consolidated = {}
+        for p in open_list:
+            promote_prospect_to_active(p.ticker, p.conid)
+            c_id = str(p.conid)
+            if c_id not in consolidated:
+                consolidated[c_id] = p
+            else:
+                existing = consolidated[c_id]
+                old_qty = existing.qty
+                p_qty = p.qty
+                new_qty = old_qty + p_qty
+
+                if new_qty > QTY_ZERO_THRESHOLD:
+                    total_cost = (existing.entry_price * old_qty * existing.multiplier) + \
+                                 (p.entry_price * p_qty * p.multiplier)
+                    existing.qty = new_qty
+                    existing.entry_price = total_cost / (new_qty * existing.multiplier)
+                    if p.date_entry and (not existing.date_entry or p.date_entry < existing.date_entry):
+                        existing.date_entry = p.date_entry
+                        existing.inception_price = p.inception_price
+                else:
+                    existing.qty = 0.0
+                    existing.entry_price = 0.0
+
+                existing.account_id = "CONSOLIDATED"
+        return list(consolidated.values())
 
     def get_watch_list_positions(self, asset_class_filter=None) -> list[Position]:
         """Returns phantom positions for assets on the Watch List."""

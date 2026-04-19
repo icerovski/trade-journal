@@ -271,11 +271,17 @@ class RiskEngine:
         }
 
 def _fetch_price_data(yf_ticker, conid, entry_date_str, entry_price, price_service):
-    """Fetches current price, max-since-entry, and daily OHLCV. Returns (effective_entry, max_price, current_price)."""
+    """
+    Fetches current price, max-since-entry, and daily OHLCV.
+    Returns (effective_entry, max_price, current_price, df_daily).
+    df_daily is the full daily history for prospects (used to resample in _compute_atr_rows),
+    or None for conid-based positions (PriceService handles caching there).
+    """
     if conid:
         df_daily = price_service.fetch_and_store(conid, yf_ticker)
     else:
-        df_daily = yf.Ticker(yf_ticker).history(period="3y")
+        # Single max-history fetch; resampled in _compute_atr_rows to avoid 4 round-trips.
+        df_daily = yf.Ticker(yf_ticker).history(period="max")
 
     if df_daily.empty:
         return None
@@ -284,6 +290,7 @@ def _fetch_price_data(yf_ticker, conid, entry_date_str, entry_price, price_servi
 
     if conid:
         max_price = price_service.highest_high_since(conid, entry_date_str) or entry_price
+        df_daily_out = None  # PriceService owns the cache; callers use get_prices()
     else:
         try:
             entry_dt = pd.to_datetime(entry_date_str)
@@ -293,17 +300,27 @@ def _fetch_price_data(yf_ticker, conid, entry_date_str, entry_price, price_servi
             max_price = df_since['High'].max() if not df_since.empty else entry_price
         except Exception:
             max_price = entry_price
+        df_daily_out = df_daily
 
     # Prospect: if entry unknown, assume buying at market
     effective_entry = entry_price if entry_price > 0 else current_price
     max_price = max(effective_entry, max_price)
 
-    return effective_entry, max_price, current_price
+    return effective_entry, max_price, current_price, df_daily_out
+
+
+_RESAMPLE_RULES = {'weekly': 'W', 'monthly': 'ME', 'quarterly': 'QE'}
+_RESAMPLE_AGG = {'Open': ('Open', 'first'), 'High': ('High', 'max'),
+                 'Low': ('Low', 'min'), 'Close': ('Close', 'last'), 'Volume': ('Volume', 'sum')}
+
+
+def _resample_ohlcv(df_daily: pd.DataFrame, rule: str) -> pd.DataFrame:
+    return df_daily.resample(rule).agg(**_RESAMPLE_AGG).dropna(subset=['Close'])
 
 
 def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_price,
                       multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
-                      price_service):
+                      price_service, df_prospect_daily=None):
     """Computes ATRDiscoveryRow objects for all timeframes and stop types."""
     intervals = [
         ("14d", 14, 'daily'),
@@ -312,20 +329,18 @@ def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_pric
         ("12q", 12, 'quarterly'),
     ]
 
-    yf_params = {
-        'daily':     ("3y",  "1d"),
-        'weekly':    ("5y",  "1wk"),
-        'monthly':   ("10y", "1mo"),
-        'quarterly': ("max", "3mo"),
-    }
-
     results = []
     for label, window, tf in intervals:
         if conid:
             df = price_service.get_prices(conid, timeframe=tf)
         else:
-            period, interval = yf_params[tf]
-            df = yf.Ticker(yf_ticker).history(period=period, interval=interval)
+            # Resample the already-fetched daily history — no additional HTTP calls.
+            if df_prospect_daily is None or df_prospect_daily.empty:
+                continue
+            if tf == 'daily':
+                df = df_prospect_daily
+            else:
+                df = _resample_ohlcv(df_prospect_daily, _RESAMPLE_RULES[tf])
 
         if len(df) < 2:
             continue
@@ -387,12 +402,12 @@ def get_atr_discovery_data(ticker_symbol, entry_date_str, entry_price, multiplie
         price_data = _fetch_price_data(yf_ticker, conid, entry_date_str, entry_price, price_service)
         if price_data is None:
             return None
-        effective_entry, max_price, current_price = price_data
+        effective_entry, max_price, current_price, df_prospect_daily = price_data
 
         rows = _compute_atr_rows(
             yf_ticker, conid, effective_entry, max_price, current_price,
             multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
-            price_service,
+            price_service, df_prospect_daily=df_prospect_daily,
         )
 
         trend_data = price_service.get_trend_analysis(

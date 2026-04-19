@@ -27,7 +27,8 @@ class ReconciliationService:
         # 2. Pre-calculate ledger positions for cost-basis recovery.
         # Exclude post-report-date confirmation trades so healing is not contaminated
         # by deltas that will be applied separately in step 3.
-        healing_trades = [t for t in all_trades if t not in pending_deltas]
+        pending_ids = {id(t) for t in pending_deltas}
+        healing_trades = [t for t in all_trades if id(t) not in pending_ids]
         ledger_by_key, ledger_by_conid, ledger_by_global = self._prepare_ledger_lookups(healing_trades, ledger_engine)
 
         open_list = []
