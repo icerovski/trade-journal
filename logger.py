@@ -1,5 +1,6 @@
 import logging
 import sys
+from contextlib import contextmanager
 from config import DATA_DIR
 
 # Define log file path
@@ -57,6 +58,15 @@ def enable_console_logging():
     console_handler.setFormatter(formatter)
     console_handler.setLevel(logging.INFO)
     logger.addHandler(console_handler)
+
+@contextmanager
+def suppress_console_logging():
+    """Context manager that silences console log output for the duration of a Textual UI block."""
+    disable_console_logging()
+    try:
+        yield
+    finally:
+        enable_console_logging()
 
 # Initialize the global logger instance
 logger = setup_logging()

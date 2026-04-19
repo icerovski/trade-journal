@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual import on
 
-from logger import logger, disable_console_logging, enable_console_logging
+from logger import logger, suppress_console_logging
 from core.portfolio_manager import PortfolioManager
 from core.ui_utils import UIUtils
 
@@ -180,32 +180,28 @@ class TradingCockpit(App):
             
         try:
             self.update_status("[yellow]REFRESHING MARKET DATA...[/yellow]")
-            disable_console_logging()
-            
-            nav_res = self.pm.fetch_nav_data(force_download=False)
-            if nav_res:
-                real_nav, _, _, r_date = nav_res
-            else:
-                real_nav, _, _, r_date = 0.0, "???", [], "---"
-            
-            if self._exit_flag.is_set():
-                return
+            with suppress_console_logging():
+                nav_res = self.pm.fetch_nav_data(force_download=False)
+                if nav_res:
+                    real_nav, _, _, r_date = nav_res
+                else:
+                    real_nav, _, _, r_date = 0.0, "???", [], "---"
 
-            # Always fetch ALL to allow dynamic in-memory filtering.
-            df, _ = self.pm.get_dashboard_df(
-                asset_class_filter=None, 
-                total_nav=real_nav,
-                silent=True
-            )
-            enable_console_logging()
+                if self._exit_flag.is_set():
+                    return
+
+                df, _ = self.pm.get_dashboard_df(
+                    asset_class_filter=None,
+                    total_nav=real_nav,
+                    silent=True
+                )
 
             if self._exit_flag.is_set():
                 return
 
-            # Swift Swap: Always use current sort AND filter preference
             df_view = self.process_and_sort(df) if not df.empty else df
             self.post_message(self.DataRefreshed(df, df_view, real_nav, r_date))
-            
+
         except Exception as e:
             if not self._exit_flag.is_set():
                 logger.error(f"Fetch Error: {e}")
