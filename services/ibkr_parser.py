@@ -37,6 +37,14 @@ class IBKRParser:
         return conid
 
     @staticmethod
+    def _ingest_if_new(ext_id, **kwargs) -> bool:
+        """Persists a trade if not already in the ledger. Returns True if newly ingested."""
+        if db.trade_exists(ext_id):
+            return False
+        db.add_trade(external_id=ext_id, **kwargs)
+        return True
+
+    @staticmethod
     def _update_asset_master(row, conid, ticker, asset_cat, multiplier=None):
         """Upserts a row into the ticker_info Asset Master."""
         db.save_ticker_info(
@@ -85,15 +93,12 @@ class IBKRParser:
 
                 ib_id = row.get('TradeID') or row.get('ExecID')
                 ext_id = str(ib_id) if ib_id else f"CONF-{date_normalized}-{ticker}-{qty}"
-
-                if not db.trade_exists(ext_id):
-                    db.add_trade(
+                if IBKRParser._ingest_if_new(ext_id,
                         date=date_normalized, ticker=ticker, side=side,
                         quantity=qty, price=price, conid=conid,
                         account_id=account_id, multiplier=multiplier,
                         notes=f"IBKR CONFIRMATION {datetime.now().date()}",
-                        source="IBKR_CONFIRMATION", external_id=ext_id
-                    )
+                        source="IBKR_CONFIRMATION"):
                     count += 1
             return count
         except Exception as e:
@@ -131,18 +136,13 @@ class IBKRParser:
 
                     ib_id = row.get('IBOrderID') or row.get('TradeID')
                     ext_id = str(ib_id) if ib_id else f"TRD-{date_str}-{ticker}-{price}-{qty}"
-
-                    if db.trade_exists(ext_id):
-                        continue
-
-                    db.add_trade(
-                        date=date_str, ticker=ticker, side=side,
-                        quantity=qty, price=price, conid=conid,
-                        account_id=account_id, multiplier=multiplier,
-                        notes=f"IBKR TRADES Import {datetime.now().date()}",
-                        source="IBKR_TRADES_CSV", external_id=ext_id
-                    )
-                    count += 1
+                    if IBKRParser._ingest_if_new(ext_id,
+                            date=date_str, ticker=ticker, side=side,
+                            quantity=qty, price=price, conid=conid,
+                            account_id=account_id, multiplier=multiplier,
+                            notes=f"IBKR TRADES Import {datetime.now().date()}",
+                            source="IBKR_TRADES_CSV"):
+                        count += 1
                 except Exception as e:
                     logger.warning(f"Skipping trade row for {ticker}: {e}")
                     continue
@@ -193,15 +193,12 @@ class IBKRParser:
                     side = 'TRANSFER_IN' if direction == 'IN' else 'TRANSFER_OUT'
                     raw_id = row.get('TransactionID')
                     ext_id = f"{raw_id}-{account_id}-{side}" if raw_id else f"XFER-{date_str}-{ticker}-{qty}-{account_id}-{side}"
-
-                    if not db.trade_exists(ext_id):
-                        db.add_trade(
+                    if IBKRParser._ingest_if_new(ext_id,
                             date=date_str, ticker=ticker, side=side,
                             quantity=qty, price=price, conid=conid,
                             account_id=account_id, multiplier=multiplier,
                             notes=f"IBKR TRANSFER Import ({row.get('Type')})",
-                            source="IBKR_TRANSFER_CSV", external_id=ext_id
-                        )
+                            source="IBKR_TRANSFER_CSV"):
                         count += 1
                 except Exception as e:
                     logger.warning(f"Skipping transfer row for {ticker}: {e}")
@@ -244,15 +241,12 @@ class IBKRParser:
 
                     raw_id = row.get('TransactionID')
                     ext_id = f"{raw_id}-{account_id}" if raw_id else f"CORP-{date_str}-{ticker}-{qty}-{account_id}"
-
-                    if not db.trade_exists(ext_id):
-                        db.add_trade(
+                    if IBKRParser._ingest_if_new(ext_id,
                             date=date_str, ticker=ticker, side='SPLIT',
                             quantity=qty, price=0.0, conid=conid,
                             account_id=account_id, multiplier=1.0,
                             notes=f"IBKR CORP ACTION: {action_desc[:100]}",
-                            source="IBKR_CORP_CSV", external_id=ext_id
-                        )
+                            source="IBKR_CORP_CSV"):
                         count += 1
                 except Exception:
                     continue
