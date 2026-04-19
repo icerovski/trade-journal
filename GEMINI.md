@@ -52,7 +52,10 @@ This document provides a comprehensive technical and strategic overview of the T
 #### Core Logic (core/)
 *   **ledger_engine.py**: The Accounting Engine. Implements "Reset-on-Zero" ledger replay and dynamic `SPLIT` proportionality to maintain correct inception prices. Handles both forward splits (positive qty) and reverse splits (negative qty) using signed quantity from the Trade object.
 *   **reconciliation_service.py**: The Healer. Reconciles broker snapshots with manual trades using a dual-pass "Global Ledger" to wash out internal account transfers, recovering the true, original cost basis.
+    * **Healing Contamination Guard**: Pending confirmation deltas are excluded from the healing ledger via an identity set (`pending_ids = {id(t) for t in pending_deltas}`), preventing double-counting of WAC on the same trade.
+    * **LedgerEngine Delta Replay**: Intraday deltas are applied by representing the healed snapshot as a synthetic BUY and replaying through `ledger_engine.calculate_positions()`. WAC and reset-on-zero logic live in exactly one place.
 *   **risk_engine.py**: The Risk Engine. Calculates Stop Losses and Take Profits based on **ACTIVE Risk Profiles**. Supports structured ATR analysis and Dual-Constraint Auditing. `get_atr_discovery_data()` is decomposed into `_fetch_price_data()` (I/O) and `_compute_atr_rows()` (computation); accepts a `mapper=` parameter to avoid redundant service instantiation when called from a workspace that already holds a `PortfolioManager`.
+    * **Single-Fetch Resample**: `_fetch_price_data()` fetches `period="max"` once from yfinance; `_compute_atr_rows()` resamples to weekly/monthly/quarterly via `pandas resample().agg()`, eliminating 3 of 4 HTTP calls per prospect (~75% reduction in ATR discovery wall time).
 *   **asset_registry.py**: The Rule Registry. Centralizes asset-specific heuristics (e.g., 10.0 multiplier for Bonds).
 *   **kids_fund_engine.py**: The Trustee. Calculates individual ownership units and Glide Path compliance. Implements **Parity-Based Distribution** to ensure equal purchasing power at age 18 (adjusted for 3.5% inflation).
 
@@ -63,6 +66,7 @@ This document provides a comprehensive technical and strategic overview of the T
 *   **ibkr_parser.py**: The Translator. Interprets IBKR Flex CSVs (NAV, Trades, Transfers, Corp Actions) and ingests them into the ledger.
     * **Fingerprint De-duplication**: Uses multi-factor external IDs (TransactionID-AccountID-Side) to prevent collisions.
     * **Bond Point Correction**: Automatically scales transfer-derived prices by 100x to maintain standard "Percentage of Par" pricing.
+    * **Logged Exceptions**: All silent `except Exception: continue` blocks now emit `logger.warning()` with row context. No errors are swallowed without trace.
 
 ## 3. Data Management
 *   **Price Persistence**: OHLCV data is indexed by (Conid, Date) in the persistent prices.db.
@@ -79,7 +83,16 @@ This document provides a comprehensive technical and strategic overview of the T
     * `risk_profiles`: Historical and active risk strategies. Includes `inception_stop` and `inception_atr` as permanent risk anchors for auditing.
     * `kids_config`: Parity-adjusted unit baselines and birthdates.
 
-## 4. Operational Protocols
+## 4. Test Coverage
+
+*   **`tests/test_ledger_engine.py`** — 14 tests. Full surface of `LedgerEngine.calculate_positions()`: WAC, reset-on-zero, forward/reverse split (qty/price/cost invariants), same-day transfers, multi-account isolation, oversell edge case.
+*   **`tests/test_reconciliation_service.py`** — 11 tests. Hybrid reconciliation: snapshot passthrough, zero-qty exclusion, cost-basis healing (stepped-up price recovery), entry-date healing, delta BUY/SELL quantity and WAC updates, stale delta rejection, cross-conid isolation, pure-delta position creation.
+*   **`tests/test_portfolio_manager.py`** — 7 tests. `_consolidate_positions()`: WAC across accounts, multiplier-aware WAC, earliest inception date, offsetting positions, multi-conid isolation.
+*   **`tests/test_ibkr_parser.py`** — 8 tests. Trade/transfer/confirmation CSV parsing: ingestion, fingerprint de-dup, non-EXECUTION filtering, missing file, bond point correction (100k face → 100 shares @ 85.0 points, multiplier=10.0).
+
+**Total: 42 tests, all passing.**
+
+## 5. Operational Protocols
 *   **Startup:** smart_sync() ensures local config is up to date with OneDrive.
 *   **Exit:** backup mirrors logs and config to OneDrive automatically.
 *   **Risk Workspace:** Asynchronous background data fetching with instant multiplier (1.5) and percentage (10%) input parsing. Focus-optimized TAB navigation. Implements **High-Conviction Scaling** (10% threshold for both Adds and Trims) to prioritize meaningful rebalancing over transaction noise.
