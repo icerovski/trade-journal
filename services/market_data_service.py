@@ -30,6 +30,15 @@ def silence_yfinance():
         sys.stderr = old_stderr
         new_target.close()
 
+def fetch_fx_rate(from_ccy: str, to_ccy: str) -> float | None:
+    """Fetches the latest spot rate for from_ccy/to_ccy via Yahoo Finance (e.g. EUR→USD)."""
+    try:
+        with silence_yfinance():
+            return yf.Ticker(f"{from_ccy}{to_ccy}=X").fast_info['last_price']
+    except Exception:
+        return None
+
+
 class MarketDataService:
     """
     Handles batch fetching of market data from Yahoo Finance.

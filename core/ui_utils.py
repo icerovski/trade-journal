@@ -1,5 +1,6 @@
 from textual.widgets import Label, Static
 from datetime import datetime
+from services.market_data_service import fetch_fx_rate
 
 class UIUtils:
     """
@@ -27,6 +28,17 @@ class UIUtils:
     def get_timestamp_str():
         """Returns standard timestamp for status bars."""
         return datetime.now().strftime("%H:%M:%S")
+
+    @staticmethod
+    def nav_subtitle(nav: float, nav_ccy: str, n_positions: int, hint: str = "") -> str:
+        """Builds a compact header sub_title with NAV, optional USD equivalent, and position count."""
+        usd_part = ""
+        if nav_ccy != "USD" and nav > 0:
+            rate = fetch_fx_rate(nav_ccy, "USD")
+            if rate:
+                usd_part = f" / {nav * rate:,.0f} USD"
+        hint_part = f" | {hint}" if hint else ""
+        return f"AUM: {nav:,.0f} {nav_ccy}{usd_part} | {n_positions} positions{hint_part}"
 
     @staticmethod
     def format_percent(val, precision=1):

@@ -99,6 +99,7 @@ class TradingCockpit(App):
         self.sort_by = sort_by
         self.df = pd.DataFrame()
         self.total_nav = 0.0
+        self.nav_ccy = "???"
         self.report_date = "---"
         self._exit_flag = threading.Event()
         self._thread_id = threading.get_ident()
@@ -183,9 +184,10 @@ class TradingCockpit(App):
             with suppress_console_logging():
                 nav_res = self.pm.fetch_nav_data(force_download=False)
                 if nav_res:
-                    real_nav, _, _, r_date = nav_res
+                    real_nav, nav_ccy, _, r_date = nav_res
+                    self.nav_ccy = nav_ccy
                 else:
-                    real_nav, _, _, r_date = 0.0, "???", [], "---"
+                    real_nav, _, r_date = 0.0, [], "---"
 
                 if self._exit_flag.is_set():
                     return
@@ -271,6 +273,7 @@ class TradingCockpit(App):
             )
 
         filter_label = self.asset_filter if self.asset_filter else "ALL"
+        self.sub_title = UIUtils.nav_subtitle(nav, self.nav_ccy, len(self.df), "[F1] Help")
         self.update_status(f"IBKR: {report_date} | AUM: {nav:,.0f} | Filter: {filter_label} | Sort: {self.sort_by} | Last Update: {datetime.now().strftime('%H:%M:%S')}")
         self.update_details()
 

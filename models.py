@@ -171,6 +171,7 @@ class Position:
         'max_since_entry': 'MaxSinceEntry', 'nav_pct': 'NavPct',
         'listing_exchange': 'ListingExchange',
         'underlying_symbol': 'UnderlyingSymbol', 'isin': 'ISIN',
+        'fx_rate': 'FXRate',
     }
 
     def to_dict(self):

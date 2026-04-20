@@ -12,6 +12,7 @@ from core.risk_engine import get_atr_discovery_data, RiskEngine
 from db import get_all_monitored_profiles, delete_risk_profile
 from logger import logger, suppress_console_logging
 from constants import CONFLUENCE_ATR_THRESHOLD
+from core.ui_utils import UIUtils
 
 class WatchListWorkspace(App):
     """
@@ -127,10 +128,11 @@ class WatchListWorkspace(App):
         
         # Get total NAV for risk calculation
         nav_res = self.pm.fetch_nav_data()
-        total_nav = nav_res[0] if nav_res else 0.0
-        
+        total_nav, nav_ccy = (nav_res[0], nav_res[1]) if nav_res else (0.0, "???")
+
         # Use PortfolioManager to get enriched watch list data
         df, _ = self.pm.get_dashboard_df(include_watch=True, total_nav=total_nav, silent=True)
+        self.sub_title = UIUtils.nav_subtitle(total_nav, nav_ccy, len(df))
         if df.empty:
             self.notify("No monitored profiles found. Add tickers in the Risk Workspace.")
             return

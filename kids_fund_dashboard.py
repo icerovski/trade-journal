@@ -5,6 +5,7 @@ from textual.binding import Binding
 from core.portfolio_manager import PortfolioManager
 from core.kids_fund_engine import KidsFundEngine
 from config import KIDS_ACCOUNT_ID, KIDS_ASSETS
+from core.ui_utils import UIUtils
 
 class KidsFundDashboard(App):
     """Interactive Dashboard for the Kids Private Wealth Fund."""
@@ -72,9 +73,10 @@ class KidsFundDashboard(App):
         # 1. Fetch Account NAV and Holdings
         nav_total, _, accounts, _ = self.pm.fetch_nav_data()
         kids_account_nav = next((a['nav'] for a in accounts if str(a['alias']) == KIDS_ACCOUNT_ID), 0.0)
-        
+
         # Filter main dashboard logic for just this account
         kids_holdings, _ = self.pm.get_dashboard_df(account_id=KIDS_ACCOUNT_ID, total_nav=kids_account_nav, silent=True)
+        self.sub_title = UIUtils.nav_subtitle(kids_account_nav, "EUR", len(kids_holdings), "Glide Path Audit")
         
         # 2. Get Ownership Data
         kids_data = self.engine.calculate_ownership()

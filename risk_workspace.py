@@ -17,6 +17,19 @@ from db import set_position_risk
 from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER
 
+PRESETS = {
+    "S": {"label": "Small",       "max_exp_pct": 2.5, "max_r_pct": 0.25},
+    "B": {"label": "Base",        "max_exp_pct": 4.0, "max_r_pct": 0.50},
+    "L": {"label": "Large/Index", "max_exp_pct": 5.0, "max_r_pct": 1.00},
+}
+
+def _preset_legend(active: str = "") -> str:
+    parts = []
+    for key, p in PRESETS.items():
+        color = "bold cyan" if key == active else "dim"
+        parts.append(f"[{color}][{key}] {p['label']}: E:{p['max_exp_pct']} R:{p['max_r_pct']}[/]")
+    return "  ·  ".join(parts)
+
 # =============================================================================
 # 1. UI COMPONENTS
 # =============================================================================
@@ -43,15 +56,6 @@ class RiskWorkspace(App):
     CSS = """
     Screen { background: $surface; }
     
-    #portfolio-summary {
-        background: $surface-darken-1;
-        color: $accent;
-        text-align: center;
-        text-style: bold;
-        height: 1;
-        border-bottom: solid $primary;
-    }
-
     #main-layout { layout: horizontal; height: 1fr; }
     #left-pane { width: 55%; height: 1fr; border-right: tall $primary; padding-right: 1; }
     #right-pane { width: 45%; height: 1fr; padding-left: 1; }
@@ -102,6 +106,7 @@ class RiskWorkspace(App):
     }
     #discover-input { width: 1fr; min-width: 20; }
     #atr-input { width: 2fr; min-width: 40; }
+    #preset-legend { height: 1; text-align: center; padding: 0 1; }
     #help-modal { background: $surface-darken-3; border: tall $accent; width: 80%; height: 80%; padding: 1 2; align: center middle; margin: 5 10; }
     #close-hint { text-align: center; color: $text-muted; margin-top: 1; }
     
@@ -141,7 +146,6 @@ class RiskWorkspace(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Label("PORTFOLIO NAV: ---", id="portfolio-summary")
         with Container(id="main-layout"):
             with Vertical(id="left-pane"):
                 yield Label("PORTFOLIO RISK STATUS", classes="panel-header")
@@ -150,13 +154,14 @@ class RiskWorkspace(App):
                     yield Label("RISK STRATEGY & TICKER DISCOVERY", classes="panel-header")
                     with AdaptiveInputContainer(id="lab-inputs"):
                         yield Input(
-                            placeholder="Discover Ticker (e.g. NVDA)", 
+                            placeholder="Discover Ticker (e.g. NVDA)",
                             id="discover-input"
                         )
                         yield Input(
-                            placeholder="[SL %] [F/T] [S] [Step] [R:MaxR] [E:MaxExp] (Enter: Model | Ctrl+Enter: Save)", 
+                            placeholder="[SL %] [F/T] [S] [Step] [P:S/B/L] [R:MaxR] [E:MaxExp] (Enter: Model | Ctrl+Enter: Save)",
                             id="atr-input"
                         )
+                    yield Label(_preset_legend(), id="preset-legend")
             with Vertical(id="right-pane"):
                 yield Label("ASSET CONTEXT & RISK AUDIT", classes="panel-header")
                 with ScrollableContainer(id="sidebar-scroll"):
@@ -208,11 +213,9 @@ class RiskWorkspace(App):
         else:
             self.total_nav = 0.0
             self.nav_ccy = "???"
-        
-        # Update high-level summary
-        self.query_one("#portfolio-summary", Label).update(f"PORTFOLIO NAV: [bold]{self.total_nav:,.2f} {self.nav_ccy}[/]")
-        
+
         self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True)
+        self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), "[F1] Help")
         if self.enriched_data.empty:
             return
         table = self.query_one("#portfolio-table", DataTable)
@@ -244,8 +247,9 @@ class RiskWorkspace(App):
             if has_risk and self.total_nav > 0:
                 effective_entry = row['Entry'] if row['Entry'] > 0 else row['Price']
                 res = RiskEngine.audit_position_risk(
-                    cur_p_val, sl_p, effective_entry, row['Qty'], row.get('Multiplier', 1.0), 
-                    self.total_nav, max_r_pct=max_r_pct, max_exp_pct=max_exp_pct
+                    cur_p_val, sl_p, effective_entry, row['Qty'], row.get('Multiplier', 1.0),
+                    self.total_nav, max_r_pct=max_r_pct, max_exp_pct=max_exp_pct,
+                    fx_rate=row.get('FXRate', 1.0)
                 )
                 adj = res['adjustment']
                 qty = row['Qty']
@@ -574,6 +578,7 @@ class RiskWorkspace(App):
         if not raw:
             if self.current_conid in self.drafts:
                 del self.drafts[self.current_conid]
+            self.query_one("#preset-legend", Label).update(_preset_legend())
             self.refresh_risk_checklist()
             return
         try:
@@ -583,7 +588,17 @@ class RiskWorkspace(App):
                 return
             
             f_atr, s_type, e_type, step, m_r, m_e = pos.atr, pos.stop_type, pos.entry_type, pos.scale_step, pos.max_r_pct, pos.max_exp_pct
-            
+
+            active_preset = ""
+            p_m = re.search(r"P:([SBL])", raw)
+            if p_m:
+                preset = PRESETS.get(p_m.group(1))
+                if preset:
+                    m_r = preset["max_r_pct"]
+                    m_e = preset["max_exp_pct"]
+                    active_preset = p_m.group(1)
+                raw = raw.replace(p_m.group(0), "").strip()
+
             r_m = re.search(r"R:([0-9\.]+)", raw)
             if r_m:
                 m_r = float(r_m.group(1))
@@ -663,6 +678,7 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             
             self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': f_atr}
+            self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, e_type, step, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
             
         except Exception as e:
