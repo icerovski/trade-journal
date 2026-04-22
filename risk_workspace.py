@@ -444,14 +444,46 @@ class RiskWorkspace(App):
             # 4. Final Layout Assembly
             cost_val = (pos.qty * active_entry * pos.multiplier)
             market_val = (pos.qty * cur_p * pos.multiplier)
-            
+
             # HCM Exposure: Use higher of cost or market for capital budgeting
             hcm_exposure = max(cost_val, market_val)
-            
+
             target_outlay = pilot['scale_in_outlay'] if entry_t == 'SCALE_IN' else (target_qty * cur_p * pos.multiplier)
-            
+
             # Remaining Cap: Budget remaining based on HCM discipline
             remaining_cap = max(0, target_outlay - hcm_exposure)
+
+            # Sizing Impact Table — post-action projection
+            net_action = int(target_qty) - int(active_qty)
+            if active_qty > 0 and self.total_nav > 0 and net_action != 0:
+                if net_action > 0:
+                    new_qty_t   = active_qty + net_action
+                    new_entry_t = (active_entry * active_qty + cur_p * net_action) / new_qty_t
+                else:
+                    new_qty_t   = max(0.0, active_qty + net_action)
+                    new_entry_t = active_entry if new_qty_t > 0 else 0.0
+                new_cost_t = new_qty_t * new_entry_t * pos.multiplier
+                new_mkt_t  = new_qty_t * cur_p * pos.multiplier
+                new_hcm_t  = max(new_cost_t, new_mkt_t)
+                new_R_t    = (new_entry_t - effective_stop) * new_qty_t * pos.multiplier * pos.fx_rate / self.total_nav * 100 if new_qty_t > 0 else 0.0
+                new_E_t    = new_hcm_t * pos.fx_rate / self.total_nav * 100
+                r_col  = "red" if new_R_t > active_max_r else ("yellow" if new_R_t > active_max_r * 0.8 else "green")
+                e_col  = "red" if new_E_t > active_max_exp * 1.1 else ("yellow" if new_E_t >= active_max_exp else "green")
+                sign   = "+" if net_action > 0 else ""
+                a_col  = "green" if net_action > 0 else "yellow"
+                tx_val = abs(net_action) * cur_p * pos.multiplier
+                cur_r  = res['current_risk_pct']
+                cur_e  = res['current_exposure_pct']
+                sizing_table = (
+                    f"──────────────────────────────────────\n"
+                    f"[bold]              CURRENT    POST-{'ADD' if net_action > 0 else 'TRIM'}[/]\n"
+                    f"  HCM Base  {hcm_exposure:>10,.0f}  {new_hcm_t:>10,.0f}  {pos.ccy}\n"
+                    f"  R % NAV   {cur_r:>+9.2f}%  [bold {r_col}]{new_R_t:>+9.2f}%[/]\n"
+                    f"  E % NAV   {cur_e:>9.2f}%  [bold {e_col}]{new_E_t:>9.2f}%[/]\n"
+                    f"  [{a_col}]{sign}{abs(net_action)} sh @ {cur_p:,.2f}  =  {tx_val:,.0f} {pos.ccy}[/]\n"
+                )
+            else:
+                sizing_table = ""
 
             # Inception Stop Info
             incep_stop_str = f"{pos.inception_stop:,.2f}" if pos.inception_stop else "---"
@@ -480,6 +512,7 @@ class RiskWorkspace(App):
                 f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
                 f"  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n"
                 f"  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n"
+                f"{sizing_table}"
                 f"--------------------------------------\n"
                 f"INCEPTION STOP: [bold]{incep_stop_str}[/]{trailed_str}\n"
                 f"INCEPTION ATR:  [bold]{incep_atr_str}[/]{vol_delta_str}\n"
