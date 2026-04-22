@@ -488,6 +488,7 @@ class RiskWorkspace(App):
                     f"[bold]{'':8}{'LIM':>7}{'BAL-BEG':>9}{'ADD':>9}{'BALANCE':>9}[/]\n"
                     f"  {'Shares':<6}{'':>7}{int(active_qty):>9,}{net_action:>+9,}{int(new_qty_t):>9,}\n"
                     f"  {'Price':<6}{'':>7}{active_entry:>9.2f}{cur_p:>9.2f}{new_entry_t:>9.2f}  {pos.ccy}\n"
+                    f"  {'Stop':<6}{'':>7}{effective_stop:>9.2f}{'---':>9}{effective_stop:>9.2f}  {pos.ccy}\n"
                     f"  {'HCM':<6}{basis_lim}{hcm_exposure:>9,.0f}{int(tx_hcm):>+9,}[{bal_hcm_col}]{new_hcm_t:>9,.0f}[/]  {pos.ccy}\n"
                     f"  {'R%':<6}{r_lim:>7}{cur_r:>+8.2f}%{r_add:>+8.2f}%[bold {r_col}]{new_R_t:>+8.2f}%[/]\n"
                     f"  {'E%':<6}{e_lim:>7}{cur_e:>8.2f}%{e_add:>+8.2f}%[bold {e_col}]{new_E_t:>8.2f}%[/]\n"
@@ -529,16 +530,12 @@ class RiskWorkspace(App):
                 f"INCEPTION ATR:  [bold]{incep_atr_str}[/]{vol_delta_str}\n"
                 f"{remediation_str}"
                 f"--------------------------------------\n"
-                f"EXECUTION PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
+                f"PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
                 f"{exec_plan}\n"
-                f"  - Cost Value:    {cost_val:,.0f} {pos.ccy}\n"
-                f"  - Market Value:  {market_val:,.0f} {pos.ccy}\n"
-                f"  - Target Outlay: {target_outlay:,.0f} {pos.ccy}\n"
-                f"  - {'Remaining Cap' if entry_t == 'SCALE_IN' else 'Add Cost    '}: {(remaining_cap if entry_t == 'SCALE_IN' else abs(tx_hcm)):,.0f} {pos.ccy}\n"
-                f"  - Pilot Stop:    [bold]{pilot['stop']:,.2f}[/]"
+                f"  Pilot Stop: [bold]{pilot['stop']:,.2f}[/]"
             )
             if entry_t == 'SCALE_IN':
-                audit_content += f"\n  - Scale Step:    [bold]{(hypo_scale_step or pos.scale_step)}x ATR[/]"
+                audit_content += f"  Scale Step: [bold]{(hypo_scale_step or pos.scale_step)}x ATR[/]"
 
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"
         audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})\nINCEPTION: [bold cyan]{incep_str}[/]"
