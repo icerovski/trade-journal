@@ -158,7 +158,7 @@ class RiskWorkspace(App):
                             id="discover-input"
                         )
                         yield Input(
-                            placeholder="F: price  |  T: %/$  |  [S/S0] [P:S/B/L] [R:x] [E:x]",
+                            placeholder="F: price  |  T: %/$  |  [P:S/B/L] [R:x] [E:x]",
                             id="atr-input"
                         )
                     yield Label(_preset_legend(), id="preset-legend")
@@ -229,10 +229,10 @@ class RiskWorkspace(App):
             risk_above_limit = row['risk_pct_nav'] > max_r_pct
             exp_above_limit = row['NavPct'] > max_exp_pct
             
-            ticker_display = f"[{row['StopType'][:1]}{'/S' if row.get('EntryType') == 'SCALE_IN' else ''}] {row['Ticker']}"
+            ticker_display = f"[{row['StopType'][:1]}] {row['Ticker']}"
             if conid_str in self.drafts:
                 d = self.drafts[conid_str]
-                ticker_display = f"[bold yellow]* [{d['type'][:1]}{'/S' if d['entry_type'] == 'SCALE_IN' else ''}] {row['Ticker']}"
+                ticker_display = f"[bold yellow]* [{d['type'][:1]}] {row['Ticker']}"
                 max_r_pct = d.get('max_r_pct', max_r_pct)
                 max_exp_pct = d.get('max_exp_pct', max_exp_pct)
             
@@ -274,32 +274,7 @@ class RiskWorkspace(App):
             else:
                 if has_risk and pd.notnull(tp_p) and cur_p_val >= tp_p:
                     ticker_display += " [bold cyan]★[/]"
-                if has_risk and row.get('EntryType') == 'SCALE_IN':
-                    # Use inception if healed (Single Source of Truth), else fallback to entry
-                    incep = row.get('Inception', row['Entry'])
-                    # For FIXED: row['ATR'] holds the stop price, not a distance.
-                    # Risk distance = current_price − stop; milestones use inception_atr.
-                    if row['StopType'] == 'FIXED' and pd.notnull(row.get('SL_Price')):
-                        pilot_risk_dist = max(0.0, cur_p_val - row['SL_Price'])
-                        pilot_milestone_atr = row.get('InceptionATR') or pilot_risk_dist
-                    else:
-                        pilot_risk_dist = row['ATR']
-                        pilot_milestone_atr = row['ATR']
-                    pilot = RiskEngine.calculate_pilot_entry(
-                        cur_p_val, pilot_risk_dist, self.total_nav, row.get('Multiplier', 1.0),
-                        row['Entry'], pilot_milestone_atr, row.get('ScaleStep', 0.5),
-                        max_r_pct=max_r_pct, max_exp_pct=max_exp_pct,
-                        base_price=incep, current_qty=row['Qty']
-                    )
-                    # Trigger if we have room to add AND price reached next milestone
-                    if row['Qty'] < pilot['full_target_qty'] * 0.95:
-                        # Stage 2 Trigger: Qty < 2/3 and price >= Stage 2
-                        # Stage 3 Trigger: Qty < Full and price >= Stage 3
-                        if (row['Qty'] < pilot['full_target_qty'] * 0.6 and cur_p_val >= pilot['stage2_price']) or \
-                           (row['Qty'] < pilot['full_target_qty'] * 0.9 and cur_p_val >= pilot['stage3_price']):
-                            ticker_display += " [bold green]⬆[/]"
-            
-            r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
+                r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
             nav_val = f"{row['NavPct']:.1f}% ({max_exp_pct:.1f}%)"
             r_color = "red" if row['risk_pct_nav'] > (max_r_pct * RISK_RED_MULTIPLIER) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
             exp_color = "red" if row['NavPct'] > (max_exp_pct * EXPOSURE_RED_MULTIPLIER) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
@@ -350,7 +325,7 @@ class RiskWorkspace(App):
             self.query_one("#trailing-stop-table", DataTable).clear()
             self.fetch_atr_data(conid)
 
-    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_entry_type: Optional[str] = None, hypo_scale_step: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None) -> None:
+    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None) -> None:
         if not self.current_conid:
             return
         pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
@@ -395,63 +370,26 @@ class RiskWorkspace(App):
             atr_width = effective_atr
             efficiency = ((effective_stop + (3 * atr_width) - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
 
-            status_display = f"[bold green]{res['status_color']}[/]"
-            if res['status_color'] == "RED":
-                status_display = f"[on red][bold white] {res['status_color']} [/][/]"
-            elif res['status_color'] == "YELLOW":
-                status_display = f"[bold yellow]{res['status_color']}[/]"
-
-            # 2. Execution Strategy
-            # For FIXED: risk distance per share = current_price − fixed_stop (not ATR).
-            # ATR is kept separately for stage-milestone spacing only.
-            if pos.stop_type == 'FIXED':
-                risk_dist_for_pilot = max(0.0, cur_p - effective_stop) or effective_atr
-            else:
-                risk_dist_for_pilot = effective_atr
-            daily_atr = effective_atr
-            if disc and disc.get('rows'):
-                daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), effective_atr)
-
-            pilot = RiskEngine.calculate_pilot_entry(cur_p, risk_dist_for_pilot, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp, current_qty=active_qty, fx_rate=pos.fx_rate)
-            entry_t = (hypo_entry_type or pos.entry_type)
-
-            # 3. Build Unified Execution Content
+            # 2. Build Execution Plan
             if res['is_breached']:
                 exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
-                planned_add = -pos.qty
                 target_qty = 0
             else:
-                if entry_t == 'SCALE_IN':
-                    s2_add = max(0, int(pilot['full_target_qty'] * 2/3) - int(pos.qty))
-                    s3_add = max(0, int(pilot['full_target_qty']) - (int(pos.qty) + s2_add))
-                    exec_plan = (
-                        f"  - [dim green]{'✓' if s2_add<=0 else ' '} Stage 2 @:  {pilot['stage2_price']:,.2f}[/] {'(Add +'+str(s2_add)+' sh)' if s2_add>0 else '(Filled)'}\n"
-                        f"  - [dim green]{'✓' if s3_add<=0 else ' '} Stage 3 @:  {pilot['stage3_price']:,.2f}[/] {'(Add +'+str(s3_add)+' sh)' if s3_add>0 else '(Filled)'}"
-                    )
-                    planned_add = s2_add + s3_add
-                    target_qty = int(pilot['full_target_qty'])
+                room = int(res['adjustment'])
+                target_qty = int(pos.qty + room)
+                if room > 0:
+                    exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {target_qty} sh)"
+                elif room < 0:
+                    exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"
                 else:
-                    room = int(res['adjustment'])
-                    planned_add = max(0, room)
-                    target_qty = int(pos.qty + room)
-                    if room > 0:
-                        exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {target_qty} sh)"
-                    elif room < 0:
-                        exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"
-                    else:
-                        exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
+                    exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
 
-            # 4. Final Layout Assembly
+            # 3. Final Layout Assembly
             cost_val = (pos.qty * active_entry * pos.multiplier)
             market_val = (pos.qty * cur_p * pos.multiplier)
 
             # HCM Exposure: Use higher of cost or market for capital budgeting
             hcm_exposure = max(cost_val, market_val)
-
-            target_outlay = pilot['scale_in_outlay'] if entry_t == 'SCALE_IN' else (target_qty * cur_p * pos.multiplier)
-
-            # Remaining Cap: Budget remaining based on HCM discipline
-            remaining_cap = max(0, target_outlay - hcm_exposure)
 
             # Sizing Impact Table — post-action projection
             net_action = int(target_qty) - int(active_qty)
@@ -520,22 +458,18 @@ class RiskWorkspace(App):
                     remediation_str += f"  B) Trim [bold yellow]{int(res['shares_to_trim'])}[/] sh (keep stop @ {effective_stop:,.2f})"
 
             audit_content = (
-                f"STATUS: {status_display}\n"
                 f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
                 f"  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n"
-                f"  - Efficiency: [bold {'green' if efficiency>3.0 else 'red'}]{efficiency:.2f} RR[/]\n"
+                f"  - Efficiency: [bold {'green' if efficiency>=2.0 else ('yellow' if efficiency>=1.0 else 'red')}]{efficiency:.2f} RR[/]\n"
                 f"{sizing_table}"
                 f"--------------------------------------\n"
                 f"INCEPTION STOP: [bold]{incep_stop_str}[/]{trailed_str}\n"
                 f"INCEPTION ATR:  [bold]{incep_atr_str}[/]{vol_delta_str}\n"
                 f"{remediation_str}"
                 f"--------------------------------------\n"
-                f"PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
+                f"PLAN:\n"
                 f"{exec_plan}\n"
-                f"  Pilot Stop: [bold]{pilot['stop']:,.2f}[/]"
             )
-            if entry_t == 'SCALE_IN':
-                audit_content += f"  Scale Step: [bold]{(hypo_scale_step or pos.scale_step)}x ATR[/]"
 
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"
         audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})\nINCEPTION: [bold cyan]{incep_str}[/]"
@@ -668,7 +602,7 @@ class RiskWorkspace(App):
             if not pos:
                 return
             
-            f_atr, s_type, e_type, step, m_r, m_e = pos.atr, pos.stop_type, pos.entry_type, pos.scale_step, pos.max_r_pct, pos.max_exp_pct
+            f_atr, s_type, m_r, m_e = pos.atr, pos.stop_type, pos.max_r_pct, pos.max_exp_pct
 
             active_preset = ""
             p_m = re.search(r"P:([SBL])", raw)
@@ -688,18 +622,6 @@ class RiskWorkspace(App):
             if e_m:
                 m_e = float(e_m.group(1))
                 raw = raw.replace(e_m.group(0), "").strip()
-            
-            # 1. Handle S0 / Scale-In Explicitly
-            if "S0" in raw:
-                e_type = "STANDARD"
-                raw = raw.replace("S0", "").strip()
-            else:
-                s_m = re.search(r"\bS\s*([0-9\.]*)", raw)
-                if s_m:
-                    val = s_m.group(1)
-                    e_type = "SCALE_IN"
-                    step = float(val) if val else step
-                    raw = raw.replace(s_m.group(0), "").strip()
             
             if 'T' in raw:
                 s_type = "TRAILING"
@@ -748,7 +670,7 @@ class RiskWorkspace(App):
             modeled_nav_pct = (modeled_hcm_val / self.total_nav * 100) if self.total_nav > 0 else 0
 
             table = self.query_one("#portfolio-table", DataTable)
-            t_pfx = f"[{s_type[:1]}{'/S' if e_type == 'SCALE_IN' else ''}]"
+            t_pfx = f"[{s_type[:1]}]"
             display_ticker = f"[bold yellow]* {'[PROSPECT]' if str(self.current_conid).startswith('PROSPECT:') else t_pfx} {pos.ticker}"
             if hypo_r > m_r or modeled_nav_pct > m_e:
                 display_ticker += " [bold red]⚠[/]"
@@ -780,9 +702,9 @@ class RiskWorkspace(App):
             else:
                 save_incep_atr = f_atr
 
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr}
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
-            self.refresh_risk_checklist(sl_p, f_atr, e_type, step, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
+            self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
             
         except Exception as e:
             logger.error(f"Modeling Error: {e}")
@@ -791,7 +713,7 @@ class RiskWorkspace(App):
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
                 self.notify(f"COMMITTED: {d['ticker']}")
                 self.query_one("#atr-input", Input).value = ""
                 self.query_one("#discover-input", Input).value = ""
@@ -802,7 +724,7 @@ class RiskWorkspace(App):
         if not self.drafts:
             return
         for cid, d in self.drafts.items():
-            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type=d['entry_type'], scale_step=d.get('scale_step', 0.5), status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
+            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
         self.drafts.clear()
         self.load_portfolio()

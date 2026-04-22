@@ -104,65 +104,6 @@ class RiskEngine:
         }
 
     @staticmethod
-    def calculate_pilot_entry(current_price: float, assigned_atr: float, nav: float, multiplier: float, 
-                              entry_price: float, daily_atr: float, scale_step: float = 0.5, 
-                              max_r_pct: float = 1.0, max_exp_pct: float = 5.0,
-                              base_price: float = None, current_qty: float = 0.0, fx_rate: float = 1.0) -> dict:
-        """
-        Calculates the Pilot Entry roadmap based on custom Risk and Exposure limits.
-        If base_price is provided (e.g. Inception Price), targets are anchored to it.
-        Implements HCM (Higher of Cost or Market) for target quantity calculation.
-        Normalizes values using fx_rate.
-        """
-        if nav <= 0 or current_price <= 0 or assigned_atr <= 0:
-            return {"shares": 0, "stop": 0, "risk_pct": 0, "stage2_price": 0, "stage3_price": 0, "full_target_qty": 0}
-            
-        # 1. Dual-Constraint Target Calculation (Matches Audit Logic)
-        risk_dist = assigned_atr * multiplier * fx_rate
-        # Total Risk-at-Stop constraint
-        qty_by_risk = (nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else 0
-        
-        # Total Exposure constraint (HCM-aware)
-        max_exposure_cap = nav * (max_exp_pct / 100.0)
-        
-        if current_price >= entry_price or current_qty == 0:
-            # Winner or Fresh: Market value is the constraint
-            target_total_qty = max_exposure_cap / (current_price * multiplier * fx_rate) if current_price > 0 else 0
-        else:
-            # Loser: Anchor existing shares to entry_price (HCM)
-            existing_hcm_val = entry_price * current_qty * multiplier * fx_rate
-            remaining_cap = max(0, max_exposure_cap - existing_hcm_val)
-            additional_qty = remaining_cap / (current_price * multiplier * fx_rate) if current_price > 0 else 0
-            target_total_qty = current_qty + additional_qty
-        
-        full_target_qty = int(min(qty_by_risk, target_total_qty))
-        unit_shares = int(full_target_qty / 3.0)
-        
-        # 2. Financial Milestones (Based on the 14d Daily ATR Heartbeat)
-        anchor = base_price if base_price is not None else entry_price
-        step_dist = daily_atr * scale_step
-        s2_p = anchor + step_dist
-        s3_p = anchor + (2 * step_dist)
-        
-        # Scale-In Total Outlay: Sum of 3 tranches at their respective prices
-        tranche = full_target_qty / 3.0
-        scale_in_outlay = (anchor * tranche * multiplier) + (s2_p * tranche * multiplier) + (s3_p * tranche * multiplier)
-        
-        # Single Purchase Outlay: Full target at current market price
-        single_outlay = current_price * full_target_qty * multiplier
-        
-        return {
-            "shares": unit_shares,
-            "stop": current_price - assigned_atr,
-            "risk_pct": (max_r_pct / 3.0),
-            "stage2_price": s2_p,
-            "stage3_price": s3_p,
-            "full_target_qty": full_target_qty,
-            "scale_in_outlay": scale_in_outlay,
-            "single_outlay": single_outlay
-        }
-
-    @staticmethod
     def calculate_position_risk(position: Position, risk_settings: dict):
         """
         Enriches a Position object with risk metrics based on provided settings.

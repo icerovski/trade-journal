@@ -87,6 +87,9 @@ def init_db():
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_conid ON risk_profiles(conid) WHERE status = 'WATCH'")
 
+    # Migration: Remove Scale-In — convert any remaining SCALE_IN profiles to SINGLE.
+    cursor.execute("UPDATE risk_profiles SET entry_type = 'SINGLE' WHERE entry_type = 'SCALE_IN'")
+
     # Migration: FIXED stop redesign — atr_value now stores the absolute stop price.
     # Old behavior stored the ATR distance (small number); inception_stop stored the computed price.
     # Guard: only migrate rows where atr_value looks like a distance (< half of inception_stop).

@@ -35,16 +35,12 @@ def print_watch_list_summary():
     table.add_column("TICKER", style="cyan")
     table.add_column("ATR", justify="right")
     table.add_column("TYPE", justify="center")
-    table.add_column("STRATEGY", justify="center")
-    table.add_column("STEP", justify="right")
 
     for p in prospects:
         table.add_row(
             str(p['ticker']),
             f"{p['atr_value']:.2f}",
             str(p['stop_type'])[:1],
-            "Pilot" if p['entry_type'] == 'SCALE_IN' else "Single",
-            f"{p['scale_step']}x"
         )
     
     console.print(table)

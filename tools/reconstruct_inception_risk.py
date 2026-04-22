@@ -92,8 +92,8 @@ def heal_inception_anchors():
             set_position_risk(
                 conid, ticker, prof['atr_value'], prof['stop_type'],
                 start_date=prof['start_date'],
-                entry_type=prof['entry_type'],
-                scale_step=prof['scale_step'],
+                entry_type='SINGLE',
+                scale_step=0.5,
                 status=prof['status'],
                 max_r_pct=prof['max_r_pct'],
                 max_exp_pct=prof['max_exp_pct'],
