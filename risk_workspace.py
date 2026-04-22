@@ -475,19 +475,22 @@ class RiskWorkspace(App):
                 r_add  = (cur_p - effective_stop) * net_action * pos.multiplier * pos.fx_rate / self.total_nav * 100
                 e_add  = cur_p * net_action * pos.multiplier * pos.fx_rate / self.total_nav * 100
                 tx_hcm = net_action * cur_p * pos.multiplier  # pos.ccy, signed
-                # HCM basis indicators: M=market (winner, positive unrealized), C=cost (loser, negative unrealized)
+                # HCM basis: mkt=market (winner, +unrealized), cst=cost (loser, -unrealized)
                 beg_is_mkt  = market_val >= cost_val
                 bal_is_mkt  = new_mkt_t >= new_cost_t
-                hcm_label   = "HCM(M)" if beg_is_mkt else "HCM(C)"
+                basis_tag   = "green" if beg_is_mkt else "yellow"
                 bal_hcm_col = "green" if bal_is_mkt else "yellow"
+                basis_lim   = f"[{basis_tag}]{'mkt' if beg_is_mkt else 'cst':>7}[/]"
+                r_lim       = f"{active_max_r:.2f}%"
+                e_lim       = f"{active_max_exp:.2f}%"
                 sizing_table = (
-                    f"──────────────────────────────────────\n"
-                    f"[bold]{'':8}{'BAL-BEG':>9}{'ADD':>9}{'BALANCE':>9}[/]\n"
-                    f"  {'Shares':<6}{int(active_qty):>9,}{net_action:>+9,}{int(new_qty_t):>9,}\n"
-                    f"  {'Price':<6}{active_entry:>9.2f}{cur_p:>9.2f}{new_entry_t:>9.2f}  {pos.ccy}\n"
-                    f"  {hcm_label:<6}{hcm_exposure:>9,.0f}{int(tx_hcm):>+9,}[{bal_hcm_col}]{new_hcm_t:>9,.0f}[/]  {pos.ccy}\n"
-                    f"  {'R%':<6}{cur_r:>+8.2f}%{r_add:>+8.2f}%[bold {r_col}]{new_R_t:>+9.2f}%[/]\n"
-                    f"  {'E%':<6}{cur_e:>8.2f}%{e_add:>+8.2f}%[bold {e_col}]{new_E_t:>9.2f}%[/]\n"
+                    f"──────────────────────────────────────────\n"
+                    f"[bold]{'':8}{'LIM':>7}{'BAL-BEG':>9}{'ADD':>9}{'BALANCE':>9}[/]\n"
+                    f"  {'Shares':<6}{'':>7}{int(active_qty):>9,}{net_action:>+9,}{int(new_qty_t):>9,}\n"
+                    f"  {'Price':<6}{'':>7}{active_entry:>9.2f}{cur_p:>9.2f}{new_entry_t:>9.2f}  {pos.ccy}\n"
+                    f"  {'HCM':<6}{basis_lim}{hcm_exposure:>9,.0f}{int(tx_hcm):>+9,}[{bal_hcm_col}]{new_hcm_t:>9,.0f}[/]  {pos.ccy}\n"
+                    f"  {'R%':<6}{r_lim:>7}{cur_r:>+8.2f}%{r_add:>+8.2f}%[bold {r_col}]{new_R_t:>+8.2f}%[/]\n"
+                    f"  {'E%':<6}{e_lim:>7}{cur_e:>8.2f}%{e_add:>+8.2f}%[bold {e_col}]{new_E_t:>8.2f}%[/]\n"
                 )
             else:
                 sizing_table = ""
