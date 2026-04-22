@@ -421,12 +421,18 @@ class RiskWorkspace(App):
                 basis_lim   = f"[{basis_tag}]{'mkt' if beg_is_mkt else 'cst':>7}[/]"
                 r_lim       = f"{active_max_r:.2f}%"
                 e_lim       = f"{active_max_exp:.2f}%"
+                stop_flag   = pos.stop_type[:1]  # "T" or "F"
+                sl_pct_beg  = (active_entry - effective_stop) / active_entry * 100 if active_entry > 0 else 0.0
+                sl_pct_add  = (cur_p - effective_stop) / cur_p * 100 if cur_p > 0 else 0.0
+                sl_pct_bal  = (new_entry_t - effective_stop) / new_entry_t * 100 if new_entry_t > 0 else 0.0
                 sizing_table = (
                     f"──────────────────────────────────────────\n"
-                    f"[bold]{'':8}{'LIM':>7}{'BAL-BEG':>9}{'ADD':>9}{'BALANCE':>9}[/]\n"
+                    f"[bold]{'':8}{'INFO':>7}{'BAL-BEG':>9}{'ADD':>9}{'BALANCE':>9}[/]\n"
                     f"  {'Shares':<6}{'':>7}{int(active_qty):>9,}{net_action:>+9,}{int(new_qty_t):>9,}\n"
                     f"  {'Price':<6}{'':>7}{active_entry:>9.2f}{cur_p:>9.2f}{new_entry_t:>9.2f}  {pos.ccy}\n"
-                    f"  {'Stop':<6}{'':>7}{effective_stop:>9.2f}{'---':>9}{effective_stop:>9.2f}  {pos.ccy}\n"
+                    f"  {'Stop':<6}{stop_flag:>7}{effective_stop:>9.2f}{'---':>9}{effective_stop:>9.2f}  {pos.ccy}\n"
+                    f"  {'SL%':<6}{'---':>7}{sl_pct_beg:>8.1f}%{sl_pct_add:>8.1f}%{sl_pct_bal:>8.1f}%\n"
+                    f"  {'Buf%':<6}{'---':>7}{buffer:>8.1f}%{'---':>9}{buffer:>8.1f}%\n"
                     f"  {'HCM':<6}{basis_lim}{hcm_exposure:>9,.0f}{int(tx_hcm):>+9,}[{bal_hcm_col}]{new_hcm_t:>9,.0f}[/]  {pos.ccy}\n"
                     f"  {'R%':<6}{r_lim:>7}{cur_r:>+8.2f}%{r_add:>+8.2f}%[bold {r_col}]{new_R_t:>+8.2f}%[/]\n"
                     f"  {'E%':<6}{e_lim:>7}{cur_e:>8.2f}%{e_add:>+8.2f}%[bold {e_col}]{new_E_t:>8.2f}%[/]\n"
