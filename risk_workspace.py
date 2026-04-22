@@ -422,9 +422,15 @@ class RiskWorkspace(App):
                 r_lim       = f"{active_max_r:.2f}%"
                 e_lim       = f"{active_max_exp:.2f}%"
                 stop_flag   = pos.stop_type[:1]
-                sl_pct_beg  = (active_entry - effective_stop) / active_entry * 100 if active_entry > 0 else 0.0
-                sl_pct_add  = (cur_p - effective_stop) / cur_p * 100 if cur_p > 0 else 0.0
-                sl_pct_bal  = (new_entry_t - effective_stop) / new_entry_t * 100 if new_entry_t > 0 else 0.0
+                if pos.stop_type == 'TRAILING':
+                    hwm = pos.max_since_entry if pos.max_since_entry > 0 else active_entry
+                    sl_pct_beg = effective_atr / hwm * 100 if hwm > 0 else 0.0
+                    sl_pct_add = sl_pct_beg   # ATR width is unchanged by the transaction
+                    sl_pct_bal = sl_pct_beg
+                else:  # FIXED
+                    sl_pct_beg = max(0.0, active_entry - effective_stop) / active_entry * 100 if active_entry > 0 else 0.0
+                    sl_pct_add = max(0.0, cur_p - effective_stop) / cur_p * 100 if cur_p > 0 else 0.0
+                    sl_pct_bal = max(0.0, new_entry_t - effective_stop) / new_entry_t * 100 if new_entry_t > 0 else 0.0
                 pl_s_beg    = (effective_stop - active_entry) * active_qty * pos.multiplier
                 pl_s_add    = (effective_stop - cur_p) * net_action * pos.multiplier
                 pl_s_bal    = (effective_stop - new_entry_t) * new_qty_t * pos.multiplier
