@@ -293,8 +293,13 @@ class TradingCockpit(App):
 
                 # Risk Metrics Calculations
                 s_type = str(row.get('StopType', '---'))
-                atr_val = row.get('ATR', 0.0)
-                # Volatility relative to Cost Basis (Initial Entry)
+                # For FIXED: ATR field holds the stop price, not a distance — derive the distance
+                if s_type == 'FIXED' and row['Entry'] > 0 and pd.notnull(row.get('SL_Price')):
+                    atr_val = max(0.0, row['Entry'] - row['SL_Price'])
+                    atr_label = "Stop Dist"
+                else:
+                    atr_val = row.get('ATR', 0.0)
+                    atr_label = "ATR"
                 atr_pct_cost = (atr_val / row['Entry'] * 100) if row['Entry'] > 0 else 0
 
                 # Inception Stop Info
@@ -313,7 +318,7 @@ class TradingCockpit(App):
                     f"Currency:   {row.get('CCY', '---')}\n\n"
 
                     f"[bold cyan]RISK PARAMETERS[/bold cyan]\n"
-                    f"ATR (% of cost): {atr_val:.2f} ({atr_pct_cost:.1f}%)\n"
+                    f"{atr_label} (% of cost): {atr_val:.2f} ({atr_pct_cost:.1f}%)\n"
                     f"Stop Type:      {s_type}\n"
                     f"Stop Price:     [bold red]{row['SL_Price']:,.2f}[/]\n"
                     f"Inception Stop: {incep_stop_str}{trailed_str}\n"

@@ -62,7 +62,7 @@ class RiskEngine:
         # If risk_dist is 0 (stop at entry/price), risk constraint is effectively infinite shares allowed.
         risk_adj = risk_budget_rem / risk_dist if risk_dist > 0 else float('inf')
         exp_adj = exposure_budget_rem / (current_price * multiplier * fx_rate) if current_price > 0 else 0
-        
+
         # Use the most restrictive constraint.
         adjustment = min(risk_adj, exp_adj)
 
@@ -76,6 +76,19 @@ class RiskEngine:
         else:
             status_color = "GREEN"
 
+        # R-Breach Remediation: quantify the two paths to restore compliance
+        stop_to_restore = None
+        shares_to_trim = None
+        if risk_budget_rem < 0 and qty > 0:
+            per_share = multiplier * fx_rate
+            # Path A: minimum stop price that restores R compliance at current qty
+            stop_to_restore = entry_price - (nav * (max_r_pct / 100.0)) / (qty * per_share)
+            # Path B: shares to trim to restore R compliance at current stop
+            risk_dist_per_share = (entry_price - stop) * per_share
+            if risk_dist_per_share > 0:
+                qty_keep = (nav * (max_r_pct / 100.0)) / risk_dist_per_share
+                shares_to_trim = max(0.0, qty - qty_keep)
+
         return {
             "status_color": status_color,
             "current_risk_pct": risk_pct,
@@ -85,7 +98,9 @@ class RiskEngine:
             "adjustment": adjustment,
             "is_breached": is_breached,
             "max_r_pct": max_r_pct,
-            "max_exp_pct": max_exp_pct
+            "max_exp_pct": max_exp_pct,
+            "stop_to_restore": stop_to_restore,
+            "shares_to_trim": shares_to_trim,
         }
 
     @staticmethod
@@ -167,16 +182,16 @@ class RiskEngine:
             inception_atr = profile.inception_atr
             
             # 1. Base Stop Loss Calculation
-            # Robust Base: Use highest of Entry, Current, or Mark price
-            hwm_proxy = max(position.entry_price, position.current_price, position.mark_price)
-            # For Trailing, anchor to the Max High Since Entry (which should now be healed by date)
-            stop_base = max(position.max_since_entry, hwm_proxy) if s_type == 'TRAILING' else position.entry_price
-            
-            # Robust Fallback: If stop_base is 0 (missing entry), use hwm_proxy
-            if not stop_base or stop_base == 0:
-                stop_base = hwm_proxy
-            
-            calculated_sl = stop_base - atr
+            if s_type == 'FIXED':
+                # atr_value IS the stop price — absolute, set once, never auto-moved
+                calculated_sl = atr
+                stop_base = position.entry_price or max(position.current_price, position.mark_price)
+            else:  # TRAILING
+                hwm_proxy = max(position.entry_price, position.current_price, position.mark_price)
+                stop_base = max(position.max_since_entry, hwm_proxy)
+                if not stop_base or stop_base == 0:
+                    stop_base = hwm_proxy
+                calculated_sl = stop_base - atr
             
             # Populate raw fields for easier dashboard access
             position.atr = atr
@@ -197,29 +212,40 @@ class RiskEngine:
             
             position.sl_price = final_sl
             
-            # 3. Take Profit (Standard 3x ATR from SL)
-            position.tp_price = position.sl_price + (TP_ATR_MULTIPLE * atr)
-            
+            # 3. Take Profit
+            if s_type == 'FIXED':
+                # atr is the stop price, not a distance — use inception_atr for TP distance
+                atr_for_tp = inception_atr if (inception_atr and inception_atr > 0) else 0.0
+                position.tp_price = final_sl + (TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
+            else:
+                position.tp_price = final_sl + (TP_ATR_MULTIPLE * atr)
+
             # 4. Percentage Metrics
             if position.current_price > 0:
                 position.down_pct = ((position.current_price - position.sl_price) / position.current_price * 100)
-                position.up_pct = ((position.tp_price - position.current_price) / position.current_price * 100)
+                if position.tp_price:
+                    position.up_pct = ((position.tp_price - position.current_price) / position.current_price * 100)
             
             # 5. Outcome at Stop/Target (Total P/L relative to Entry)
             position.risk_val = (position.sl_price - position.entry_price) * position.qty * position.multiplier
-            position.reward_val = (position.tp_price - position.entry_price) * position.qty * position.multiplier
-            
+            position.reward_val = ((position.tp_price - position.entry_price) * position.qty * position.multiplier) if position.tp_price else 0.0
+
             # 6. Current Efficiency (Remaining Reward / Current Risk)
             dist_to_stop = (position.current_price - position.sl_price)
-            dist_to_target = (position.tp_price - position.current_price)
-            
+            dist_to_target = ((position.tp_price - position.current_price) if position.tp_price else 0.0)
+
             if dist_to_stop != 0:
                 position.rr_ratio = dist_to_target / dist_to_stop
             else:
                 position.rr_ratio = 0.0
-            
-            # 7. SL % (Distance from Base)
-            position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
+
+            # 7. SL % (Distance from base as % of base)
+            if s_type == 'FIXED':
+                # Entry→stop distance as % of entry (the implicit ATR equivalent)
+                dist = max(0.0, stop_base - final_sl)
+                position.sl_pct_base = (dist / stop_base * 100) if stop_base > 0 else 0
+            else:
+                position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
         
         return position
 

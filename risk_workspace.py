@@ -18,8 +18,8 @@ from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER
 
 PRESETS = {
-    "S": {"label": "Small",       "max_exp_pct": 2.5, "max_r_pct": 0.25},
-    "B": {"label": "Base",        "max_exp_pct": 4.0, "max_r_pct": 0.50},
+    "S": {"label": "Small",       "max_exp_pct": 3.0, "max_r_pct": 0.50},
+    "B": {"label": "Base",        "max_exp_pct": 4.0, "max_r_pct": 0.75},
     "L": {"label": "Large/Index", "max_exp_pct": 5.0, "max_r_pct": 1.00},
 }
 
@@ -158,7 +158,7 @@ class RiskWorkspace(App):
                             id="discover-input"
                         )
                         yield Input(
-                            placeholder="[SL %] [F/T] [S] [Step] [P:S/B/L] [R:MaxR] [E:MaxExp] (Enter: Model | Ctrl+Enter: Save)",
+                            placeholder="F: price  |  T: %/$  |  [S/S0] [P:S/B/L] [R:x] [E:x]",
                             id="atr-input"
                         )
                     yield Label(_preset_legend(), id="preset-legend")
@@ -277,9 +277,17 @@ class RiskWorkspace(App):
                 if has_risk and row.get('EntryType') == 'SCALE_IN':
                     # Use inception if healed (Single Source of Truth), else fallback to entry
                     incep = row.get('Inception', row['Entry'])
+                    # For FIXED: row['ATR'] holds the stop price, not a distance.
+                    # Risk distance = current_price − stop; milestones use inception_atr.
+                    if row['StopType'] == 'FIXED' and pd.notnull(row.get('SL_Price')):
+                        pilot_risk_dist = max(0.0, cur_p_val - row['SL_Price'])
+                        pilot_milestone_atr = row.get('InceptionATR') or pilot_risk_dist
+                    else:
+                        pilot_risk_dist = row['ATR']
+                        pilot_milestone_atr = row['ATR']
                     pilot = RiskEngine.calculate_pilot_entry(
-                        cur_p_val, row['ATR'], self.total_nav, row.get('Multiplier', 1.0), 
-                        row['Entry'], row['ATR'], row.get('ScaleStep', 0.5), 
+                        cur_p_val, pilot_risk_dist, self.total_nav, row.get('Multiplier', 1.0),
+                        row['Entry'], pilot_milestone_atr, row.get('ScaleStep', 0.5),
                         max_r_pct=max_r_pct, max_exp_pct=max_exp_pct,
                         base_price=incep, current_qty=row['Qty']
                     )
@@ -301,13 +309,22 @@ class RiskWorkspace(App):
             rr_display = f"{rr_val:.2f}" if has_risk else "---"
             rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
             
+            # ATR column: for FIXED, show entry→stop distance; for TRAILING show ATR value
+            if has_risk:
+                if row['StopType'] == 'FIXED' and row['Entry'] > 0 and pd.notnull(row['SL_Price']):
+                    atr_display = f"{(row['Entry'] - row['SL_Price']):.2f}"
+                else:
+                    atr_display = f"{row['ATR']:.2f}"
+            else:
+                atr_display = "---"
+
             table.add_row(
-                ticker_display, 
+                ticker_display,
                 action_display,
-                f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}", 
-                f"{row['ATR']:.2f}" if has_risk else "---", 
-                f"{row['SL_Price']:,.2f}" if has_risk else "---", 
-                f"{row['sl_pct_base']:.1f}%" if has_risk else "---", 
+                f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}",
+                atr_display,
+                f"{row['SL_Price']:,.2f}" if has_risk else "---",
+                f"{row['sl_pct_base']:.1f}%" if has_risk else "---",
                 pl_display, 
                 cur_p_display, 
                 f"{row['Entry']:,.2f}" if row['Entry'] > 0 else "---",
@@ -367,9 +384,17 @@ class RiskWorkspace(App):
             integ_content = f"[bold {'green' if is_safe else 'red'}]Price {' > ' if is_safe else ' <= '} Stop[/] | {'[SAFE]' if is_safe else '[BREACHED]'} [dim]({buffer:.1f}% Buffer)[/]"
             res = RiskEngine.audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp, fx_rate=pos.fx_rate)
             
-            atr_width = hypo_atr or pos.atr
-            efficiency = ( (effective_stop+(3*atr_width)-cur_p)/(cur_p-effective_stop) if cur_p>effective_stop else 0)
-            
+            # For FIXED stop: pos.atr holds the stop price, not an ATR distance.
+            # Resolve a proper ATR from inception_atr or discovery for efficiency/pilot calcs.
+            if pos.stop_type == 'FIXED' and hypo_atr is None:
+                disc_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), None) if (disc and disc.get('rows')) else None
+                effective_atr = disc_atr or (pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else max(0.0, (active_entry or 0) - (stop_p or active_entry or 0)))
+            else:
+                effective_atr = hypo_atr if hypo_atr is not None else pos.atr
+
+            atr_width = effective_atr
+            efficiency = ((effective_stop + (3 * atr_width) - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
+
             status_display = f"[bold green]{res['status_color']}[/]"
             if res['status_color'] == "RED":
                 status_display = f"[on red][bold white] {res['status_color']} [/][/]"
@@ -377,14 +402,19 @@ class RiskWorkspace(App):
                 status_display = f"[bold yellow]{res['status_color']}[/]"
 
             # 2. Execution Strategy
-            atr_v = hypo_atr if hypo_atr is not None else pos.atr
-            daily_atr = atr_v
-            if disc and disc['rows']:
-                daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), atr_v)
-            
-            pilot = RiskEngine.calculate_pilot_entry(cur_p, atr_v, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp, current_qty=active_qty, fx_rate=pos.fx_rate)
+            # For FIXED: risk distance per share = current_price − fixed_stop (not ATR).
+            # ATR is kept separately for stage-milestone spacing only.
+            if pos.stop_type == 'FIXED':
+                risk_dist_for_pilot = max(0.0, cur_p - effective_stop) or effective_atr
+            else:
+                risk_dist_for_pilot = effective_atr
+            daily_atr = effective_atr
+            if disc and disc.get('rows'):
+                daily_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), effective_atr)
+
+            pilot = RiskEngine.calculate_pilot_entry(cur_p, risk_dist_for_pilot, self.total_nav, pos.multiplier, active_entry, daily_atr, (hypo_scale_step or pos.scale_step), max_r_pct=active_max_r, max_exp_pct=active_max_exp, current_qty=active_qty, fx_rate=pos.fx_rate)
             entry_t = (hypo_entry_type or pos.entry_type)
-            
+
             # 3. Build Unified Execution Content
             if res['is_breached']:
                 exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
@@ -432,9 +462,18 @@ class RiskWorkspace(App):
             incep_atr_str = f"{pos.inception_atr:.2f}" if pos.inception_atr else "---"
             vol_delta_str = ""
             if pos.inception_atr and pos.inception_atr > 0:
-                vol_delta = (atr_v / pos.inception_atr - 1) * 100
+                vol_delta = (effective_atr / pos.inception_atr - 1) * 100
                 vol_color = "red" if vol_delta > 10 else ("green" if vol_delta < -10 else "white")
                 vol_delta_str = f" [bold {vol_color}]({'+' if vol_delta>0 else ''}{vol_delta:.1f}%)[/]"
+
+            # R Compliance Restore — shown whenever risk budget is breached
+            remediation_str = ""
+            if res.get('stop_to_restore') is not None or res.get('shares_to_trim') is not None:
+                remediation_str = "\n--------------------------------------\n[bold red]R COMPLIANCE RESTORE:[/]\n"
+                if res.get('stop_to_restore') is not None:
+                    remediation_str += f"  A) Raise stop → [bold cyan]{res['stop_to_restore']:,.2f}[/] (keep {int(active_qty)} sh)\n"
+                if res.get('shares_to_trim') is not None and res['shares_to_trim'] >= 1:
+                    remediation_str += f"  B) Trim [bold yellow]{int(res['shares_to_trim'])}[/] sh (keep stop @ {effective_stop:,.2f})"
 
             audit_content = (
                 f"STATUS: {status_display}\n"
@@ -444,6 +483,7 @@ class RiskWorkspace(App):
                 f"--------------------------------------\n"
                 f"INCEPTION STOP: [bold]{incep_stop_str}[/]{trailed_str}\n"
                 f"INCEPTION ATR:  [bold]{incep_atr_str}[/]{vol_delta_str}\n"
+                f"{remediation_str}"
                 f"--------------------------------------\n"
                 f"EXECUTION PLAN:{' [bold yellow](SCALE ACTIVE)[/]' if entry_t=='SCALE_IN' else ''}\n"
                 f"{exec_plan}\n"
@@ -639,9 +679,15 @@ class RiskWorkspace(App):
                 v = val_m.group(1)
                 is_d = v.startswith('$')
                 num = float(v[1:] if is_d else (v[:-1] if v.endswith('%') else v))
-                f_atr = num if is_d else base_p * (num / 100.0)
-            
-            sl_p = base_p - f_atr
+                if s_type == 'FIXED':
+                    f_atr = num  # for FIXED: the value IS the literal stop price
+                else:
+                    f_atr = num if is_d else base_p * (num / 100.0)
+
+            if s_type == 'FIXED':
+                sl_p = f_atr
+            else:
+                sl_p = base_p - f_atr
             
             # Hypothetical Quantity (Sizing Discovery)
             calc_q = pos.qty
@@ -667,17 +713,33 @@ class RiskWorkspace(App):
                 display_ticker += " [bold red]⚠[/]"
 
             table.update_cell(self.current_conid, "col_ticker", display_ticker)
-            table.update_cell(self.current_conid, "col_base", f"{base_p:,.2f}")
-            table.update_cell(self.current_conid, "col_atr", f"{f_atr:.2f}")
+            # For FIXED: base is entry, col_atr shows implicit distance (entry - stop price)
+            if s_type == 'FIXED':
+                display_base = hypo_entry
+                display_dist = hypo_entry - sl_p
+                pct_ref = hypo_entry
+            else:
+                display_base = base_p
+                display_dist = f_atr
+                pct_ref = base_p
+
+            table.update_cell(self.current_conid, "col_base", f"{display_base:,.2f}")
+            table.update_cell(self.current_conid, "col_atr", f"{display_dist:.2f}")
             table.update_cell(self.current_conid, "col_stop_p", f"{sl_p:,.2f}")
-            table.update_cell(self.current_conid, "col_sl_pct", f"{(f_atr/base_p*100 if base_p>0 else 0):.1f}%")
+            table.update_cell(self.current_conid, "col_sl_pct", f"{(display_dist / pct_ref * 100 if pct_ref > 0 else 0):.1f}%")
             table.update_cell(self.current_conid, "col_pl_stop", f"[{'green' if risk_v >= 0 else 'red'}]{risk_v:,.0f}[/]")
             table.update_cell(self.current_conid, "col_cur_p", f"{cur_p_d:,.2f}")
             table.update_cell(self.current_conid, "col_avg_cost", f"{hypo_entry:,.2f}")
             table.update_cell(self.current_conid, "col_nav_pct", f"{modeled_nav_pct:.1f}% ({m_e:.1f}%)")
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': f_atr}
+            # For FIXED: f_atr is the stop price; get the real ATR from discovery for inception_atr
+            if s_type == 'FIXED':
+                save_incep_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), None) if (disc and disc.get('rows')) else pos.inception_atr
+            else:
+                save_incep_atr = f_atr
+
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'entry_type': e_type, 'scale_step': step, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, e_type, step, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
             

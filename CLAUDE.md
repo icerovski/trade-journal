@@ -46,8 +46,7 @@ IBKR Flex API → services/ibkr.py → services/ibkr_parser.py → db.py (trades
                                                                       ↓
                                          core/reconciliation_service.py (snapshot + delta merge)
                                                                       ↓
-                                              core/portfolio_manager.py (e
-                                              nrichment pipeline)
+                                              core/portfolio_manager.py (enrichment pipeline)
                                            ┌──────────────┬──────────────┬──────────────┐
                                       dashboard.py  risk_workspace.py  watch_list_workspace.py  kids_fund_dashboard.py
 ```
@@ -73,9 +72,11 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 - **`core/portfolio_manager.py`** — Central orchestrator. Lazily initializes all services via `@property`. `get_dashboard_df()` runs the full enrichment pipeline. Start here when tracing any data issue.
 - **`core/ledger_engine.py`** — Pure accounting, no I/O. `_apply_trade()` is the state machine for BUY/SELL/TRANSFER/SPLIT. `_net_daily_transfers()` nets same-day inflows/outflows before replay.
 - **`core/reconciliation_service.py`** — Snapshot + delta. `reconcile_hybrid()` is the merge algorithm. Cost-basis healing logic lives here.
-- **`core/risk_engine.py`** — `audit_position_risk()` returns GREEN/YELLOW/RED with budget remnants. `calculate_pilot_entry()` computes the 3-stage scale-in roadmap.
+- **`core/risk_engine.py`** — `audit_position_risk()` returns GREEN/YELLOW/RED with budget remnants. `calculate_pilot_entry()` computes the 3-stage scale-in roadmap. `get_atr_discovery_data()` fetches `period="max"` once from yfinance and resamples to all timeframes — do not add extra HTTP calls per timeframe.
 - **`services/ibkr_parser.py`** — CSV interpretation. External ID fingerprint = `TransactionID-AccountID-Side` for de-duplication. Updates `ticker_info` (Asset Master) during ingestion.
 - **`services/ticker_mapper.py`** — IBKR → Yahoo Finance symbol resolution. Priority: DB conid lookup → YF ISIN search → heuristics (exchange suffixes `.DE`, `.L`, `.AS`).
+- **`risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). `S0` flag in command syntax disables Scale-In and reverts to a single Standard target. Drafting workflow holds bulk updates in-memory before committing.
+- **`watch_list_workspace.py`** — Confluence distances are measured in Daily ATR units; < 0.25R is a meaningful zone. Undisturbed Trend Engine tracks 200-DMA direction changes with a 21-day confirmation trigger (🟢 BUY / 🔴 SELL).
 
 ### Database Schema (SQLite — `trade_journal.db`)
 
@@ -85,6 +86,16 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 - **`kids_config`** — Private wealth glide path beneficiary config (manual).
 
 Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHLCV cache.
+
+### Risk Metrics
+
+**ATR Standards:** Institutional timeframes — Daily(14), Weekly(12), Monthly(12), Quarterly(8). Wilder ATR with SMA baseline.
+
+**Volatility Buffer (Fixed Dollar):** Stop percentages are converted to a fixed dollar `atr_value` at entry. As price rises the percentage tightens — this is intentional. Never recompute from a percentage at current price.
+
+**R (% NAV):** `(entry − stop) × qty / NAV`. Normalized to NAV currency via live FX rates from the broker snapshot.
+
+**RR Efficiency:** `(TP − Price) / (Price − Stop)`. Exit signal: < 1.0. Color bands: 🟢 ≥ 1.0, 🟡 ≥ 0.5.
 
 ### Presentation Layer (Textual UIs)
 

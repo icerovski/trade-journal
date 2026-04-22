@@ -87,6 +87,19 @@ def init_db():
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_conid ON risk_profiles(conid) WHERE status = 'WATCH'")
 
+    # Migration: FIXED stop redesign — atr_value now stores the absolute stop price.
+    # Old behavior stored the ATR distance (small number); inception_stop stored the computed price.
+    # Guard: only migrate rows where atr_value looks like a distance (< half of inception_stop).
+    cursor.execute("""
+        UPDATE risk_profiles
+        SET atr_value = inception_stop,
+            highest_sl = MAX(highest_sl, inception_stop)
+        WHERE stop_type = 'FIXED'
+          AND inception_stop IS NOT NULL
+          AND inception_stop > 0
+          AND atr_value < (inception_stop * 0.5)
+    """)
+
     # 3. Ticker Info Table (Asset Master)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ticker_info (
