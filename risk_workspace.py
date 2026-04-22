@@ -432,7 +432,7 @@ class RiskWorkspace(App):
                     f"  {'Price':<6}{'':>7}{active_entry:>9.2f}{cur_p:>9.2f}{new_entry_t:>9.2f}  {pos.ccy}\n"
                     f"  {'Stop':<6}{stop_flag:>7}{effective_stop:>9.2f}{'---':>9}{effective_stop:>9.2f}  {pos.ccy}\n"
                     f"  {'SL%':<6}{'---':>7}{sl_pct_beg:>8.1f}%{sl_pct_add:>8.1f}%{sl_pct_bal:>8.1f}%\n"
-                    f"  {'Buf%':<6}{'---':>7}{buffer:>8.1f}%{'---':>9}{buffer:>8.1f}%\n"
+                    f"  {'Buf%':<6}{'---':>7}{buffer:>8.1f}%{'---':>9}{'---':>9}\n"
                     f"  {'HCM':<6}{basis_lim}{hcm_exposure:>9,.0f}{int(tx_hcm):>+9,}[{bal_hcm_col}]{new_hcm_t:>9,.0f}[/]  {pos.ccy}\n"
                     f"  {'R%':<6}{r_lim:>7}{cur_r:>+8.2f}%{r_add:>+8.2f}%[bold {r_col}]{new_R_t:>+8.2f}%[/]\n"
                     f"  {'E%':<6}{e_lim:>7}{cur_e:>8.2f}%{e_add:>+8.2f}%[bold {e_col}]{new_E_t:>8.2f}%[/]\n"
