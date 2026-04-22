@@ -469,21 +469,24 @@ class RiskWorkspace(App):
                 new_E_t    = new_hcm_t * pos.fx_rate / self.total_nav * 100
                 r_col  = "red" if new_R_t > active_max_r else ("yellow" if new_R_t > active_max_r * 0.8 else "green")
                 e_col  = "red" if new_E_t > active_max_exp * 1.1 else ("yellow" if new_E_t >= active_max_exp else "green")
-                sign   = "+" if net_action > 0 else ""
-                a_col  = "green" if net_action > 0 else "yellow"
-                tx_val = abs(net_action) * cur_p * pos.multiplier
                 cur_r  = res['current_risk_pct']
                 cur_e  = res['current_exposure_pct']
+                # ADD column values: per-transaction contributions (add up exactly to BALANCE)
+                r_add  = (cur_p - effective_stop) * net_action * pos.multiplier * pos.fx_rate / self.total_nav * 100
+                e_add  = cur_p * net_action * pos.multiplier * pos.fx_rate / self.total_nav * 100
+                tx_hcm = net_action * cur_p * pos.multiplier  # pos.ccy, signed
                 sizing_table = (
                     f"──────────────────────────────────────\n"
-                    f"[bold]              CURRENT    POST-{'ADD' if net_action > 0 else 'TRIM'}[/]\n"
-                    f"  HCM Base  {hcm_exposure:>10,.0f}  {new_hcm_t:>10,.0f}  {pos.ccy}\n"
-                    f"  R % NAV   {cur_r:>+9.2f}%  [bold {r_col}]{new_R_t:>+9.2f}%[/]\n"
-                    f"  E % NAV   {cur_e:>9.2f}%  [bold {e_col}]{new_E_t:>9.2f}%[/]\n"
-                    f"  [{a_col}]{sign}{abs(net_action)} sh @ {cur_p:,.2f}  =  {tx_val:,.0f} {pos.ccy}[/]\n"
+                    f"[bold]{'':8}{'BAL-BEG':>9}{'ADD':>9}{'BALANCE':>9}[/]\n"
+                    f"  {'Shares':<6}{int(active_qty):>9,}{net_action:>+9,}{int(new_qty_t):>9,}\n"
+                    f"  {'Price':<6}{active_entry:>9.2f}{cur_p:>9.2f}{new_entry_t:>9.2f}  {pos.ccy}\n"
+                    f"  {'HCM':<6}{hcm_exposure:>9,.0f}{int(tx_hcm):>+9,}{new_hcm_t:>9,.0f}  {pos.ccy}\n"
+                    f"  {'R%':<6}{cur_r:>+8.2f}%{r_add:>+8.2f}%[bold {r_col}]{new_R_t:>+9.2f}%[/]\n"
+                    f"  {'E%':<6}{cur_e:>8.2f}%{e_add:>+8.2f}%[bold {e_col}]{new_E_t:>9.2f}%[/]\n"
                 )
             else:
                 sizing_table = ""
+                tx_hcm = 0.0
 
             # Inception Stop Info
             incep_stop_str = f"{pos.inception_stop:,.2f}" if pos.inception_stop else "---"
@@ -523,7 +526,7 @@ class RiskWorkspace(App):
                 f"  - Cost Value:    {cost_val:,.0f} {pos.ccy}\n"
                 f"  - Market Value:  {market_val:,.0f} {pos.ccy}\n"
                 f"  - Target Outlay: {target_outlay:,.0f} {pos.ccy}\n"
-                f"  - Remaining Cap: {remaining_cap:,.0f} {pos.ccy}\n"
+                f"  - {'Remaining Cap' if entry_t == 'SCALE_IN' else 'Add Cost    '}: {(remaining_cap if entry_t == 'SCALE_IN' else abs(tx_hcm)):,.0f} {pos.ccy}\n"
                 f"  - Pilot Stop:    [bold]{pilot['stop']:,.2f}[/]"
             )
             if entry_t == 'SCALE_IN':
