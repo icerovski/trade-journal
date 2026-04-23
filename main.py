@@ -74,7 +74,11 @@ def show_menu():
     menu_text.append("[6] ", style="bold yellow")
     menu_text.append(f"{watch_label:<17}", style="bold white")
     menu_text.append("(Monitor & Manage Prospective Ideas)\n", style="dim")
-    
+
+    menu_text.append("[7] ", style="bold red")
+    menu_text.append("PORTFOLIO RISK   ", style="bold white")
+    menu_text.append("(Aggregate R%, Stop-Out Loss, Concentration, FX)\n", style="dim")
+
     menu_text.append("\n[0] EXIT", style="bold red")
 
     console.print(Panel(menu_text, title="[bold]TRADE JOURNAL & RISK MANAGEMENT[/bold]", subtitle="Institutional Portfolio System", border_style="blue"))
@@ -191,6 +195,11 @@ def handle_watch_list():
     from watch_list_workspace import run_watch_list_workspace
     run_watch_list_workspace()
 
+def handle_portfolio_risk():
+    """Portfolio-level risk aggregation report."""
+    from portfolio_risk import run_portfolio_risk
+    run_portfolio_risk()
+
 def main():
     sync_config.smart_sync()
     init_db()
@@ -211,6 +220,8 @@ def main():
             handle_maintenance(manager)
         elif choice == '6':
             handle_watch_list()
+        elif choice == '7':
+            handle_portfolio_risk()
         elif choice == '0':
             sys.exit()
         else:
