@@ -116,12 +116,9 @@ class Position:
     exit_stage: str = ""         # PRE-M1 / M1 / M2 / TP (empty = no stop assigned)
     m1_price: float = 0.0
     m2_price: float = 0.0
-    trend_regime: str = "NORMAL"      # TREND / NORMAL / RANGING
-    regime_ratio: float = 0.0        # quarterly_atr / weekly_atr (neutral baseline ≈ 3.5)
-    regime_dma: str = ""             # e.g. "BUY (43d)" or "NEUTRAL (7d)"
-    regime_weekly_atr: float = 0.0   # raw weekly ATR (Wilder 12-period)
-    regime_quarterly_atr: float = 0.0 # raw quarterly ATR (Wilder 12-period)
-    regime_dma200: float = 0.0       # current 200-DMA price level
+    trend_regime: str = "NORMAL"  # TREND / NORMAL / RANGING
+    regime_dma: str = ""          # e.g. "BUY (43d)" or "NEUTRAL (7d)"
+    regime_dma200: float = 0.0    # current 200-DMA price level
 
     @property
     def hcm_value(self) -> float:
@@ -185,7 +182,7 @@ class Position:
         'fx_rate': 'FXRate',
         'exit_stage': 'ExitStage', 'm1_price': 'M1_Price',
         'm2_price': 'M2_Price', 'trend_regime': 'TrendRegime',
-        'regime_ratio': 'RegimeRatio', 'regime_dma': 'RegimeDMA',
+        'regime_dma': 'RegimeDMA',
     }
 
     def to_dict(self):

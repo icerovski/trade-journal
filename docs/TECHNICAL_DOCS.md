@@ -95,25 +95,19 @@ A staged exit framework that avoids premature profit-taking in strong trends whi
 
 ### Trend Regime
 
-Two independent signals are combined to classify the market structure for each position.
+Market structure is classified per position using the 200-DMA consecutive rising-days count. Additional signals can be layered into `_enrich_regime()` as strategy evolves.
 
-**Signal 1 — Q/W ATR Ratio** (`quarterly_atr / weekly_atr`)
+**Signal — 200-DMA Direction**
 
-A quarter contains ~13 weekly bars. In a random walk, weekly moves partially cancel, so quarterly ATR ≈ √13 × weekly ATR ≈ 3.5×. When the ratio exceeds 4.5, weekly moves are additive — the structural signature of a trend. Both ATRs use Wilder's method (12-period) computed from `prices.db`.
-
-**Signal 2 — 200-DMA Direction**
-
-Daily DMA change = `(today's close − close 200 days ago) / 200`. Because 199 other sessions offset any single bad day, the DMA rarely reverses direction on noise. The signal counts consecutive days the DMA has moved in the same direction without interruption. At ≥ 21 days it fires BUY (uptrend confirmed) or SELL (downtrend confirmed); otherwise NEUTRAL.
+Daily DMA change = `(today's close − close 200 days ago) / 200`. Because it averages 200 sessions, a single bad day barely moves it. The signal counts how many consecutive days the DMA has moved in the same direction without reversal.
 
 **Regime classification:**
 
-| Regime | Q/W ATR Ratio | 200-DMA Signal | Trim M2 | Trim TP |
-|--------|--------------|----------------|---------|---------|
-| TREND  | > 4.5        | BUY (≥ 21d)    | 15%     | 20%     |
-| NORMAL | 3.0 – 4.5    | BUY (≥ 21d)    | 33%     | 33% or close |
-| RANGING | < 3.0 OR   | Not BUY        | 50%     | Close all |
-
-RANGING fires if either condition fails. Both must be true for TREND or NORMAL.
+| Regime | 200-DMA Rising Days | Trim M2 | Trim TP |
+|--------|---------------------|---------|---------|
+| TREND  | ≥ 21                | 15%     | 20%     |
+| NORMAL | 10 – 20             | 33%     | 33% or close |
+| RANGING | < 10 or declining  | 50%     | Close all |
 
 ### Exit Stages
 

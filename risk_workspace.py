@@ -35,16 +35,13 @@ _STAGE_C  = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
 _REGIME_C = {'TREND': 'green', 'NORMAL': 'white', 'RANGING': 'red'}
 
 def _exit_guidance_str(pos, cur_p: float) -> str:
-    stage        = getattr(pos, 'exit_stage', '')
-    regime       = getattr(pos, 'trend_regime', 'NORMAL')
-    ratio        = getattr(pos, 'regime_ratio', 0.0)
-    dma          = getattr(pos, 'regime_dma', '')
-    weekly_atr   = getattr(pos, 'regime_weekly_atr', 0.0)
-    quarterly_atr= getattr(pos, 'regime_quarterly_atr', 0.0)
-    dma200       = getattr(pos, 'regime_dma200', 0.0)
-    m1           = getattr(pos, 'm1_price', 0.0)
-    m2           = getattr(pos, 'm2_price', 0.0)
-    tp           = getattr(pos, 'tp_price', 0.0) or 0.0
+    stage  = getattr(pos, 'exit_stage', '')
+    regime = getattr(pos, 'trend_regime', 'NORMAL')
+    dma    = getattr(pos, 'regime_dma', '')
+    dma200 = getattr(pos, 'regime_dma200', 0.0)
+    m1     = getattr(pos, 'm1_price', 0.0)
+    m2     = getattr(pos, 'm2_price', 0.0)
+    tp     = getattr(pos, 'tp_price', 0.0) or 0.0
 
     if not stage:
         return ""
@@ -68,28 +65,11 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     ladder = (f"  {_ms('M1', m1, 1)}   {_ms('M2', m2, 2)}   {_ms('TP', tp, 3)}\n")
 
     # ── Regime calculation breakdown ─────────────────────────────────────────
-    ratio_c  = 'green' if ratio > 4.5 else ('red' if ratio < 3.0 else 'white')
-    dma_c    = 'green' if 'BUY' in dma else ('red' if 'SELL' in dma else 'yellow')
-
-    # Ratio verdict
-    if ratio > 4.5:
-        ratio_verdict = "[green]TREND[/] (> 4.5)"
-    elif ratio < 3.0:
-        ratio_verdict = "[red]RANGING[/] (< 3.0)"
-    else:
-        ratio_verdict = "[white]NORMAL[/] (3.0 – 4.5)"
-
-    # DMA verdict
     dma_signal = dma.split(' ')[0] if dma else 'NEUTRAL'
-    dma_days_str = dma.split(' ')[1].strip('()d') if ' ' in dma else ''
-    if dma_signal == 'BUY':
-        dma_verdict = "[green]confirmed[/] (≥ 21 days)"
-    elif dma_signal == 'SELL':
-        dma_verdict = "[red]SELL — downtrend[/]"
-    else:
-        dma_verdict = f"[yellow]not confirmed[/] (< 21 days)"
+    dma_days_str = dma.split(' ')[1].strip('()d') if ' ' in dma else '0'
+    dma_days = int(dma_days_str) if dma_days_str.isdigit() else 0
+    dma_c = 'green' if dma_signal == 'BUY' else ('red' if dma_signal == 'SELL' else 'yellow')
 
-    # Price vs DMA200
     if dma200 > 0 and cur_p > 0:
         diff = cur_p - dma200
         diff_c = 'green' if diff >= 0 else 'red'
@@ -97,29 +77,21 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     else:
         dma200_str = "---"
 
+    if regime == 'TREND':
+        verdict = f"[green]Rising {dma_days}d (≥ 21) → TREND[/]"
+    elif regime == 'NORMAL':
+        verdict = f"[white]Rising {dma_days}d (10–20) → NORMAL[/]"
+    else:
+        if dma_signal == 'SELL':
+            verdict = f"[red]Declining {dma_days}d → RANGING[/]"
+        else:
+            verdict = f"[red]Rising only {dma_days}d (< 10) → RANGING[/]"
+
     calc = (
         f"\n  REGIME CALCULATION:\n"
-        f"  Weekly ATR (12w):    {weekly_atr:,.2f}\n"
-        f"  Quarterly ATR (12q): {quarterly_atr:,.2f}\n"
-        f"  Q/W Ratio:           [{ratio_c}]{ratio:.2f}[/]  →  {ratio_verdict}\n"
-        f"  200-DMA:             {dma200_str}\n"
-        f"  DMA signal:          [{dma_c}]{dma_signal} ({dma_days_str}d)[/]  →  {dma_verdict}\n"
+        f"  200-DMA:    {dma200_str}\n"
+        f"  DMA signal: [{dma_c}]{dma_signal} ({dma_days}d)[/]  →  {verdict}\n"
     )
-
-    # Combined verdict
-    if regime == 'TREND':
-        verdict = "[green]Both signals positive → TREND[/]"
-    elif regime == 'RANGING':
-        if ratio < 3.0 and dma_signal != 'BUY':
-            verdict = "[red]Both signals weak → RANGING[/]"
-        elif ratio < 3.0:
-            verdict = "[red]Ratio below 3.0 → RANGING[/] (DMA alone cannot override)"
-        else:
-            verdict = "[red]DMA not confirmed → RANGING[/] (ratio alone cannot override)"
-    else:
-        verdict = "[white]Ratio in neutral zone + DMA confirmed → NORMAL[/]"
-
-    calc += f"  Verdict:             {verdict}\n"
 
     # ── Action ────────────────────────────────────────────────────────────────
     action = ""

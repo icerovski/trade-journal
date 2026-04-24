@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from data_loader import DataLoader
 from services.ticker_mapper import TickerMapper
 from .ledger_engine import LedgerEngine
@@ -11,21 +10,6 @@ from db import get_all_risk_settings
 from models import Position
 from logger import logger
 from constants import QTY_ZERO_THRESHOLD
-
-def _compute_regime_atr(df: pd.DataFrame, window: int = 12) -> float:
-    """Wilder ATR matching the formula in risk_engine._compute_atr_rows."""
-    if len(df) < 2:
-        return 0.0
-    df = df.copy()
-    df['PrevClose'] = df['Close'].shift(1)
-    df['TR'] = np.maximum(
-        df['High'] - df['Low'],
-        np.maximum(abs(df['High'] - df['PrevClose']), abs(df['Low'] - df['PrevClose']))
-    )
-    actual_window = min(window, len(df) - 1)
-    val = df['TR'].ewm(com=actual_window - 1, min_periods=actual_window, adjust=False).mean().iloc[-1]
-    return float(val) if pd.notnull(val) else 0.0
-
 
 class PortfolioManager:
     """
@@ -104,7 +88,7 @@ class PortfolioManager:
         # 3. Financial and Risk Metric Calculation
         self._enrich_metrics(enriched_positions, risk_settings, total_nav)
 
-        # 4. Trend Regime (quarterly/weekly ATR ratio + 200-DMA confirmation)
+        # 4. Trend Regime (200-DMA consecutive rising days)
         self._enrich_regime(enriched_positions)
 
         # Convert list of objects back to DataFrame for the View layer
@@ -149,40 +133,33 @@ class PortfolioManager:
                 p.risk_pct_nav = 0.0
 
     def _enrich_regime(self, positions: list[Position]):
-        """Sets trend_regime per position: quarterly/weekly ATR ratio + 200-DMA confirmation."""
+        """Sets trend_regime per position based on 200-DMA consecutive rising days.
+        TREND ≥ 21d, NORMAL 10-20d, RANGING < 10d or declining.
+        Add additional signals here as strategy evolves.
+        """
         from services.price_service import PriceService
         ps = PriceService()
         for p in positions:
             if not p.conid or p.qty <= 0:
                 continue
             try:
-                df_w = ps.get_prices(str(p.conid), timeframe='weekly')
-                df_q = ps.get_prices(str(p.conid), timeframe='quarterly')
-                if len(df_w) < 13 or len(df_q) < 4:
-                    continue
-                weekly_atr = _compute_regime_atr(df_w)
-                quarterly_atr = _compute_regime_atr(df_q)
-                if weekly_atr <= 0:
-                    continue
-                ratio = quarterly_atr / weekly_atr
                 yf_ticker = self.mapper.resolve_yf_ticker(p.ticker, conid=p.conid)
                 trend = ps.get_trend_analysis(str(p.conid), yf_ticker)
-                p.regime_weekly_atr = round(weekly_atr, 4)
-                p.regime_quarterly_atr = round(quarterly_atr, 4)
-                p.regime_ratio = round(ratio, 2)
-                dma_trend = trend.get('dma200_trend', {}) if trend.get('status') == 'OK' else {}
+                if trend.get('status') != 'OK':
+                    continue
+                dma_trend = trend.get('dma200_trend', {})
                 dma_signal = dma_trend.get('signal', 'NEUTRAL')
                 dma_days = dma_trend.get('consecutive_days', 0)
-                p.regime_dma = f"{dma_signal} ({dma_days}d)"
-                dmas = trend.get('dmas', {}) if trend.get('status') == 'OK' else {}
+                direction = dma_trend.get('direction', 'DOWN')
+                dmas = trend.get('dmas', {})
                 p.regime_dma200 = round(float(dmas.get('DMA200', 0.0) or 0.0), 4)
-                dma_up = dma_signal == 'BUY'
-                if dma_up and ratio > 4.5:
+                p.regime_dma = f"{dma_signal} ({dma_days}d)"
+                if direction == 'UP' and dma_days >= 21:
                     p.trend_regime = "TREND"
-                elif not dma_up or ratio < 3.0:
-                    p.trend_regime = "RANGING"
-                else:
+                elif direction == 'UP' and dma_days >= 10:
                     p.trend_regime = "NORMAL"
+                else:
+                    p.trend_regime = "RANGING"
             except Exception:
                 pass
 
