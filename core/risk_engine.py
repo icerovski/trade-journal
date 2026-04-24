@@ -187,7 +187,24 @@ class RiskEngine:
                 position.sl_pct_base = (dist / stop_base * 100) if stop_base > 0 else 0
             else:
                 position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
-        
+
+            # 8. Exit milestones (entry + N × ATR-distance)
+            atr_dist = (inception_atr if (inception_atr and inception_atr > 0)
+                        else max(0.0, (position.entry_price or 0.0) - final_sl)) if s_type == 'FIXED' else atr
+            if atr_dist > 0 and position.entry_price > 0:
+                position.m1_price = position.entry_price + atr_dist
+                position.m2_price = position.entry_price + 2.0 * atr_dist
+                cur = position.current_price if position.current_price > 0 else position.mark_price
+                if cur > 0 and position.tp_price:
+                    if cur >= position.tp_price:
+                        position.exit_stage = "TP"
+                    elif cur >= position.m2_price:
+                        position.exit_stage = "M2"
+                    elif cur >= position.m1_price:
+                        position.exit_stage = "M1"
+                    else:
+                        position.exit_stage = "PRE-M1"
+
         return position
 
     @staticmethod

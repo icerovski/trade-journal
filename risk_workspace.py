@@ -23,6 +23,121 @@ PRESETS = {
     "L": {"label": "Large/Index", "max_exp_pct": 5.0, "max_r_pct": 1.00},
 }
 
+_WS_TRIM = {
+    ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
+    ('M2', 'NORMAL'):  (0.33, "Trim 33%"),
+    ('M2', 'RANGING'): (0.50, "Trim 50% — protect gains"),
+    ('TP', 'TREND'):   (0.20, "Trim 20% — raise TP to weekly ATR level"),
+    ('TP', 'NORMAL'):  (0.33, "Trim 33% or close; keep runner if RR > 1.0"),
+    ('TP', 'RANGING'): (1.00, "Close position — no trend support"),
+}
+_STAGE_C  = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
+_REGIME_C = {'TREND': 'green', 'NORMAL': 'white', 'RANGING': 'red'}
+
+def _exit_guidance_str(pos, cur_p: float) -> str:
+    stage        = getattr(pos, 'exit_stage', '')
+    regime       = getattr(pos, 'trend_regime', 'NORMAL')
+    ratio        = getattr(pos, 'regime_ratio', 0.0)
+    dma          = getattr(pos, 'regime_dma', '')
+    weekly_atr   = getattr(pos, 'regime_weekly_atr', 0.0)
+    quarterly_atr= getattr(pos, 'regime_quarterly_atr', 0.0)
+    dma200       = getattr(pos, 'regime_dma200', 0.0)
+    m1           = getattr(pos, 'm1_price', 0.0)
+    m2           = getattr(pos, 'm2_price', 0.0)
+    tp           = getattr(pos, 'tp_price', 0.0) or 0.0
+
+    if not stage:
+        return ""
+
+    sc = _STAGE_C.get(stage, 'white')
+    rc = _REGIME_C.get(regime, 'white')
+
+    # ── Milestone ladder ──────────────────────────────────────────────────────
+    order   = ('PRE-M1', 'M1', 'M2', 'TP')
+    cur_idx = order.index(stage) if stage in order else 0
+
+    def _ms(label, price, idx):
+        if price <= 0:
+            return f"[dim]{label}: ---[/]"
+        if idx < cur_idx:
+            return f"[green]{label}: {price:,.2f} ✓[/]"
+        if idx == cur_idx:
+            return f"[{sc}][bold]{label}: {price:,.2f} ◄[/][/]"
+        return f"[dim]{label}: {price:,.2f}[/]"
+
+    ladder = (f"  {_ms('M1', m1, 1)}   {_ms('M2', m2, 2)}   {_ms('TP', tp, 3)}\n")
+
+    # ── Regime calculation breakdown ─────────────────────────────────────────
+    ratio_c  = 'green' if ratio > 4.5 else ('red' if ratio < 3.0 else 'white')
+    dma_c    = 'green' if 'BUY' in dma else ('red' if 'SELL' in dma else 'yellow')
+
+    # Ratio verdict
+    if ratio > 4.5:
+        ratio_verdict = "[green]TREND[/] (> 4.5)"
+    elif ratio < 3.0:
+        ratio_verdict = "[red]RANGING[/] (< 3.0)"
+    else:
+        ratio_verdict = "[white]NORMAL[/] (3.0 – 4.5)"
+
+    # DMA verdict
+    dma_signal = dma.split(' ')[0] if dma else 'NEUTRAL'
+    dma_days_str = dma.split(' ')[1].strip('()d') if ' ' in dma else ''
+    if dma_signal == 'BUY':
+        dma_verdict = "[green]confirmed[/] (≥ 21 days)"
+    elif dma_signal == 'SELL':
+        dma_verdict = "[red]SELL — downtrend[/]"
+    else:
+        dma_verdict = f"[yellow]not confirmed[/] (< 21 days)"
+
+    # Price vs DMA200
+    if dma200 > 0 and cur_p > 0:
+        diff = cur_p - dma200
+        diff_c = 'green' if diff >= 0 else 'red'
+        dma200_str = f"{dma200:,.2f}  (price [{diff_c}]{'+' if diff>=0 else ''}{diff:,.2f}[/] vs DMA)"
+    else:
+        dma200_str = "---"
+
+    calc = (
+        f"\n  REGIME CALCULATION:\n"
+        f"  Weekly ATR (12w):    {weekly_atr:,.2f}\n"
+        f"  Quarterly ATR (12q): {quarterly_atr:,.2f}\n"
+        f"  Q/W Ratio:           [{ratio_c}]{ratio:.2f}[/]  →  {ratio_verdict}\n"
+        f"  200-DMA:             {dma200_str}\n"
+        f"  DMA signal:          [{dma_c}]{dma_signal} ({dma_days_str}d)[/]  →  {dma_verdict}\n"
+    )
+
+    # Combined verdict
+    if regime == 'TREND':
+        verdict = "[green]Both signals positive → TREND[/]"
+    elif regime == 'RANGING':
+        if ratio < 3.0 and dma_signal != 'BUY':
+            verdict = "[red]Both signals weak → RANGING[/]"
+        elif ratio < 3.0:
+            verdict = "[red]Ratio below 3.0 → RANGING[/] (DMA alone cannot override)"
+        else:
+            verdict = "[red]DMA not confirmed → RANGING[/] (ratio alone cannot override)"
+    else:
+        verdict = "[white]Ratio in neutral zone + DMA confirmed → NORMAL[/]"
+
+    calc += f"  Verdict:             {verdict}\n"
+
+    # ── Action ────────────────────────────────────────────────────────────────
+    action = ""
+    key = (stage, regime)
+    if key in _WS_TRIM:
+        pct, desc = _WS_TRIM[key]
+        shares = max(1, int(pos.qty * pct))
+        action = f"\n  [bold]→ {desc} (~{shares} sh)[/]\n"
+
+    return (
+        f"\n──────────────────────────────────────────\n"
+        f"EXIT STAGE: [{sc}][bold]{stage}[/][/]   "
+        f"Regime: [{rc}][bold]{regime}[/][/]\n"
+        f"{ladder}"
+        f"{calc}"
+        f"{action}"
+    )
+
 def _preset_legend(active: str = "") -> str:
     parts = []
     for key, p in PRESETS.items():
@@ -487,6 +602,7 @@ class RiskWorkspace(App):
                 f"--------------------------------------\n"
                 f"PLAN:\n"
                 f"{exec_plan}\n"
+                f"{_exit_guidance_str(pos, cur_p)}"
             )
 
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"

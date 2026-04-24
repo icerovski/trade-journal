@@ -12,6 +12,41 @@ from logger import logger, suppress_console_logging
 from core.portfolio_manager import PortfolioManager
 from core.ui_utils import UIUtils
 
+_STAGE_COLORS = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
+_TRIM_GUIDANCE = {
+    ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
+    ('M2', 'NORMAL'):  (0.33, "Trim 33%"),
+    ('M2', 'RANGING'): (0.50, "Trim 50% — protect gains"),
+    ('TP', 'TREND'):   (0.20, "Trim 20% — raise TP to weekly ATR level"),
+    ('TP', 'NORMAL'):  (0.33, "Trim 33% or close; keep runner if RR > 1.0"),
+    ('TP', 'RANGING'): (1.00, "Close position — no trend support"),
+}
+
+def _exit_milestones_panel(row) -> str:
+    stage   = str(row.get('ExitStage', ''))
+    regime  = str(row.get('TrendRegime', 'NORMAL'))
+    m1      = row.get('M1_Price', 0.0)
+    m2      = row.get('M2_Price', 0.0)
+    qty     = row.get('Qty', 0.0)
+    if not stage or stage == 'NORMAL':
+        return ""
+    sc = _STAGE_COLORS.get(stage, 'white')
+    regime_color = {'TREND': 'green', 'NORMAL': 'white', 'RANGING': 'red'}.get(regime, 'white')
+    guidance = ""
+    key = (stage, regime)
+    if key in _TRIM_GUIDANCE:
+        pct, desc = _TRIM_GUIDANCE[key]
+        shares = max(1, int(qty * pct))
+        guidance = f"→ {desc} (~{shares} sh)\n"
+    m1_str = f"{m1:,.2f}" if m1 > 0 else "---"
+    m2_str = f"{m2:,.2f}" if m2 > 0 else "---"
+    return (
+        f"[bold cyan]EXIT MILESTONES[/bold cyan]\n"
+        f"Stage:   [{sc}]{stage}[/]   Regime: [{regime_color}]{regime}[/]\n"
+        f"M1:  {m1_str}   M2: {m2_str}\n"
+        f"{guidance}\n"
+    )
+
 class TradingCockpit(App):
     """
     Institutional-grade Trading Cockpit built with Textual.
@@ -122,7 +157,10 @@ class TradingCockpit(App):
             "• [bold]Filter Keys:[/] [A]ll | [S]tocks | [O]ptions | [B]onds | [T]reasuries\n"
             "• [bold]Indicators:[/] 🔴 Stop Breached | 🟢 Target Price Reached\n"
             "• [bold]AAGR:[/] Annualized Aggregate Growth Rate (Compound Annual Growth)\n"
-            "• [bold]R (% NAV):[/] Total risk of current stop loss as a percentage of total Portfolio NAV."
+            "• [bold]R (% NAV):[/] Total risk of current stop loss as a percentage of total Portfolio NAV.\n"
+            "• [bold]EXIT column:[/] [cyan]M1[/]=raise stop to breakeven | [yellow]M2·T/N/R[/]=trim signal | [green]TP·T/N/R[/]=target hit\n"
+            "  Letter suffix = Regime: T=Trend (15%/20% trim), N=Normal (33%), R=Ranging (50%/close)\n"
+            "  Full guidance with share counts in the sidebar. F1 → Exit Strategy tab for full reference."
         )
 
     def action_toggle_help(self) -> None:
@@ -133,7 +171,7 @@ class TradingCockpit(App):
         self._thread_id = threading.get_ident()
         table = self.query_one(DataTable)
         table.cursor_type = "row"
-        table.add_columns("TICKER", "PRICE", "QTY", "P/L DAY", "P/L %", "UNRL P&L", "UNRL %", "COST VAL", "MKT VAL", "% NAV")
+        table.add_columns("TICKER", "PRICE", "QTY", "P/L DAY", "P/L %", "UNRL P&L", "UNRL %", "COST VAL", "MKT VAL", "% NAV", "EXIT")
         
         # Start background loop thread
         self.refresh_thread = threading.Thread(target=self.refresh_loop, daemon=True)
@@ -259,6 +297,17 @@ class TradingCockpit(App):
                 ticker_display = f"🟢 {ticker_display}"
                 price_display = f"[on green][bold white] {price_display} [/][/]"
 
+            stage = str(row.get('ExitStage', ''))
+            regime = str(row.get('TrendRegime', 'NORMAL'))
+            if stage in ('M2', 'TP'):
+                r_tag = regime[0] if regime else 'N'
+                stage_colors = {'M2': 'yellow', 'TP': 'green'}
+                exit_display = f"[{stage_colors[stage]}]{stage}·{r_tag}[/]"
+            elif stage == 'M1':
+                exit_display = f"[cyan]M1[/]"
+            else:
+                exit_display = ""
+
             table.add_row(
                 ticker_display,
                 price_display,
@@ -269,7 +318,8 @@ class TradingCockpit(App):
                 self.color_fmt(row['PL_Inc_Pct'], ".1f", "%"),
                 f"{row['CostBasis']:,.0f}",
                 f"{row['MarketValue']:,.0f}",
-                f"{row['NavPct']:.1f}%"
+                f"{row['NavPct']:.1f}%",
+                exit_display,
             )
 
         filter_label = self.asset_filter if self.asset_filter else "ALL"
@@ -330,6 +380,8 @@ class TradingCockpit(App):
                     f"Target Price:   [bold green]{row['TP_Price']:,.2f}[/]\n"
                     f"P/L at Target:  {self.color_fmt(row['Reward_Val'], ',.0f')}\n"
                     f"Buffer to Tgt:  {self.color_fmt(row['Up_Pct'], '.1f', '%')}\n\n"
+
+                    f"{_exit_milestones_panel(row)}"
 
                     f"[bold magenta]PERFORMANCE[/bold magenta]\n"
                     f"First Entry:      {row['Date'].strftime('%d-%b-%y') if pd.notnull(row['Date']) else '---'}\n"
