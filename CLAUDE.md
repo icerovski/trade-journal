@@ -72,10 +72,11 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 - **`core/portfolio_manager.py`** — Central orchestrator. Lazily initializes all services via `@property`. `get_dashboard_df()` runs the full enrichment pipeline. Start here when tracing any data issue.
 - **`core/ledger_engine.py`** — Pure accounting, no I/O. `_apply_trade()` is the state machine for BUY/SELL/TRANSFER/SPLIT. `_net_daily_transfers()` nets same-day inflows/outflows before replay.
 - **`core/reconciliation_service.py`** — Snapshot + delta. `reconcile_hybrid()` is the merge algorithm. Cost-basis healing logic lives here.
-- **`core/risk_engine.py`** — `audit_position_risk()` returns GREEN/YELLOW/RED with budget remnants. `calculate_pilot_entry()` computes the 3-stage scale-in roadmap. `get_atr_discovery_data()` fetches `period="max"` once from yfinance and resamples to all timeframes — do not add extra HTTP calls per timeframe.
+- **`core/risk_engine.py`** — `audit_position_risk()` returns GREEN/YELLOW/RED with budget remnants. `get_atr_discovery_data()` fetches `period="max"` once from yfinance and resamples to all timeframes — do not add extra HTTP calls per timeframe. Section 8 of `calculate_position_risk()` computes exit milestones (`m1_price`, `m2_price`, `exit_stage`). Scale-In (`calculate_pilot_entry`) has been removed — entry type is always SINGLE.
+- **`core/portfolio_analytics.py`** — Pure computation module for portfolio-level risk aggregation: total R%, stop-out loss, HHI concentration, currency breakdown. Called by `portfolio_risk.py` (menu option 7).
 - **`services/ibkr_parser.py`** — CSV interpretation. External ID fingerprint = `TransactionID-AccountID-Side` for de-duplication. Updates `ticker_info` (Asset Master) during ingestion.
 - **`services/ticker_mapper.py`** — IBKR → Yahoo Finance symbol resolution. Priority: DB conid lookup → YF ISIN search → heuristics (exchange suffixes `.DE`, `.L`, `.AS`).
-- **`risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). `S0` flag in command syntax disables Scale-In and reverts to a single Standard target. Drafting workflow holds bulk updates in-memory before committing.
+- **`risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). Command syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x]`. Drafting workflow holds bulk updates in-memory before committing. PLAN section includes full exit stage and regime breakdown.
 - **`watch_list_workspace.py`** — Confluence distances are measured in Daily ATR units; < 0.25R is a meaningful zone. Undisturbed Trend Engine tracks 200-DMA direction changes with a 21-day confirmation trigger (🟢 BUY / 🔴 SELL).
 
 ### Database Schema (SQLite — `trade_journal.db`)
@@ -97,10 +98,28 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 **RR Efficiency:** `(TP − Price) / (Price − Stop)`. Exit signal: < 1.0. Color bands: 🟢 ≥ 1.0, 🟡 ≥ 0.5.
 
+**Exit Stages:** Computed in `calculate_position_risk()` section 8. Milestones anchored to `entry + N × ATR_distance` (FIXED: uses `inception_atr`; TRAILING: uses live ATR width). Stages: PRE-M1 / M1 / M2 / TP. Stored on `Position` as `exit_stage`, `m1_price`, `m2_price`.
+
+**Trend Regime:** Computed in `portfolio_manager._enrich_regime()` (step 4 of `get_dashboard_df`). Two signals: (1) `quarterly_atr / weekly_atr` ratio — neutral baseline ≈ 3.5, TREND threshold > 4.5; (2) 200-DMA consecutive rising days ≥ 21 = BUY confirmed. TREND requires both; RANGING fires if either fails. Stored as `trend_regime`, `regime_ratio`, `regime_dma`, `regime_weekly_atr`, `regime_quarterly_atr`, `regime_dma200` on `Position`.
+
+**Trim Guidance by Regime:** M2: TREND 15%, NORMAL 33%, RANGING 50%. TP: TREND 20%, NORMAL 33% or close, RANGING close all.
+
+### Main Menu Options
+
+| Option | Feature |
+|---|---|
+| 1 | SYNC ALL — IBKR fetch + ledger update + price sync |
+| 2 | RISK WORKSPACE — ATR discovery, risk audit, strategy lab |
+| 3 | VIEW DASHBOARD — Trading cockpit (60s refresh) |
+| 4 | KIDS FUND — Private wealth glide path audit |
+| 5 | MAINTENANCE — Surgical rebuilds, CSV re-ingest |
+| 6 | WATCH LIST — Prospect monitoring and management |
+| 7 | PORTFOLIO RISK — Aggregate R%, stop-out loss, HHI, FX |
+
 ### Presentation Layer (Textual UIs)
 
-All UIs are Textual apps launched from `main.py`. They are display-only and do not write to the database except `risk_workspace.py`, which persists `risk_profiles` edits via a command syntax (e.g., `15 T S 0.5` = 15% stop, Trailing stop type, Scale-In entry, 0.5× ATR steps).
+All UIs are Textual apps launched from `main.py`. They are display-only and do not write to the database except `risk_workspace.py`, which persists `risk_profiles` edits via command syntax (e.g., `15 T P:L` = 15% stop, Trailing, Large preset). Scale-In has been removed; entry type is always SINGLE.
 
-### `GEMINI.md`
+### Session Wrap-Up Protocol
 
-`GEMINI.md` in the repo root is a 11 KB persistent technical manifesto that is synced to/from OneDrive. It is project documentation, not AI-specific. Do not delete or truncate it.
+When asked to "wrap it up": (1) create session log in `docs/sessions/YYYY-MM-DD_Description.md`, (2) update this file (CLAUDE.md) for any architectural changes, (3) commit both. GEMINI.md is a static historical reference — do not update it going forward.
