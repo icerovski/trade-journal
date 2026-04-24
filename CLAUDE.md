@@ -98,28 +98,20 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 **RR Efficiency:** `(TP − Price) / (Price − Stop)`. Exit signal: < 1.0. Color bands: 🟢 ≥ 1.0, 🟡 ≥ 0.5.
 
-**Exit Stages:** Computed in `calculate_position_risk()` section 8. Milestones anchored to `entry + N × ATR_distance` (FIXED: uses `inception_atr`; TRAILING: uses live ATR width). Stages: PRE-M1 / M1 / M2 / TP. Stored on `Position` as `exit_stage`, `m1_price`, `m2_price`.
-
-**Trend Regime:** Computed in `portfolio_manager._enrich_regime()` (step 4 of `get_dashboard_df`). Two signals: (1) `quarterly_atr / weekly_atr` ratio — neutral baseline ≈ 3.5, TREND threshold > 4.5; (2) 200-DMA consecutive rising days ≥ 21 = BUY confirmed. TREND requires both; RANGING fires if either fails. Stored as `trend_regime`, `regime_ratio`, `regime_dma`, `regime_weekly_atr`, `regime_quarterly_atr`, `regime_dma200` on `Position`.
-
-**Trim Guidance by Regime:** M2: TREND 15%, NORMAL 33%, RANGING 50%. TP: TREND 20%, NORMAL 33% or close, RANGING close all.
-
-### Main Menu Options
-
-| Option | Feature |
-|---|---|
-| 1 | SYNC ALL — IBKR fetch + ledger update + price sync |
-| 2 | RISK WORKSPACE — ATR discovery, risk audit, strategy lab |
-| 3 | VIEW DASHBOARD — Trading cockpit (60s refresh) |
-| 4 | KIDS FUND — Private wealth glide path audit |
-| 5 | MAINTENANCE — Surgical rebuilds, CSV re-ingest |
-| 6 | WATCH LIST — Prospect monitoring and management |
-| 7 | PORTFOLIO RISK — Aggregate R%, stop-out loss, HHI, FX |
+**Exit Milestones & Regime:** Milestones computed in `risk_engine.calculate_position_risk()` section 8; regime in `portfolio_manager._enrich_regime()` (step 4 of `get_dashboard_df`). Full thresholds and trim guidance in `docs/TECHNICAL_DOCS.md` §5.
 
 ### Presentation Layer (Textual UIs)
 
 All UIs are Textual apps launched from `main.py`. They are display-only and do not write to the database except `risk_workspace.py`, which persists `risk_profiles` edits via command syntax (e.g., `15 T P:L` = 15% stop, Trailing, Large preset). Scale-In has been removed; entry type is always SINGLE.
 
-### Session Wrap-Up Protocol
+### Session Protocol
 
-When asked to "wrap it up": (1) create session log in `docs/sessions/YYYY-MM-DD_Description.md`, (2) update this file (CLAUDE.md) for any architectural changes, (3) commit both. GEMINI.md is a static historical reference — do not update it going forward.
+When asked to "wrap it up":
+1. `git diff --stat` / `git log --oneline` — identify all changes since last session log.
+2. Create `docs/sessions/YYYY-MM-DD_Brief_Description.md` — sections: Objectives, Technical Changes, Logic & Decisions, Verification, Next Steps.
+3. Update this file (CLAUDE.md) for architectural changes only — module additions, schema changes, new invariants. No feature detail or trim percentages.
+4. Update `docs/TECHNICAL_DOCS.md` for any user-facing feature additions or changes.
+5. Commit session log + any doc changes.
+6. Remind user to run backup (`uv run python sync_config.py`).
+
+GEMINI.md is a static historical reference — do not update it going forward.
