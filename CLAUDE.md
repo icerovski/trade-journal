@@ -72,8 +72,12 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 - **`core/portfolio_manager.py`** — Central orchestrator. Lazily initializes all services via `@property`. `get_dashboard_df()` runs the full enrichment pipeline. Start here when tracing any data issue.
 - **`core/ledger_engine.py`** — Pure accounting, no I/O. `_apply_trade()` is the state machine for BUY/SELL/TRANSFER/SPLIT. `_net_daily_transfers()` nets same-day inflows/outflows before replay.
 - **`core/reconciliation_service.py`** — Snapshot + delta. `reconcile_hybrid()` is the merge algorithm. Cost-basis healing logic lives here.
-- **`core/risk_engine.py`** — `audit_position_risk()` returns GREEN/YELLOW/RED with budget remnants. `get_atr_discovery_data()` fetches `period="max"` once from yfinance and resamples to all timeframes — do not add extra HTTP calls per timeframe. Section 8 of `calculate_position_risk()` computes exit milestones (`m1_price`, `m2_price`, `exit_stage`). Scale-In (`calculate_pilot_entry`) has been removed — entry type is always SINGLE.
-- **`core/portfolio_analytics.py`** — Pure computation module for portfolio-level risk aggregation: total R%, stop-out loss, HHI concentration, currency breakdown. Called by `portfolio_risk.py` (menu option 7).
+- **`core/stop_loss.py`** — `audit_position_risk()` returns GREEN/YELLOW/RED with budget remnants. `calculate_position_risk()` applies the Ratchet Rule and enriches a Position with SL/TP/RR metrics. `get_atr_discovery_data()` fetches `period="max"` once from yfinance and resamples to all timeframes — do not add extra HTTP calls per timeframe. Scale-In has been removed — entry type is always SINGLE.
+- **`core/profit_taking.py`** — `compute_exit_milestones()` sets `m1_price`, `m2_price`, `exit_stage` on a Position. `enrich_regime()` classifies trend regime (TREND ≥21d, NORMAL 10-20d, RANGING <10d) via 200-DMA consecutive rising days. Called from `portfolio_manager.get_dashboard_df()` step 4.
+- **`core/sizing.py`** — `compute_position_size()` returns max share qty under dual R%/exposure% constraints. `compute_portfolio_risk()` and `hhi_label()` aggregate portfolio-level R%, stop-out loss, HHI concentration, and currency breakdown. Called by `portfolio_risk.py` (menu option 7).
+- **`core/confluence.py`** — `evaluate_confluence()` measures ATR-distance from price and stop to all configured DMAs; returns strength score and zone list.
+- **`core/risk_engine.py`** — Backwards-compat shim. Re-exports from `stop_loss.py` and wraps them in the `RiskEngine` class. Callers that have not been updated yet import from here.
+- **`core/portfolio_analytics.py`** — Backwards-compat shim. Re-exports `compute_portfolio_risk` and `hhi_label` from `sizing.py`.
 - **`services/ibkr_parser.py`** — CSV interpretation. External ID fingerprint = `TransactionID-AccountID-Side` for de-duplication. Updates `ticker_info` (Asset Master) during ingestion.
 - **`services/ticker_mapper.py`** — IBKR → Yahoo Finance symbol resolution. Priority: DB conid lookup → YF ISIN search → heuristics (exchange suffixes `.DE`, `.L`, `.AS`).
 - **`risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). Command syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x]`. Drafting workflow holds bulk updates in-memory before committing. PLAN section includes full exit stage and regime breakdown.
@@ -98,7 +102,7 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 **RR Efficiency:** `(TP − Price) / (Price − Stop)`. Exit signal: < 1.0. Color bands: 🟢 ≥ 1.0, 🟡 ≥ 0.5.
 
-**Exit Milestones & Regime:** Milestones computed in `risk_engine.calculate_position_risk()` section 8; regime in `portfolio_manager._enrich_regime()` (step 4 of `get_dashboard_df`). Full thresholds and trim guidance in `docs/TECHNICAL_DOCS.md` §5.
+**Exit Milestones & Regime:** Milestones computed in `profit_taking.compute_exit_milestones()`; regime in `profit_taking.enrich_regime()` (step 4 of `get_dashboard_df`). Full thresholds and trim guidance in `docs/TECHNICAL_DOCS.md` §5.
 
 ### Presentation Layer (Textual UIs)
 

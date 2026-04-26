@@ -4,6 +4,7 @@ from services.ticker_mapper import TickerMapper
 from .ledger_engine import LedgerEngine
 from services.market_data_service import MarketDataService
 from .risk_engine import RiskEngine
+from .profit_taking import enrich_regime
 from .asset_registry import AssetRegistry
 from .reconciliation_service import ReconciliationService
 from db import get_all_risk_settings
@@ -89,7 +90,7 @@ class PortfolioManager:
         self._enrich_metrics(enriched_positions, risk_settings, total_nav)
 
         # 4. Trend Regime (200-DMA consecutive rising days)
-        self._enrich_regime(enriched_positions)
+        enrich_regime(enriched_positions, self.mapper)
 
         # Convert list of objects back to DataFrame for the View layer
         return pd.DataFrame([p.to_dict() for p in enriched_positions]), enriched_positions
@@ -131,37 +132,6 @@ class PortfolioManager:
                 p.risk_pct_nav = (risk_amt * p.fx_rate / denominator) * 100 if denominator != 0 else 0
             else:
                 p.risk_pct_nav = 0.0
-
-    def _enrich_regime(self, positions: list[Position]):
-        """Sets trend_regime per position based on 200-DMA consecutive rising days.
-        TREND ≥ 21d, NORMAL 10-20d, RANGING < 10d or declining.
-        Add additional signals here as strategy evolves.
-        """
-        from services.price_service import PriceService
-        ps = PriceService()
-        for p in positions:
-            if not p.conid or p.qty <= 0:
-                continue
-            try:
-                yf_ticker = self.mapper.resolve_yf_ticker(p.ticker, conid=p.conid)
-                trend = ps.get_trend_analysis(str(p.conid), yf_ticker)
-                if trend.get('status') != 'OK':
-                    continue
-                dma_trend = trend.get('dma200_trend', {})
-                dma_signal = dma_trend.get('signal', 'NEUTRAL')
-                dma_days = dma_trend.get('consecutive_days', 0)
-                direction = dma_trend.get('direction', 'DOWN')
-                dmas = trend.get('dmas', {})
-                p.regime_dma200 = round(float(dmas.get('DMA200', 0.0) or 0.0), 4)
-                p.regime_dma = f"{dma_signal} ({dma_days}d)"
-                if direction == 'UP' and dma_days >= 21:
-                    p.trend_regime = "TREND"
-                elif direction == 'UP' and dma_days >= 10:
-                    p.trend_regime = "NORMAL"
-                else:
-                    p.trend_regime = "RANGING"
-            except Exception:
-                pass
 
     def get_open_positions_hybrid(self, asset_class_filter=None, account_id=None) -> list[Position]:
         """
