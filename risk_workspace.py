@@ -272,6 +272,8 @@ class RiskWorkspace(App):
         table.add_column("STOP P", key="col_stop_p")
         table.add_column("SL %", key="col_sl_pct")
         table.add_column("P/L STOP", key="col_pl_stop")
+        table.add_column("MKT VAL", key="col_mkt_val")
+        table.add_column("COST", key="col_cost")
         table.add_column("CUR P", key="col_cur_p")
         table.add_column("AVG COST", key="col_avg_cost")
         table.add_column("% NAV", key="col_nav_pct")
@@ -367,6 +369,11 @@ class RiskWorkspace(App):
             exp_color = "red" if row['NavPct'] > (max_exp_pct * EXPOSURE_RED_MULTIPLIER) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
             
             pl_display = UIUtils.color_fmt(row['Risk_Val']) if has_risk else "---"
+            mkt_val  = row['MarketValue']
+            cost_val = row['CostBasis']
+            mkt_color   = "green" if mkt_val >= cost_val else "red"
+            mkt_display  = f"[{mkt_color}]{mkt_val:,.0f}[/]" if row['Qty'] > 0 else "---"
+            cost_display = f"{cost_val:,.0f}" if cost_val > 0 else "---"
             rr_val = row['RR_Ratio']
             rr_display = f"{rr_val:.2f}" if has_risk else "---"
             rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
@@ -387,8 +394,10 @@ class RiskWorkspace(App):
                 atr_display,
                 f"{row['SL_Price']:,.2f}" if has_risk else "---",
                 f"{row['sl_pct_base']:.1f}%" if has_risk else "---",
-                pl_display, 
-                cur_p_display, 
+                pl_display,
+                mkt_display,
+                cost_display,
+                cur_p_display,
                 f"{row['Entry']:,.2f}" if row['Entry'] > 0 else "---",
                 f"[{exp_color}]{nav_val}[/]", 
                 f"[{r_color}]{r_val}[/]", 
