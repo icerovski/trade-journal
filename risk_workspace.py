@@ -144,8 +144,8 @@ class RiskWorkspace(App):
     Screen { background: $surface; }
     
     #main-layout { layout: horizontal; height: 1fr; }
-    #left-pane { width: 55%; height: 1fr; border-right: tall $primary; padding-right: 1; }
-    #right-pane { width: 45%; height: 1fr; padding-left: 1; }
+    #left-pane { width: 60%; height: 1fr; border-right: tall $primary; padding-right: 1; }
+    #right-pane { width: 40%; height: 1fr; padding-left: 1; }
     #portfolio-table { height: 1fr; }
     
     #sidebar-scroll {
@@ -188,11 +188,12 @@ class RiskWorkspace(App):
         min-height: 6;
         padding: 0 1; 
     }
-    #lab-inputs { 
+    #lab-inputs {
         margin-top: 0;
+        height: 3;
     }
-    #discover-input { width: 1fr; min-width: 20; }
-    #atr-input { width: 2fr; min-width: 40; }
+    #discover-input { width: 2fr; min-width: 20; }
+    #atr-input { width: 3fr; min-width: 40; }
     #preset-legend { height: 1; text-align: center; padding: 0 1; }
     #help-modal { background: $surface-darken-3; border: tall $accent; width: 80%; height: 80%; padding: 1 2; align: center middle; margin: 5 10; }
     #close-hint { text-align: center; color: $text-muted; margin-top: 1; }
@@ -239,7 +240,7 @@ class RiskWorkspace(App):
                 yield DataTable(id="portfolio-table")
                 with Vertical(id="strategy-lab"):
                     yield Label("RISK STRATEGY & TICKER DISCOVERY", classes="panel-header")
-                    with AdaptiveInputContainer(id="lab-inputs"):
+                    with Horizontal(id="lab-inputs"):
                         yield Input(
                             placeholder="Discover Ticker (e.g. NVDA)",
                             id="discover-input"
