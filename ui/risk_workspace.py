@@ -10,9 +10,9 @@ from textual.screen import ModalScreen
 from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
-from core.risk_engine import get_atr_discovery_data, RiskEngine
+from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
 from core.ui_utils import UIUtils
-from chart_utils import launch_price_chart
+from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
 from db import set_position_risk
 from logger import logger, suppress_console_logging
@@ -338,7 +338,7 @@ class RiskWorkspace(App):
             adj = 0
             if has_risk and self.total_nav > 0:
                 effective_entry = row['Entry'] if row['Entry'] > 0 else row['Price']
-                res = RiskEngine.audit_position_risk(
+                res = audit_position_risk(
                     cur_p_val, sl_p, effective_entry, row['Qty'], row.get('Multiplier', 1.0),
                     self.total_nav, max_r_pct=max_r_pct, max_exp_pct=max_exp_pct,
                     fx_rate=row.get('FXRate', 1.0)
@@ -456,7 +456,7 @@ class RiskWorkspace(App):
             is_safe = cur_p > effective_stop
             buffer = ((cur_p - effective_stop) / cur_p * 100) if cur_p > 0 else 0
             integ_content = f"[bold {'green' if is_safe else 'red'}]Price {' > ' if is_safe else ' <= '} Stop[/] | {'[SAFE]' if is_safe else '[BREACHED]'} [dim]({buffer:.1f}% Buffer)[/]"
-            res = RiskEngine.audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp, fx_rate=pos.fx_rate)
+            res = audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp, fx_rate=pos.fx_rate)
             
             # For FIXED stop: pos.atr holds the stop price, not an ATR distance.
             # Resolve a proper ATR from inception_atr or discovery for efficiency/pilot calcs.

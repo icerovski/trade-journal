@@ -3,6 +3,8 @@ Spawned by chart_utils.launch_price_chart — never imported directly.
 Usage: python chart_worker.py <display_ticker> <conid_or_empty> <yf_ticker>
 """
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root for core/services imports
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates

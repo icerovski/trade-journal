@@ -2,8 +2,9 @@ import sys
 import subprocess
 from pathlib import Path
 
-_REPO_DIR = Path(__file__).parent
-_WORKER = str(_REPO_DIR / 'chart_worker.py')
+_UI_DIR = Path(__file__).parent
+_REPO_DIR = _UI_DIR.parent
+_WORKER = str(_UI_DIR / 'chart_worker.py')
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
 
 

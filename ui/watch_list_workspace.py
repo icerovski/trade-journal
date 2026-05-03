@@ -8,10 +8,10 @@ from textual.message import Message
 from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
-from core.risk_engine import get_atr_discovery_data, RiskEngine
+from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
 from db import get_all_monitored_profiles, delete_risk_profile
 from logger import logger, suppress_console_logging
-from chart_utils import launch_price_chart
+from .chart_utils import launch_price_chart
 from constants import CONFLUENCE_ATR_THRESHOLD
 from core.ui_utils import UIUtils
 

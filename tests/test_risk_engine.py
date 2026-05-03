@@ -2,7 +2,7 @@
 import pytest
 import pandas as pd
 from datetime import datetime
-from core.risk_engine import RiskEngine
+from core.stop_loss import audit_position_risk, calculate_position_risk
 from models import Position
 
 def test_audit_position_risk_current_price_anchoring():
@@ -22,7 +22,7 @@ def test_audit_position_risk_current_price_anchoring():
     # each new share adds 10 risk units.
     # So we should be allowed 1000 / 10 = 100 MORE shares.
     
-    res = RiskEngine.audit_position_risk(
+    res = audit_position_risk(
         current_price=110.0,
         stop=100.0,
         entry_price=100.0,
@@ -55,7 +55,7 @@ def test_audit_position_risk_trimming_uses_entry():
     # Each share removed reduces risk by (100 - 90) = 10.
     # So we must remove 1,000 / 10 = 100 shares.
     
-    res = RiskEngine.audit_position_risk(
+    res = audit_position_risk(
         current_price=95.0, # price is down, but not at stop
         stop=90.0,
         entry_price=100.0,

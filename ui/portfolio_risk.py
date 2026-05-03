@@ -8,7 +8,7 @@ from rich.columns import Columns
 from rich import box
 
 from core.portfolio_manager import PortfolioManager
-from core.portfolio_analytics import compute_portfolio_risk, hhi_label
+from core.sizing import compute_portfolio_risk, hhi_label
 
 console = Console()
 

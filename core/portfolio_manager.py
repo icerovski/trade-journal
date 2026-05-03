@@ -3,11 +3,11 @@ from data_loader import DataLoader
 from services.ticker_mapper import TickerMapper
 from .ledger_engine import LedgerEngine
 from services.market_data_service import MarketDataService
-from .risk_engine import RiskEngine
 from .profit_taking import enrich_regime
 from .asset_registry import AssetRegistry
 from .reconciliation_service import ReconciliationService
 from db import get_all_risk_settings
+from .stop_loss import calculate_position_risk
 from models import Position
 from logger import logger
 from constants import QTY_ZERO_THRESHOLD
@@ -17,12 +17,11 @@ class PortfolioManager:
     Core engine for calculating portfolio metrics and risk.
     """
     
-    def __init__(self, loader=None, mapper=None, ledger=None, market_data=None, risk=None, recon=None):
+    def __init__(self, loader=None, mapper=None, ledger=None, market_data=None, recon=None):
         self._loader = loader
         self._mapper = mapper
         self._ledger = ledger
         self._market_data = market_data
-        self._risk = risk
         self._recon = recon
 
     @property
@@ -48,12 +47,6 @@ class PortfolioManager:
         if self._market_data is None:
             self._market_data = MarketDataService()
         return self._market_data
-
-    @property
-    def risk(self):
-        if self._risk is None:
-            self._risk = RiskEngine()
-        return self._risk
 
     @property
     def recon(self):
@@ -116,7 +109,7 @@ class PortfolioManager:
         # Calculate financial metrics (P/L, AAGR, Age)
         for p in positions:
             p.calculate_financial_metrics()
-            self.risk.calculate_position_risk(p, risk_settings)
+            calculate_position_risk(p, risk_settings)
 
         # Calculate NAV Exposure %
         total_mv = sum(p.market_value * p.fx_rate for p in positions)

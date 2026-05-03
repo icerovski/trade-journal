@@ -11,7 +11,7 @@ from textual import on
 from logger import logger, suppress_console_logging
 from core.portfolio_manager import PortfolioManager
 from core.ui_utils import UIUtils
-from chart_utils import launch_price_chart
+from .chart_utils import launch_price_chart
 
 _STAGE_COLORS = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
 _TRIM_GUIDANCE = {

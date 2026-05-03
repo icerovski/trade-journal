@@ -9,7 +9,7 @@ from services.ibkr import (
     fetch_trade_confirmations,
     process_confirmations
 )
-from dashboard import print_nav_table, run_live_dashboard
+from ui.dashboard import print_nav_table, run_live_dashboard
 from core.portfolio_manager import PortfolioManager
 import sync_config
 from rich.console import Console
@@ -170,7 +170,7 @@ def handle_rebuild_db():
 
 def handle_atr_calculator():
     """Launch the interactive Risk Assignment Workspace."""
-    from risk_workspace import run_risk_workspace
+    from ui.risk_workspace import run_risk_workspace
     run_risk_workspace()
 
 def handle_view_dashboard(manager):
@@ -187,17 +187,17 @@ def handle_view_dashboard(manager):
 
 def handle_kids_fund():
     """Launch the Kids Fund Dashboard."""
-    from kids_fund_dashboard import run_kids_fund_dashboard
+    from ui.kids_fund_dashboard import run_kids_fund_dashboard
     run_kids_fund_dashboard()
 
 def handle_watch_list():
     """Interactive management of the Watch List via Textual Workspace."""
-    from watch_list_workspace import run_watch_list_workspace
+    from ui.watch_list_workspace import run_watch_list_workspace
     run_watch_list_workspace()
 
 def handle_portfolio_risk():
     """Portfolio-level risk aggregation report."""
-    from portfolio_risk import run_portfolio_risk
+    from ui.portfolio_risk import run_portfolio_risk
     run_portfolio_risk()
 
 def main():
