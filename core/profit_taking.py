@@ -1,4 +1,6 @@
+import traceback
 from models import Position
+from logger import logger
 
 
 def compute_exit_milestones(position: Position, atr_dist: float) -> None:
@@ -30,8 +32,10 @@ def enrich_regime(positions: list[Position], mapper) -> None:
             continue
         try:
             yf_ticker = mapper.resolve_yf_ticker(p.ticker, conid=p.conid)
+            logger.info(f"[enrich_regime] {p.ticker} (conid={p.conid}) -> yf_ticker={yf_ticker!r}")
             trend = ps.get_trend_analysis(str(p.conid), yf_ticker)
             if trend.get('status') != 'OK':
+                logger.warning(f"[enrich_regime] {p.ticker} (conid={p.conid}): status={trend.get('status')}")
                 continue
             dma_trend = trend.get('dma200_trend', {})
             dma_signal = dma_trend.get('signal', 'NEUTRAL')
@@ -46,5 +50,5 @@ def enrich_regime(positions: list[Position], mapper) -> None:
                 p.trend_regime = "NORMAL"
             else:
                 p.trend_regime = "RANGING"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[enrich_regime] {p.ticker} (conid={p.conid}): {e}\n{traceback.format_exc()}")

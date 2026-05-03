@@ -177,9 +177,11 @@ class PriceService:
         # Ensure we have the latest data
         df = self.fetch_and_store(conid, yf_ticker)
         
+        df = df.dropna(subset=['Close'])
         if df.empty or len(df) < 200:
+            logger.warning(f"[get_trend_analysis] {yf_ticker} (conid={conid}): INSUFFICIENT_DATA rows={len(df)}")
             return {"status": "INSUFFICIENT_DATA"}
-            
+
         # 1. Calculate 200-DMA for trend engine
         dma200 = df['Close'].rolling(window=200).mean()
         recent_dma = dma200.tail(100).dropna()

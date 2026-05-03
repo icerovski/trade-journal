@@ -11,6 +11,7 @@ from core.portfolio_manager import PortfolioManager
 from core.risk_engine import get_atr_discovery_data, RiskEngine
 from db import get_all_monitored_profiles, delete_risk_profile
 from logger import logger, suppress_console_logging
+from chart_utils import launch_price_chart
 from constants import CONFLUENCE_ATR_THRESHOLD
 from core.ui_utils import UIUtils
 
@@ -67,7 +68,8 @@ class WatchListWorkspace(App):
     BINDINGS = [
         Binding("q", "exit_app", "Exit"),
         Binding("r", "refresh_data", "Refresh"),
-        Binding("d", "delete_prospect", "Delete Prospect")
+        Binding("d", "delete_prospect", "Delete Prospect"),
+        Binding("g", "show_chart", "Chart"),
     ]
 
     class AnalysisLoaded(Message):
@@ -273,6 +275,15 @@ class WatchListWorkspace(App):
         
         score_color = "green" if strength >= 3 else ("yellow" if strength >= 1 else "red")
         self.query_one("#confluence-strength", Static).update(f"[{score_color}]{strength}-Point Cluster Detected[/]")
+
+    def action_show_chart(self) -> None:
+        if not self.current_ticker:
+            return
+        profiles = get_all_monitored_profiles()
+        p_cfg = next((p for p in profiles if p.ticker == self.current_ticker), None)
+        conid = str(p_cfg.conid) if p_cfg else None
+        yf_ticker = self.pm.mapper.resolve_yf_ticker(self.current_ticker, conid=int(conid) if conid else None)
+        launch_price_chart(self.current_ticker, conid=conid, yf_ticker=yf_ticker)
 
     def action_delete_prospect(self) -> None:
         if not self.current_ticker:

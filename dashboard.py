@@ -11,6 +11,7 @@ from textual import on
 from logger import logger, suppress_console_logging
 from core.portfolio_manager import PortfolioManager
 from core.ui_utils import UIUtils
+from chart_utils import launch_price_chart
 
 _STAGE_COLORS = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
 _TRIM_GUIDANCE = {
@@ -112,6 +113,7 @@ class TradingCockpit(App):
         Binding("b", "filter('BOND')", "Bonds"),
         Binding("t", "filter('BILL')", "Treasuries"),
         Binding("f1", "toggle_help", "Help"),
+        Binding("g", "show_chart", "Chart"),
     ]
 
     @staticmethod
@@ -416,6 +418,19 @@ class TradingCockpit(App):
 
         sort_cols = [c for c in ['AssetClass', 'Ticker'] if c in df.columns]
         return df.sort_values(sort_cols, ascending=True) if sort_cols else df
+
+    def action_show_chart(self) -> None:
+        table = self.query_one(DataTable)
+        if table.cursor_row < 0 or self.df.empty:
+            return
+        df_view = self.process_and_sort(self.df)
+        if table.cursor_row >= len(df_view):
+            return
+        row = df_view.iloc[table.cursor_row]
+        ticker = str(row.get('Ticker', ''))
+        conid = str(row.get('conid', '')) if row.get('conid') else None
+        yf_ticker = self.pm.mapper.resolve_yf_ticker(ticker, conid=int(conid) if conid else None)
+        launch_price_chart(ticker, conid=conid, yf_ticker=yf_ticker)
 
     def action_exit_app(self) -> None:
         """Handle clean shutdown."""

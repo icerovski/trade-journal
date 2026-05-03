@@ -12,6 +12,7 @@ from textual import on, work
 from core.portfolio_manager import PortfolioManager
 from core.risk_engine import get_atr_discovery_data, RiskEngine
 from core.ui_utils import UIUtils
+from chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
 from db import set_position_risk
 from logger import logger, suppress_console_logging
@@ -213,6 +214,7 @@ class RiskWorkspace(App):
         Binding("s", "save_all", "Save All"),
         Binding("r", "refresh", "Refresh"),
         Binding("f1", "toggle_help", "Help"),
+        Binding("g", "show_chart", "Chart"),
     ]
 
     class DiscoveryDataLoaded(Message):
@@ -835,6 +837,15 @@ class RiskWorkspace(App):
                 self.query_one("#discover-input", Input).value = ""
                 self.load_portfolio()
                 self.query_one("#portfolio-table").focus()
+
+    def action_show_chart(self) -> None:
+        if not self.current_conid:
+            return
+        pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
+        if not pos:
+            return
+        yf_ticker = self.pm.mapper.resolve_yf_ticker(pos.ticker, conid=pos.conid)
+        launch_price_chart(pos.ticker, conid=self.current_conid, yf_ticker=yf_ticker)
 
     def action_save_all(self) -> None:
         if not self.drafts:
