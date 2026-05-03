@@ -18,3 +18,5 @@ trades.csv
 ibkr_nav.xml
 gha-creds-*.json
 /GEMINI.md
+# Linter caches
+.ruff_cache/
