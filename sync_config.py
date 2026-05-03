@@ -1,25 +1,14 @@
 import shutil
 from pathlib import Path
-import os
 import atexit
 from config import CONFIG_VAULT
 
-# 1. Define Vault Paths
-# Metadata Vault (Secrets and project-specific instructions)
 METADATA_VAULT = CONFIG_VAULT
-
-# Global Context Vault (parent of Metadata Vault)
-GLOBAL_VAULT = CONFIG_VAULT.parent
-
-# Local paths
 REPO_DIR = Path.cwd()
-LOCAL_GEMINI_DIR = Path(os.path.expanduser('~')) / '.gemini'
 
 # Mapping: (Local Source Path, Remote Destination Path)
 FILES_TO_SYNC = [
-    (REPO_DIR / 'GEMINI.md', METADATA_VAULT / 'GEMINI.md'),
     (REPO_DIR / '.env', METADATA_VAULT / '.env'),
-    (LOCAL_GEMINI_DIR / 'GEMINI.md', GLOBAL_VAULT / 'global_GEMINI.md'),
 ]
 
 def backup():
