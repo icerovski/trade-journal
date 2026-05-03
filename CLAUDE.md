@@ -9,16 +9,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync
 
 # Run the application
-python main.py
+uv run python main.py
 
 # Run all tests
-python -m pytest tests/ -v
+uv run python -m pytest tests/ -v
 
 # Run a single test file
-python -m pytest tests/test_ledger_engine.py -v
+uv run python -m pytest tests/test_ledger_engine.py -v
 
 # Run a specific test
-python -m pytest tests/test_ledger_engine.py::TestLedgerEngine::test_reset_on_zero -v
+uv run python -m pytest tests/test_ledger_engine.py::TestLedgerEngine::test_reset_on_zero -v
 ```
 
 No linting configuration is set up; no ruff/flake8/mypy config exists.
@@ -30,10 +30,10 @@ No linting configuration is set up; no ruff/flake8/mypy config exists.
 | Layer | Location | Contents |
 |---|---|---|
 | Code repo | `C:\repos\trade-journal` | Pure logic, no secrets |
-| Config vault | OneDrive `Documents\Logos\.repos\trade-journal` | `.env`, `GEMINI.md`, ticker mappings |
+| Config vault | OneDrive `Documents\Logos\.repos\trade-journal` | `.env`, ticker mappings |
 | Data hub | OneDrive `Accounts\HTC_EOOD\TradeJournalData` | `trade_journal.db`, `prices.db`, CSVs, logs |
 
-`DB_PATH`, `PRICES_DB_PATH`, and all data directories resolve from `DATA_PATH` in `.env`. On startup, `sync_config.smart_sync()` syncs `.env` and `GEMINI.md` from OneDrive. On exit, it backs them up.
+`DB_PATH`, `PRICES_DB_PATH`, and all data directories resolve from `DATA_PATH` in `.env`. On startup, `sync_config.smart_sync()` syncs `.env` from OneDrive. On exit, it backs it up.
 
 ### Data Flow
 
@@ -48,7 +48,7 @@ IBKR Flex API → services/ibkr.py → services/ibkr_parser.py → db.py (trades
                                                                       ↓
                                               core/portfolio_manager.py (enrichment pipeline)
                                            ┌──────────────┬──────────────┬──────────────┐
-                                      dashboard.py  risk_workspace.py  watch_list_workspace.py  kids_fund_dashboard.py
+                              ui/dashboard.py  ui/risk_workspace.py  ui/watch_list_workspace.py  ui/kids_fund_dashboard.py
 ```
 
 ### Core Invariants
@@ -76,12 +76,12 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 - **`core/profit_taking.py`** — `compute_exit_milestones()` sets `m1_price`, `m2_price`, `exit_stage` on a Position. `enrich_regime()` classifies trend regime (TREND ≥21d, NORMAL 10-20d, RANGING <10d) via 200-DMA consecutive rising days. Called from `portfolio_manager.get_dashboard_df()` step 4.
 - **`core/sizing.py`** — `compute_position_size()` returns max share qty under dual R%/exposure% constraints. `compute_portfolio_risk()` and `hhi_label()` aggregate portfolio-level R%, stop-out loss, HHI concentration, and currency breakdown. Called by `portfolio_risk.py` (menu option 7).
 - **`core/confluence.py`** — `evaluate_confluence()` measures ATR-distance from price and stop to all configured DMAs; returns strength score and zone list.
-- **`core/risk_engine.py`** — Backwards-compat shim. Re-exports from `stop_loss.py` and wraps them in the `RiskEngine` class. Callers that have not been updated yet import from here.
-- **`core/portfolio_analytics.py`** — Backwards-compat shim. Re-exports `compute_portfolio_risk` and `hhi_label` from `sizing.py`.
 - **`services/ibkr_parser.py`** — CSV interpretation. External ID fingerprint = `TransactionID-AccountID-Side` for de-duplication. Updates `ticker_info` (Asset Master) during ingestion.
 - **`services/ticker_mapper.py`** — IBKR → Yahoo Finance symbol resolution. Priority: DB conid lookup → YF ISIN search → heuristics (exchange suffixes `.DE`, `.L`, `.AS`).
-- **`risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). Command syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x]`. Drafting workflow holds bulk updates in-memory before committing. PLAN section includes full exit stage and regime breakdown.
-- **`watch_list_workspace.py`** — Confluence distances are measured in Daily ATR units; < 0.25R is a meaningful zone. Undisturbed Trend Engine tracks 200-DMA direction changes with a 21-day confirmation trigger (🟢 BUY / 🔴 SELL).
+- **`ui/risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). Command syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x]`. Drafting workflow holds bulk updates in-memory before committing. PLAN section includes full exit stage and regime breakdown.
+- **`ui/watch_list_workspace.py`** — Confluence distances are measured in Daily ATR units; < 0.25R is a meaningful zone. Undisturbed Trend Engine tracks 200-DMA direction changes with a 21-day confirmation trigger (🟢 BUY / 🔴 SELL).
+- **`ui/chart_utils.py`** — `launch_price_chart(display_ticker, conid, yf_ticker)` spawns `chart_worker.py` as a subprocess. Triggered by `G` key in all three workspaces.
+- **`ui/chart_worker.py`** — Standalone subprocess entry point. Renders price + 200 DMA chart (5Y) via matplotlib/TkAgg in its own main thread. Never imported directly.
 
 ### Database Schema (SQLite — `trade_journal.db`)
 
@@ -106,7 +106,7 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 ### Presentation Layer (Textual UIs)
 
-All UIs are Textual apps launched from `main.py`. They are display-only and do not write to the database except `risk_workspace.py`, which persists `risk_profiles` edits via command syntax (e.g., `15 T P:L` = 15% stop, Trailing, Large preset). Scale-In has been removed; entry type is always SINGLE.
+All UIs are Textual apps in `ui/`, launched from `main.py`. They are display-only and do not write to the database except `ui/risk_workspace.py`, which persists `risk_profiles` edits via command syntax (e.g., `15 T P:L` = 15% stop, Trailing, Large preset). Scale-In has been removed; entry type is always SINGLE.
 
 ### Session Protocol
 
@@ -118,4 +118,4 @@ When asked to "wrap it up":
 5. Commit session log + any doc changes.
 6. Remind user to run backup (`uv run python sync_config.py`).
 
-GEMINI.md is a static historical reference — do not update it going forward.
+Use `/wrap-up` to trigger the session wrap-up command.
