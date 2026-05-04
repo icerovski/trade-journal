@@ -195,24 +195,25 @@ class PortfolioManager:
         watch_list = []
         for r in profiles:
             p = Position(
-                name=f"WATCH: {r['ticker']}",
-                ticker=r['ticker'],
-                conid=r['conid'],
-                asset_class='STK', # Discovery will correct this
-                ccy='USD', 
+                name=f"WATCH: {r.ticker}",
+                ticker=r.ticker,
+                conid=r.conid,
+                asset_class='STK',
+                ccy='USD',
                 date_entry=pd.Timestamp.now(),
-                qty=0.0, 
+                qty=0.0,
                 entry_price=0.0,
                 account_id='WATCHLIST'
             )
-            # Pre-populate risk settings from DB
-            p.atr = r['atr_value']
-            p.stop_type = r['stop_type']
-            p.entry_type = r['entry_type']
-            p.scale_step = r['scale_step']
-            p.max_r_pct = r['max_r_pct']
-            p.inception_stop = r.get('inception_stop')
-            p.inception_atr = r.get('inception_atr')
+            p.atr = r.atr_value
+            p.stop_type = r.stop_type
+            p.entry_type = r.entry_type
+            p.scale_step = r.scale_step
+            p.max_r_pct = r.max_r_pct
+            p.max_exp_pct = r.max_exp_pct
+            p.inception_stop = r.inception_stop
+            p.inception_atr = r.inception_atr
+            p.profile = r.profile
             watch_list.append(p)
             
         if asset_class_filter:

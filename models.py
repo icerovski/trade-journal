@@ -58,6 +58,7 @@ class RiskProfile:
     inception_stop: Optional[float] = None
     inception_atr: Optional[float] = None
     status: str = "ACTIVE"
+    profile: Optional[str] = None
 
 @dataclass
 class Position:
@@ -111,6 +112,7 @@ class Position:
     risk_pct_nav: float = 0.0  # R (% of NAV)
     max_r_pct: float = 1.0
     max_exp_pct: float = 5.0
+    profile: Optional[str] = None
 
     # Exit Planning
     exit_stage: str = ""         # PRE-M1 / M1 / M2 / TP (empty = no stop assigned)
@@ -182,7 +184,7 @@ class Position:
         'fx_rate': 'FXRate',
         'exit_stage': 'ExitStage', 'm1_price': 'M1_Price',
         'm2_price': 'M2_Price', 'trend_regime': 'TrendRegime',
-        'regime_dma': 'RegimeDMA',
+        'regime_dma': 'RegimeDMA', 'profile': 'Profile',
     }
 
     def to_dict(self):

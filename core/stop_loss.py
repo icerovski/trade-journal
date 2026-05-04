@@ -122,6 +122,7 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.max_exp_pct = max_exp_pct
     position.inception_stop = inception_stop
     position.inception_atr = inception_atr
+    position.profile = getattr(profile, 'profile', None)
 
     # 2. Ratchet Rule (High-Water Mark)
     final_sl = max(calculated_sl, highest_sl)

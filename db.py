@@ -83,7 +83,26 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN inception_atr REAL")
     except Exception: pass
-    
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN profile TEXT")
+    except Exception: pass
+
+    # Migration: Tag existing positions that matched old preset definitions, and update
+    # their limits to the new values. The WHERE profile IS NULL guard makes this a no-op
+    # after the first run (already-tagged rows are skipped).
+    cursor.execute("""
+        UPDATE risk_profiles SET profile = 'S', max_exp_pct = 1.5, max_r_pct = 0.30
+        WHERE profile IS NULL AND max_exp_pct = 3.0 AND max_r_pct = 0.50
+    """)
+    cursor.execute("""
+        UPDATE risk_profiles SET profile = 'B', max_exp_pct = 3.0, max_r_pct = 0.60
+        WHERE profile IS NULL AND max_exp_pct = 4.0 AND max_r_pct = 0.75
+    """)
+    cursor.execute("""
+        UPDATE risk_profiles SET profile = 'L'
+        WHERE profile IS NULL AND max_exp_pct = 5.0 AND max_r_pct = 1.00
+    """)
+
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_conid ON risk_profiles(conid) WHERE status = 'WATCH'")
 
@@ -103,7 +122,20 @@ def init_db():
           AND atr_value < (inception_stop * 0.5)
     """)
 
-    # 3. Ticker Info Table (Asset Master)
+    # 3. Preset Definitions Table (persists matrix edits across sessions)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS preset_definitions (
+            key TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            max_r_pct REAL NOT NULL,
+            max_exp_pct REAL NOT NULL
+        )
+    """)
+    cursor.execute("INSERT OR IGNORE INTO preset_definitions VALUES ('S', 'Small',       0.30, 1.5)")
+    cursor.execute("INSERT OR IGNORE INTO preset_definitions VALUES ('B', 'Base',        0.60, 3.0)")
+    cursor.execute("INSERT OR IGNORE INTO preset_definitions VALUES ('L', 'Large/Index', 1.00, 5.0)")
+
+    # 4. Ticker Info Table (Asset Master)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ticker_info (
             conid TEXT PRIMARY KEY,
@@ -130,6 +162,10 @@ def init_db():
             base_date TEXT NOT NULL
         )
     """)
+
+    # 5. App Settings (key-value)
+    cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('action_threshold_pct', '10.0')")
     
     conn.commit()
     conn.close()
@@ -142,7 +178,7 @@ def wipe_trades_only():
     conn.close()
     init_db()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None):
     """Saves or updates a risk profile (ACTIVE or WATCH) for a conid."""
     conn = get_conn()
     conid = str(conid)
@@ -150,20 +186,24 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
     existing = cursor.fetchone()
 
     if existing:
-        sql = """UPDATE risk_profiles SET atr_value = ?, stop_type = ?, entry_type = ?, 
+        sql = """UPDATE risk_profiles SET atr_value = ?, stop_type = ?, entry_type = ?,
                  scale_step = ?, max_r_pct = ?, max_exp_pct = ?, ticker = ?"""
         params = [float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), ticker.upper()]
-        
+
         # Only update inception_stop if it's currently NULL and a value is provided
         if existing['inception_stop'] is None and inception_stop is not None:
             sql += ", inception_stop = ?"
             params.append(float(inception_stop))
-            
+
         # Only update inception_atr if it's currently NULL. Fallback to current atr if no explicit inception_atr provided.
         if existing['inception_atr'] is None:
             sql += ", inception_atr = ?"
             params.append(float(inception_atr) if inception_atr is not None else float(atr))
-            
+
+        if profile is not None:
+            sql += ", profile = ?"
+            params.append(profile or None)
+
         if reset_sl:
             sql += ", highest_sl = 0.0"
         sql += " WHERE id = ?"
@@ -173,11 +213,11 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
         # For new profiles, use provided values or current atr/stop as inception
         i_stop = float(inception_stop) if inception_stop is not None else None
         i_atr = float(inception_atr) if inception_atr is not None else float(atr)
-        
+
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None))
     
     conn.commit()
     conn.close()
@@ -339,3 +379,46 @@ def get_kids_trades(account_id, after_date):
     )
     conn.close()
     return df
+
+# ---------------------------------------------------------------------------
+# Preset Definitions
+# ---------------------------------------------------------------------------
+
+def get_presets() -> dict:
+    """Loads preset definitions from the DB (preserves user matrix edits)."""
+    conn = get_conn()
+    rows = conn.execute("SELECT key, label, max_r_pct, max_exp_pct FROM preset_definitions ORDER BY key").fetchall()
+    conn.close()
+    return {r['key']: {'label': r['label'], 'max_r_pct': r['max_r_pct'], 'max_exp_pct': r['max_exp_pct']} for r in rows}
+
+def save_preset(key: str, label: str, max_r_pct: float, max_exp_pct: float):
+    """Persists a single preset definition change."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE preset_definitions SET label = ?, max_r_pct = ?, max_exp_pct = ? WHERE key = ?",
+        (label, float(max_r_pct), float(max_exp_pct), key)
+    )
+    conn.commit()
+    conn.close()
+
+def get_setting(key: str, default: str = '') -> str:
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row['value'] if row else default
+
+def save_setting(key: str, value: str):
+    conn = get_conn()
+    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
+    conn.commit()
+    conn.close()
+
+def update_preset_profiles(key: str, new_max_r_pct: float, new_max_exp_pct: float):
+    """Applies new E%/R% limits to all ACTIVE/WATCH positions tagged with this preset key."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE risk_profiles SET max_r_pct = ?, max_exp_pct = ? WHERE profile = ? AND status IN ('ACTIVE', 'WATCH')",
+        (float(new_max_r_pct), float(new_max_exp_pct), key)
+    )
+    conn.commit()
+    conn.close()

@@ -2,7 +2,7 @@ import pandas as pd
 import re
 from typing import Dict, Optional
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, DataTable, Static, Label, Input, TabbedContent, TabPane
+from textual.widgets import Header, Footer, DataTable, Static, Label, Input, Button, TabbedContent, TabPane
 from textual.containers import Horizontal, Vertical, Container, ScrollableContainer
 from textual.binding import Binding
 from textual.message import Message
@@ -14,15 +14,27 @@ from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
-from db import set_position_risk
+from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting
 from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER
 
 PRESETS = {
-    "S": {"label": "Small",       "max_exp_pct": 3.0, "max_r_pct": 0.50},
-    "B": {"label": "Base",        "max_exp_pct": 4.0, "max_r_pct": 0.75},
+    "S": {"label": "Small",       "max_exp_pct": 1.5, "max_r_pct": 0.30},
+    "B": {"label": "Base",        "max_exp_pct": 3.0, "max_r_pct": 0.60},
     "L": {"label": "Large/Index", "max_exp_pct": 5.0, "max_r_pct": 1.00},
 }
+ACTION_THRESHOLD_PCT = 10.0
+
+def _load_presets_from_db():
+    """Sync in-memory PRESETS and settings from the DB."""
+    global ACTION_THRESHOLD_PCT
+    try:
+        for key, vals in get_presets().items():
+            if key in PRESETS:
+                PRESETS[key].update(vals)
+        ACTION_THRESHOLD_PCT = float(get_setting('action_threshold_pct', '10.0'))
+    except Exception:
+        pass
 
 _WS_TRIM = {
     ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
@@ -135,6 +147,82 @@ class AdaptiveInputContainer(Container):
             self.styles.height = 3
 
 # =============================================================================
+# 2. PRESET MATRIX SCREEN
+# =============================================================================
+class PresetMatrixScreen(ModalScreen):
+    """Modal for editing and persisting preset risk profile definitions."""
+
+    BINDINGS = [
+        Binding("ctrl+s", "commit", "Commit"),
+        Binding("escape", "dismiss_cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="matrix-container"):
+            yield Label("PRESET DEFINITIONS", classes="panel-header")
+            yield Label("  [dim]Key  Label            E%       R%[/]")
+            for key, p in PRESETS.items():
+                with Horizontal(classes="matrix-row"):
+                    yield Label(f"  [bold cyan][{key}][/]  {p['label']:<14}", classes="matrix-label-col")
+                    yield Input(str(p['max_exp_pct']), id=f"e_{key}", classes="matrix-input")
+                    yield Input(str(p['max_r_pct']),   id=f"r_{key}", classes="matrix-input")
+            yield Label("  [dim]─────────────────────────────────────────────[/]")
+            with Horizontal(classes="matrix-row"):
+                yield Label("  [dim]Action threshold (% of position)[/]", classes="matrix-label-col")
+                yield Input(str(ACTION_THRESHOLD_PCT), id="action_threshold", classes="matrix-input")
+            with Horizontal(id="matrix-buttons"):
+                yield Button("COMMIT", id="btn-commit", variant="success")
+                yield Button("Cancel", id="btn-cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-commit":
+            self._commit()
+        else:
+            self.dismiss([])
+
+    def action_commit(self) -> None:
+        self._commit()
+
+    def _commit(self) -> None:
+        global ACTION_THRESHOLD_PCT
+        new_vals: dict[str, tuple[float, float]] = {}
+        for key in PRESETS:
+            try:
+                new_e = float(self.query_one(f"#e_{key}", Input).value)
+                new_r = float(self.query_one(f"#r_{key}", Input).value)
+            except ValueError:
+                self.notify(f"Invalid value for preset {key}", severity="error")
+                return
+            new_vals[key] = (new_r, new_e)
+
+        try:
+            new_threshold = float(self.query_one("#action_threshold", Input).value)
+        except ValueError:
+            self.notify("Invalid action threshold", severity="error")
+            return
+
+        changed = [
+            key for key, (new_r, new_e) in new_vals.items()
+            if new_r != PRESETS[key]["max_r_pct"] or new_e != PRESETS[key]["max_exp_pct"]
+        ]
+        for key, (new_r, new_e) in new_vals.items():
+            PRESETS[key]["max_r_pct"] = new_r
+            PRESETS[key]["max_exp_pct"] = new_e
+        for key in changed:
+            new_r, new_e = new_vals[key]
+            save_preset(key, PRESETS[key]["label"], new_r, new_e)
+            update_preset_profiles(key, new_r, new_e)
+
+        ACTION_THRESHOLD_PCT = new_threshold
+        save_setting('action_threshold_pct', str(new_threshold))
+
+        self.dismiss(changed)
+
+    def action_dismiss_cancel(self) -> None:
+        self.dismiss([])
+
+
+# =============================================================================
 # 3. MAIN WORKSPACE APPLICATION
 # =============================================================================
 class RiskWorkspace(App):
@@ -207,6 +295,19 @@ class RiskWorkspace(App):
         margin-top: 0;
         width: 100%;
     }
+    PresetMatrixScreen { align: center middle; }
+    #matrix-container {
+        width: 58;
+        height: 24;
+        border: tall $accent;
+        background: $surface-darken-1;
+        padding: 1 2;
+    }
+    .matrix-row { height: 3; }
+    .matrix-label-col { width: 26; content-align: left middle; }
+    .matrix-input { width: 12; margin: 0 1; }
+    #matrix-buttons { height: 3; margin-top: 1; align: center middle; }
+    #matrix-buttons Button { margin: 0 1; }
     """
 
     BINDINGS = [
@@ -215,6 +316,7 @@ class RiskWorkspace(App):
         Binding("r", "refresh", "Refresh"),
         Binding("f1", "toggle_help", "Help"),
         Binding("g", "show_chart", "Chart"),
+        Binding("m", "open_matrix", "Presets"),
     ]
 
     class DiscoveryDataLoaded(Message):
@@ -266,6 +368,8 @@ class RiskWorkspace(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        _load_presets_from_db()
+        self.query_one("#preset-legend", Label).update(_preset_legend())
         table = self.query_one("#portfolio-table", DataTable)
         table.cursor_type = "row"
         table.add_column("TICKER", key="col_ticker")
@@ -321,7 +425,9 @@ class RiskWorkspace(App):
             risk_above_limit = row['risk_pct_nav'] > max_r_pct
             exp_above_limit = row['NavPct'] > max_exp_pct
             
-            ticker_display = f"[{row['StopType'][:1]}] {row['Ticker']}"
+            profile_key = row.get('Profile') or ''
+            stop_prefix = f"{row['StopType'][:1]}:{profile_key}" if profile_key else row['StopType'][:1]
+            ticker_display = f"[{stop_prefix}] {row['Ticker']}"
             if conid_str in self.drafts:
                 d = self.drafts[conid_str]
                 ticker_display = f"[bold yellow]* [{d['type'][:1]}] {row['Ticker']}"
@@ -350,8 +456,8 @@ class RiskWorkspace(App):
                     action_display = f"[bold cyan]BUY {int(adj)}[/]"
                 else:
                     adj_pct = (adj / qty) * 100
-                    add_threshold = max(1, int(qty * 0.10))
-                    trim_threshold = max(1, int(qty * 0.10))
+                    add_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
+                    trim_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
 
                     if adj > add_threshold:
                         action_display = f"[bold green]+{adj_pct:.1f}%[/]"
@@ -820,7 +926,7 @@ class RiskWorkspace(App):
             else:
                 save_incep_atr = f_atr
 
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr}
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
             
@@ -831,7 +937,7 @@ class RiskWorkspace(App):
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'))
                 self.notify(f"COMMITTED: {d['ticker']}")
                 self.query_one("#atr-input", Input).value = ""
                 self.query_one("#discover-input", Input).value = ""
@@ -851,7 +957,7 @@ class RiskWorkspace(App):
         if not self.drafts:
             return
         for cid, d in self.drafts.items():
-            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'))
+            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'))
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
         self.drafts.clear()
         self.load_portfolio()
@@ -860,6 +966,14 @@ class RiskWorkspace(App):
     def action_refresh(self) -> None:
         self.discovery_cache.clear()
         self.load_portfolio()
+
+    def action_open_matrix(self) -> None:
+        def on_closed(changed_keys):
+            if changed_keys:
+                self.query_one("#preset-legend", Label).update(_preset_legend())
+                self.load_portfolio()
+                self.notify(f"Presets updated: {', '.join(changed_keys)}")
+        self.push_screen(PresetMatrixScreen(), on_closed)
 
 def run_risk_workspace():
     RiskWorkspace().run()
