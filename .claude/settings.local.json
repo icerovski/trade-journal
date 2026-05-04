@@ -19,7 +19,8 @@
       "Bash(sed -i 's/from core\\\\.risk_engine import get_atr_discovery_data, RiskEngine/from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data/' ui/risk_workspace.py ui/watch_list_workspace.py)",
       "Bash(sed -i 's/from core\\\\.portfolio_analytics import compute_portfolio_risk, hhi_label/from core.sizing import compute_portfolio_risk, hhi_label/' ui/portfolio_risk.py)",
       "Bash(sed -i '/from \\\\.risk_engine import RiskEngine/d' core/portfolio_manager.py)",
-      "Bash(sed -i '/self\\\\._risk = RiskEngine\\(\\)/d' core/portfolio_manager.py)"
+      "Bash(sed -i '/self\\\\._risk = RiskEngine\\(\\)/d' core/portfolio_manager.py)",
+      "Skill(update-config)"
     ]
   }
 }
