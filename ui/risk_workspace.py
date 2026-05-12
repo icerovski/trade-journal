@@ -576,13 +576,18 @@ class RiskWorkspace(App):
             efficiency = ((effective_stop + (3 * atr_width) - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
 
             # 2. Build Execution Plan
+            exit_stage = getattr(pos, 'exit_stage', '')
             if res['is_breached']:
                 exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
                 target_qty = 0
             else:
                 room = int(res['adjustment'])
                 target_qty = int(pos.qty + room)
-                if room > 0:
+                if room > 0 and exit_stage in ('M1', 'M2', 'TP'):
+                    # Sizing has headroom but position is in profit-taking — adding is wrong
+                    exec_plan = f"  - [bold yellow]EXIT STAGE ACTIVE ({exit_stage}): Hold or trim — no new entries.[/]"
+                    target_qty = int(pos.qty)
+                elif room > 0:
                     exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {target_qty} sh)"
                 elif room < 0:
                     exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"

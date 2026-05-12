@@ -31,6 +31,27 @@ class PriceService:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_ticker ON prices_daily(ticker)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_date ON prices_daily(date)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS prices_meta (
+                conid TEXT PRIMARY KEY,
+                floor_date TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _get_floor_date(self, conid: str):
+        conn = self._connect()
+        row = conn.execute("SELECT floor_date FROM prices_meta WHERE conid = ?", (conid,)).fetchone()
+        conn.close()
+        return pd.to_datetime(row[0]).date() if row else None
+
+    def _set_floor_date(self, conid: str, floor_date):
+        conn = self._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO prices_meta (conid, floor_date) VALUES (?, ?)",
+            (conid, str(floor_date))
+        )
         conn.commit()
         conn.close()
 
@@ -102,7 +123,12 @@ class PriceService:
         """Fetches from Yahoo and saves to local DB, handling both gaps and updates."""
         first, latest = self.get_date_range(conid)
         required_start = (datetime.now() - timedelta(days=days_back)).date()
-        
+
+        # Clamp required_start to the known data floor (e.g. pre-IPO tickers)
+        floor = self._get_floor_date(conid)
+        if floor and floor > required_start:
+            required_start = floor
+
         # 1. Check for Forward Update (Missing recent data)
         if latest:
             if latest.date() < datetime.now().date() - timedelta(days=1):
@@ -114,15 +140,18 @@ class PriceService:
 
         # 2. Check for Backward Gap (Missing historical data)
         if not first or first.date() > required_start:
-            # We need more history
             start_b = required_start.strftime('%Y-%m-%d')
             end_b = first.strftime('%Y-%m-%d') if first else datetime.now().strftime('%Y-%m-%d')
-            
+
             logger.info(f"Fetching historical gap for {yf_ticker} from {start_b} to {end_b}")
             df_b = yf.download(yf_ticker, start=start_b, end=end_b, interval="1d", progress=False, auto_adjust=True)
             if not df_b.empty:
                 self.save_prices(conid, yf_ticker, df_b)
-            
+            elif first:
+                # Nothing exists before first — record the floor so we never retry this range
+                self._set_floor_date(conid, first.date())
+                logger.info(f"Floor date set for {yf_ticker}: no data before {first.date()}")
+
         return self.get_prices(conid)
 
     def get_prices(self, conid: str, start_date: str = None, end_date: str = None, timeframe: str = 'daily') -> pd.DataFrame:
