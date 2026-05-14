@@ -2,15 +2,39 @@ import traceback
 from models import Position
 from logger import logger
 
-# Trim guidance matrix: (exit_stage, trend_regime) → (trim_fraction, display_description).
+# Trim guidance matrix: (exit_stage, trend_regime) → (trim_fraction, rationale).
+# Rationale explains WHY; the UI renders the share count and % separately.
 # Lives here (strategy layer) so the UI imports it rather than owning strategy decisions.
 TRIM_MATRIX = {
-    ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
-    ('M2', 'NORMAL'):  (0.33, "Trim 33%"),
-    ('M2', 'RANGING'): (0.50, "Trim 50% — protect gains"),
-    ('TP', 'TREND'):   (0.20, "Trim 20% — raise TP to weekly ATR level"),
-    ('TP', 'NORMAL'):  (0.33, "Trim 33% or close; keep runner if RR > 1.0"),
-    ('TP', 'RANGING'): (1.00, "Close position — no trend support"),
+    ('M2', 'TREND'):   (0.15, (
+        "The 200-DMA has been rising for 21+ consecutive days with price above it — "
+        "the trend has genuine structural support. Take only a token slice to reduce "
+        "exposure lightly. Keep 85% of the position running for the continuation."
+    )),
+    ('M2', 'NORMAL'):  (0.33, (
+        "The trend is developing but not yet confirmed (DMA rising < 21 days). "
+        "Take a meaningful portion of profits while the position still has room to run. "
+        "Keep two thirds open; re-evaluate at TP."
+    )),
+    ('M2', 'RANGING'): (0.50, (
+        "The 200-DMA is flat or declining — there is no structural support for a continuation. "
+        "Protect half your gains now. Hold the remainder only if the trailing stop remains intact; "
+        "exit at the first sign of further deterioration."
+    )),
+    ('TP', 'TREND'):   (0.20, (
+        "Target hit inside a confirmed trend. Take a modest additional trim, then raise your TP "
+        "to stop + 3×weekly ATR to capture the larger structural move. "
+        "The trailing stop remains the ultimate exit — do not close the core position."
+    )),
+    ('TP', 'NORMAL'):  (0.33, (
+        "Target reached but the trend is not confirmed. Take meaningful profits. "
+        "Keep a runner only if the RR ratio is still above 1.0 — if it has fallen below 1.0, "
+        "the efficiency floor overrides this and you should exit entirely."
+    )),
+    ('TP', 'RANGING'): (1.00, (
+        "Target reached with no structural support. The position has done its job. "
+        "There is no trend to ride further — exit in full and redeploy capital elsewhere."
+    )),
 }
 
 

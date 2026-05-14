@@ -39,6 +39,12 @@ def _load_presets_from_db():
 
 _STAGE_C  = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
 _REGIME_C = {'TREND': 'green', 'NORMAL': 'white', 'RANGING': 'red'}
+_STAGE_DESC = {
+    'PRE-M1': "Position has not yet earned one ATR of profit. Hold — the stop is the only exit mechanism.",
+    'M1':     "One ATR of profit secured. Time to make the position risk-free at no cost.",
+    'M2':     "Two ATRs of profit banked. Time for partial profit-taking sized to the trend regime.",
+    'TP':     "Full 3×ATR target reached. Larger trim or full exit, sized to the trend regime.",
+}
 
 def _exit_guidance_str(pos, cur_p: float) -> str:
     stage      = getattr(pos, 'exit_stage', '')
@@ -100,28 +106,57 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     )
 
     # ── Action ────────────────────────────────────────────────────────────────
+    sl = getattr(pos, 'sl_price', None) or 0.0
     if stage == 'M1':
-        action = (
-            f"\n  [bold cyan]→ Raise stop to entry "
-            f"({pos.entry_price:,.2f}) — position is free[/]\n"
-        )
+        if sl > pos.entry_price:
+            locked = sl - pos.entry_price
+            action = (
+                f"\n  [bold cyan]→ Stop already above entry — position is risk-free.[/]\n"
+                f"  [dim]Your stop at {sl:,.2f} locks in a minimum profit of +{locked:.2f}/sh.\n"
+                f"  No action needed at this stage. Hold and monitor for M2.[/]\n"
+            )
+        else:
+            action = (
+                f"\n  [bold cyan]→ Move stop to entry ({pos.entry_price:,.2f}) — do not sell any shares.[/]\n"
+                f"  [dim]The position is now risk-free. The stop at entry means you exit at break-even\n"
+                f"  at worst, regardless of what happens next. Hold the full position.[/]\n"
+            )
     else:
         key = (stage, regime)
         if key in TRIM_MATRIX:
             pct, desc = TRIM_MATRIX[key]
             shares = max(1, int(pos.qty * pct))
-            action = f"\n  [bold]→ {desc} (~{shares} sh)[/]\n"
+            action = (
+                f"\n  [bold]→ Sell ~{shares} sh ({int(pct * 100)}%)[/]\n"
+                f"  [dim]{desc}[/]\n"
+            )
         else:
             action = ""
 
     rr = getattr(pos, 'rr_ratio', 0.0)
-    if stage in ('M1', 'M2', 'TP') and 0 < rr < 1.0:
-        action = f"\n  [bold red]⚠ RR {rr:.2f} — efficiency floor → EXIT ALL remaining[/]\n"
+    # Efficiency floor applies only at M2/TP — at M1 a sub-1.0 RR is expected when
+    # the stop has been raised to lock in profits, which is the correct M1 action.
+    if stage in ('M2', 'TP') and 0 < rr < 1.0:
+        dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
+        dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
+        stop_note = (
+            f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.\n"
+            f"  Consider raising the stop to restore RR ≥ 1.0 instead of exiting.[/]\n"
+        ) if sl > pos.entry_price else ""
+        action = (
+            f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered.[/]\n"
+            f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
+            f"  Remaining upside is smaller than remaining downside.[/]\n"
+            f"{stop_note}"
+            f"  [bold red]→ Exit all shares, or raise stop to restore RR ≥ 1.0.[/]\n"
+        )
 
+    stage_desc = _STAGE_DESC.get(stage, '')
     return (
         f"\n──────────────────────────────────────────\n"
         f"EXIT STAGE: [{sc}][bold]{stage}[/][/]   "
         f"Regime: [{rc}][bold]{regime}[/][/]\n"
+        f"  [dim]{stage_desc}[/]\n"
         f"{ladder}"
         f"{calc}"
         f"{action}"
@@ -386,6 +421,7 @@ class RiskWorkspace(App):
         table.add_column("MKT VAL", key="col_mkt_val")
         table.add_column("COST", key="col_cost")
         table.add_column("CUR P", key="col_cur_p")
+        table.add_column("HIGH P", key="col_high_p")
         table.add_column("AVG COST", key="col_avg_cost")
         table.add_column("% NAV", key="col_nav_pct")
         table.add_column("R", key="col_r")
@@ -491,10 +527,16 @@ class RiskWorkspace(App):
             rr_display = f"{rr_val:.2f}" if has_risk else "---"
             rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
             
-            # ATR column: for FIXED, show entry→stop distance; for TRAILING show ATR value
+            # ATR column: for FIXED, show signed stop-to-entry distance.
+            # Positive (green) means stop is above entry — profit locked in.
+            # Negative cases are impossible after max(0,...) but shown as absolute for safety.
             if has_risk:
                 if row['StopType'] == 'FIXED' and row['Entry'] > 0 and pd.notnull(row['SL_Price']):
-                    atr_display = f"{(row['Entry'] - row['SL_Price']):.2f}"
+                    dist = row['SL_Price'] - row['Entry']
+                    if dist >= 0:
+                        atr_display = f"[green]+{dist:.2f}[/]"
+                    else:
+                        atr_display = f"{abs(dist):.2f}"
                 else:
                     atr_display = f"{row['ATR']:.2f}"
             else:
@@ -511,6 +553,7 @@ class RiskWorkspace(App):
                 mkt_display,
                 cost_display,
                 cur_p_display,
+                f"{row['MaxSinceEntry']:,.2f}" if row['MaxSinceEntry'] > 0 else "---",
                 f"{row['Entry']:,.2f}" if row['Entry'] > 0 else "---",
                 f"[{exp_color}]{nav_val}[/]", 
                 f"[{r_color}]{r_val}[/]", 
@@ -870,13 +913,16 @@ class RiskWorkspace(App):
             if base_p == 0:
                 base_p = cur_p_d
             
-            val_m = re.search(r"([\$0-9\.%]+)", raw)
+            val_m = re.search(r"([@\$0-9\.%]+)", raw)
             if val_m:
                 v = val_m.group(1)
+                is_at = v.startswith('@')   # @PRICE T → trailing anchored to exact price
                 is_d = v.startswith('$')
-                num = float(v[1:] if is_d else (v[:-1] if v.endswith('%') else v))
+                num = float(v[1:] if (is_at or is_d) else (v[:-1] if v.endswith('%') else v))
                 if s_type == 'FIXED':
                     f_atr = num  # for FIXED: the value IS the literal stop price
+                elif is_at:
+                    f_atr = base_p - num    # convert price floor → ATR distance from HWM
                 else:
                     f_atr = num if is_d else base_p * (num / 100.0)
 

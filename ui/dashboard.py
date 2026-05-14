@@ -10,17 +10,15 @@ from textual import on
 
 from logger import logger, suppress_console_logging
 from core.portfolio_manager import PortfolioManager
+from core.profit_taking import TRIM_MATRIX
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 
 _STAGE_COLORS = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
-_TRIM_GUIDANCE = {
-    ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
-    ('M2', 'NORMAL'):  (0.33, "Trim 33%"),
-    ('M2', 'RANGING'): (0.50, "Trim 50% — protect gains"),
-    ('TP', 'TREND'):   (0.20, "Trim 20% — raise TP to weekly ATR level"),
-    ('TP', 'NORMAL'):  (0.33, "Trim 33% or close; keep runner if RR > 1.0"),
-    ('TP', 'RANGING'): (1.00, "Close position — no trend support"),
+_STAGE_DESC = {
+    'M1': "One ATR of profit — make the position risk-free.",
+    'M2': "Two ATRs of profit — take partial profits by regime.",
+    'TP': "Full 3×ATR target — trim or close by regime.",
 }
 
 def _exit_milestones_panel(row) -> str:
@@ -28,23 +26,67 @@ def _exit_milestones_panel(row) -> str:
     regime  = str(row.get('TrendRegime', 'NORMAL'))
     m1      = row.get('M1_Price', 0.0)
     m2      = row.get('M2_Price', 0.0)
+    tp      = row.get('TP_Price', 0.0) or 0.0
     qty     = row.get('Qty', 0.0)
-    if not stage or stage == 'NORMAL':
+    rr      = row.get('RR_Ratio', 0.0) or 0.0
+    entry   = row.get('Entry', 0.0) or 0.0
+    if not stage:
         return ""
     sc = _STAGE_COLORS.get(stage, 'white')
     regime_color = {'TREND': 'green', 'NORMAL': 'white', 'RANGING': 'red'}.get(regime, 'white')
-    guidance = ""
-    key = (stage, regime)
-    if key in _TRIM_GUIDANCE:
-        pct, desc = _TRIM_GUIDANCE[key]
-        shares = max(1, int(qty * pct))
-        guidance = f"→ {desc} (~{shares} sh)\n"
+    stage_desc = _STAGE_DESC.get(stage, '')
+
+    sl = row.get('SL_Price') or 0.0
+    cur_p = row.get('Price') or row.get('Entry') or 0.0
+    if stage == 'M1':
+        if sl > entry:
+            locked = sl - entry
+            guidance = (
+                f"[bold cyan]→ Stop already above entry — position is risk-free.[/]\n"
+                f"[dim]Stop at {sl:,.2f} locks in +{locked:.2f}/sh minimum profit.\n"
+                f"Hold and monitor for M2.[/]\n"
+            )
+        else:
+            guidance = (
+                f"[bold cyan]→ Move stop to entry ({entry:,.2f}) — do not sell.[/]\n"
+                f"[dim]Position becomes risk-free: exit at break-even at worst.[/]\n"
+            )
+    else:
+        key = (stage, regime)
+        if key in TRIM_MATRIX:
+            pct, desc = TRIM_MATRIX[key]
+            shares = max(1, int(qty * pct))
+            guidance = (
+                f"[bold]→ Sell ~{shares} sh ({int(pct * 100)}%)[/]\n"
+                f"[dim]{desc}[/]\n"
+            )
+        else:
+            guidance = ""
+
+    # Efficiency floor applies only at M2/TP — not at M1 where a sub-1.0 RR is
+    # expected when the stop has been raised to lock in profits (the correct action).
+    if stage in ('M2', 'TP') and 0 < rr < 1.0:
+        dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
+        dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
+        stop_note = (
+            f"[dim]Stop ({sl:,.2f}) above entry — stop-out still profitable.\n"
+            f"Consider raising stop to restore RR ≥ 1.0.[/]\n"
+        ) if sl > entry else ""
+        guidance = (
+            f"[bold red]⚠ RR {rr:.2f} — Efficiency floor.[/]\n"
+            f"[dim]+{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.[/]\n"
+            f"{stop_note}"
+            f"[bold red]→ Exit all, or raise stop to restore RR ≥ 1.0.[/]\n"
+        )
+
     m1_str = f"{m1:,.2f}" if m1 > 0 else "---"
     m2_str = f"{m2:,.2f}" if m2 > 0 else "---"
+    tp_str = f"{tp:,.2f}" if tp > 0 else "---"
     return (
         f"[bold cyan]EXIT MILESTONES[/bold cyan]\n"
-        f"Stage:   [{sc}]{stage}[/]   Regime: [{regime_color}]{regime}[/]\n"
-        f"M1:  {m1_str}   M2: {m2_str}\n"
+        f"Stage: [{sc}]{stage}[/]   Regime: [{regime_color}]{regime}[/]\n"
+        f"[dim]{stage_desc}[/]\n"
+        f"M1:  {m1_str}   M2: {m2_str}   TP: {tp_str}\n"
         f"{guidance}\n"
     )
 
@@ -157,12 +199,15 @@ class TradingCockpit(App):
             "[bold white]TRADING COCKPIT LEGEND[/]\n"
             "• [bold]Sort Keys:[/] [1]Ticker | [2]Daily P/L % | [3]Unrealized % | [4]Market Value\n"
             "• [bold]Filter Keys:[/] [A]ll | [S]tocks | [O]ptions | [B]onds | [T]reasuries\n"
-            "• [bold]Indicators:[/] 🔴 Stop Breached | 🟢 Target Price Reached\n"
+            "• [bold]Indicators:[/] 🔴 Stop Breached — exit now  |  🟢 TP reached — see sidebar for action\n"
             "• [bold]AAGR:[/] Annualized Aggregate Growth Rate (Compound Annual Growth)\n"
-            "• [bold]R (% NAV):[/] Total risk of current stop loss as a percentage of total Portfolio NAV.\n"
-            "• [bold]EXIT column:[/] [cyan]M1[/]=raise stop to breakeven | [yellow]M2·T/N/R[/]=trim signal | [green]TP·T/N/R[/]=target hit\n"
-            "  Letter suffix = Regime: T=Trend (15%/20% trim), N=Normal (33%), R=Ranging (50%/close)\n"
-            "  Full guidance with share counts in the sidebar. F1 → Exit Strategy tab for full reference."
+            "• [bold]R (% NAV):[/] Total risk at stop as a % of portfolio NAV.\n\n"
+            "• [bold]EXIT column:[/]\n"
+            "  [cyan]M1[/]       Move stop to entry — no trimming. Position is now risk-free.\n"
+            "  [yellow]M2·T/N/R[/]  Partial trim due. T=Trend: sell 15%  N=Normal: sell 33%  R=Ranging: sell 50%\n"
+            "  [green]TP·T/N/R[/]  Full target reached.  T=Trend: sell 20% + raise TP  N=Normal: sell 33%  R=Ranging: close all\n"
+            "  [red]⚠ RR<1[/]   Efficiency floor — reward < risk. Exit all shares immediately.\n"
+            "  Share counts and full rationale are in the sidebar. [F1] Exit Strategy tab for the complete reference."
         )
 
     def action_toggle_help(self) -> None:
