@@ -20,5 +20,6 @@ CONFLUENCE_FORTRESS_THRESHOLD = 0.10
 RISK_RED_MULTIPLIER = 1.5
 EXPOSURE_RED_MULTIPLIER = 1.1
 
-# Take-profit is placed this many ATRs above the stop loss.
+# FIXED stops: TP is placed TP_ATR_MULTIPLE ATRs above entry → ladder is M1=+1, M2=+2, TP=+3.
+# TRAILING stops: TP is placed TP_ATR_MULTIPLE ATRs above the current (ratcheted) stop.
 TP_ATR_MULTIPLE = 3

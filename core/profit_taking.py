@@ -2,6 +2,17 @@ import traceback
 from models import Position
 from logger import logger
 
+# Trim guidance matrix: (exit_stage, trend_regime) → (trim_fraction, display_description).
+# Lives here (strategy layer) so the UI imports it rather than owning strategy decisions.
+TRIM_MATRIX = {
+    ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
+    ('M2', 'NORMAL'):  (0.33, "Trim 33%"),
+    ('M2', 'RANGING'): (0.50, "Trim 50% — protect gains"),
+    ('TP', 'TREND'):   (0.20, "Trim 20% — raise TP to weekly ATR level"),
+    ('TP', 'NORMAL'):  (0.33, "Trim 33% or close; keep runner if RR > 1.0"),
+    ('TP', 'RANGING'): (1.00, "Close position — no trend support"),
+}
+
 
 def compute_exit_milestones(position: Position, atr_dist: float) -> None:
     """Sets m1_price, m2_price, and exit_stage on position based on ATR distance from entry."""
@@ -44,7 +55,15 @@ def enrich_regime(positions: list[Position], mapper) -> None:
             dmas = trend.get('dmas', {})
             p.regime_dma200 = round(float(dmas.get('DMA200', 0.0) or 0.0), 4)
             p.regime_dma = f"{dma_signal} ({dma_days}d)"
-            if direction == 'UP' and dma_days >= 21:
+            p.regime_dma_signal = dma_signal
+            p.regime_dma_days = dma_days
+            # Gate TREND on price being above the 200-DMA: a rising DMA with price
+            # already below it indicates a pullback — full trend trim is too aggressive.
+            price_above_dma = (
+                (p.current_price or p.mark_price) > p.regime_dma200
+                if p.regime_dma200 > 0 else True
+            )
+            if direction == 'UP' and dma_days >= 21 and price_above_dma:
                 p.trend_regime = "TREND"
             elif direction == 'UP' and dma_days >= 10:
                 p.trend_regime = "NORMAL"

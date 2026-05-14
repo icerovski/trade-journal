@@ -121,6 +121,8 @@ class Position:
     trend_regime: str = "NORMAL"  # TREND / NORMAL / RANGING
     regime_dma: str = ""          # e.g. "BUY (43d)" or "NEUTRAL (7d)"
     regime_dma200: float = 0.0    # current 200-DMA price level
+    regime_dma_signal: str = ""   # "BUY", "SELL", or "NEUTRAL" (raw signal, no parsing needed)
+    regime_dma_days: int = 0      # consecutive DMA direction days (raw count)
 
     @property
     def hcm_value(self) -> float:

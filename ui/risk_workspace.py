@@ -10,6 +10,7 @@ from textual.screen import ModalScreen
 from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
+from core.profit_taking import TRIM_MATRIX
 from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
@@ -36,25 +37,18 @@ def _load_presets_from_db():
     except Exception:
         pass
 
-_WS_TRIM = {
-    ('M2', 'TREND'):   (0.15, "Token trim 15% — preserve trend runway"),
-    ('M2', 'NORMAL'):  (0.33, "Trim 33%"),
-    ('M2', 'RANGING'): (0.50, "Trim 50% — protect gains"),
-    ('TP', 'TREND'):   (0.20, "Trim 20% — raise TP to weekly ATR level"),
-    ('TP', 'NORMAL'):  (0.33, "Trim 33% or close; keep runner if RR > 1.0"),
-    ('TP', 'RANGING'): (1.00, "Close position — no trend support"),
-}
 _STAGE_C  = {'PRE-M1': 'dim', 'M1': 'cyan', 'M2': 'yellow', 'TP': 'green'}
 _REGIME_C = {'TREND': 'green', 'NORMAL': 'white', 'RANGING': 'red'}
 
 def _exit_guidance_str(pos, cur_p: float) -> str:
-    stage  = getattr(pos, 'exit_stage', '')
-    regime = getattr(pos, 'trend_regime', 'NORMAL')
-    dma    = getattr(pos, 'regime_dma', '')
-    dma200 = getattr(pos, 'regime_dma200', 0.0)
-    m1     = getattr(pos, 'm1_price', 0.0)
-    m2     = getattr(pos, 'm2_price', 0.0)
-    tp     = getattr(pos, 'tp_price', 0.0) or 0.0
+    stage      = getattr(pos, 'exit_stage', '')
+    regime     = getattr(pos, 'trend_regime', 'NORMAL')
+    dma_signal = getattr(pos, 'regime_dma_signal', 'NEUTRAL')
+    dma_days   = getattr(pos, 'regime_dma_days', 0)
+    dma200     = getattr(pos, 'regime_dma200', 0.0)
+    m1         = getattr(pos, 'm1_price', 0.0)
+    m2         = getattr(pos, 'm2_price', 0.0)
+    tp         = getattr(pos, 'tp_price', 0.0) or 0.0
 
     if not stage:
         return ""
@@ -78,10 +72,8 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     ladder = (f"  {_ms('M1', m1, 1)}   {_ms('M2', m2, 2)}   {_ms('TP', tp, 3)}\n")
 
     # ── Regime calculation breakdown ─────────────────────────────────────────
-    dma_signal = dma.split(' ')[0] if dma else 'NEUTRAL'
-    dma_days_str = dma.split(' ')[1].strip('()d') if ' ' in dma else '0'
-    dma_days = int(dma_days_str) if dma_days_str.isdigit() else 0
     dma_c = 'green' if dma_signal == 'BUY' else ('red' if dma_signal == 'SELL' else 'yellow')
+    price_above_dma = cur_p >= dma200 if (dma200 > 0 and cur_p > 0) else True
 
     if dma200 > 0 and cur_p > 0:
         diff = cur_p - dma200
@@ -92,13 +84,14 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
 
     if regime == 'TREND':
         verdict = f"[green]Rising {dma_days}d (≥ 21) → TREND[/]"
+    elif regime == 'NORMAL' and dma_days >= 21 and not price_above_dma:
+        verdict = f"[yellow]Rising {dma_days}d (≥ 21) but price below 200-DMA → NORMAL[/]"
     elif regime == 'NORMAL':
         verdict = f"[white]Rising {dma_days}d (10–20) → NORMAL[/]"
+    elif dma_signal == 'SELL':
+        verdict = f"[red]Declining {dma_days}d → RANGING[/]"
     else:
-        if dma_signal == 'SELL':
-            verdict = f"[red]Declining {dma_days}d → RANGING[/]"
-        else:
-            verdict = f"[red]Rising only {dma_days}d (< 10) → RANGING[/]"
+        verdict = f"[red]Rising only {dma_days}d (< 10) → RANGING[/]"
 
     calc = (
         f"\n  REGIME CALCULATION:\n"
@@ -107,12 +100,23 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     )
 
     # ── Action ────────────────────────────────────────────────────────────────
-    action = ""
-    key = (stage, regime)
-    if key in _WS_TRIM:
-        pct, desc = _WS_TRIM[key]
-        shares = max(1, int(pos.qty * pct))
-        action = f"\n  [bold]→ {desc} (~{shares} sh)[/]\n"
+    if stage == 'M1':
+        action = (
+            f"\n  [bold cyan]→ Raise stop to entry "
+            f"({pos.entry_price:,.2f}) — position is free[/]\n"
+        )
+    else:
+        key = (stage, regime)
+        if key in TRIM_MATRIX:
+            pct, desc = TRIM_MATRIX[key]
+            shares = max(1, int(pos.qty * pct))
+            action = f"\n  [bold]→ {desc} (~{shares} sh)[/]\n"
+        else:
+            action = ""
+
+    rr = getattr(pos, 'rr_ratio', 0.0)
+    if stage in ('M1', 'M2', 'TP') and 0 < rr < 1.0:
+        action = f"\n  [bold red]⚠ RR {rr:.2f} — efficiency floor → EXIT ALL remaining[/]\n"
 
     return (
         f"\n──────────────────────────────────────────\n"

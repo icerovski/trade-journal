@@ -131,9 +131,19 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.sl_price = final_sl
 
     # 3. Take Profit
+    # FIXED: anchor to entry so the ladder is M1=+1, M2=+2, TP=+3 ATRs from entry.
+    # TRAILING: anchor to the current (ratcheted) stop so TP rises with the position.
     if s_type == 'FIXED':
-        atr_for_tp = inception_atr if (inception_atr and inception_atr > 0) else 0.0
-        position.tp_price = final_sl + (TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
+        if inception_atr and inception_atr > 0:
+            atr_for_tp = inception_atr
+        else:
+            atr_for_tp = max(0.0, (position.entry_price or 0.0) - final_sl)
+            if atr_for_tp > 0:
+                logger.warning(
+                    f"[calculate_position_risk] {position.ticker}: inception_atr missing, "
+                    f"using entry-stop distance {atr_for_tp:.4f} for TP"
+                )
+        position.tp_price = (position.entry_price + TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
     else:
         position.tp_price = final_sl + (TP_ATR_MULTIPLE * atr)
 
@@ -163,11 +173,11 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
         position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
 
     # 8. Exit milestones
-    atr_dist = (
-        (inception_atr if (inception_atr and inception_atr > 0)
-         else max(0.0, (position.entry_price or 0.0) - final_sl))
-        if s_type == 'FIXED' else atr
-    )
+    if s_type == 'FIXED':
+        atr_dist = inception_atr if (inception_atr and inception_atr > 0) \
+                   else max(0.0, (position.entry_price or 0.0) - final_sl)
+    else:
+        atr_dist = atr
     compute_exit_milestones(position, atr_dist)
 
     return position
