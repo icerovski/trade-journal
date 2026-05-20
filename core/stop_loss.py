@@ -297,11 +297,13 @@ def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_pric
 def get_atr_discovery_data(
     ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None,
     qty=0.0, inst_multiplier=1.0, total_nav=0.0, max_r_pct=1.0,
-    max_exp_pct=5.0, mapper=None,
+    max_exp_pct=5.0, mapper=None, max_since_entry: float = 0.0,
 ):
     """
     Returns ATR analysis data for both FIXED and TRAILING stop types across all timeframes.
     Pass mapper= to avoid a redundant PortfolioManager instantiation when the caller already holds one.
+    Pass max_since_entry= (from position enrichment) to ensure the TRAILING base matches the
+    portfolio risk status, which uses max(prices.db high, live intraday price).
     """
     try:
         if mapper is None:
@@ -315,6 +317,8 @@ def get_atr_discovery_data(
         if price_data is None:
             return None
         effective_entry, max_price, current_price, df_prospect_daily = price_data
+        if max_since_entry > max_price:
+            max_price = max_since_entry
 
         rows = _compute_atr_rows(
             yf_ticker, conid, effective_entry, max_price, current_price,

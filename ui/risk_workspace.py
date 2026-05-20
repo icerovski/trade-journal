@@ -763,13 +763,15 @@ class RiskWorkspace(App):
                 return
             t_sym, entry_p, entry_d, m, q = pos.ticker, pos.entry_price, pos.date_entry.strftime("%Y-%m-%d"), pos.multiplier, pos.qty
             max_r, max_exp = pos.max_r_pct, pos.max_exp_pct
+            hwm = pos.max_since_entry
         else:
             t_sym = ticker or str(conid).split(":")[-1]
             entry_p, entry_d, m, q = 0.0, pd.Timestamp.now().strftime("%Y-%m-%d"), 1.0, 0.0
             max_r, max_exp = 1.0, 5.0
+            hwm = 0.0
 
         with suppress_console_logging():
-            data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp, mapper=self.pm.mapper)
+            data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp, mapper=self.pm.mapper, max_since_entry=hwm)
         if data:
             cache_id = conid or f"PROSPECT:{t_sym}"
             self.discovery_cache[cache_id] = data
@@ -923,8 +925,10 @@ class RiskWorkspace(App):
                     f_atr = num  # for FIXED: the value IS the literal stop price
                 elif is_at:
                     f_atr = base_p - num    # convert price floor → ATR distance from HWM
+                elif v.endswith('%'):
+                    f_atr = base_p * (num / 100.0)
                 else:
-                    f_atr = num if is_d else base_p * (num / 100.0)
+                    f_atr = num  # dollar amount (default; $ prefix is cosmetic)
 
             if s_type == 'FIXED':
                 sl_p = f_atr
