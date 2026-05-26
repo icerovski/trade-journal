@@ -20,7 +20,9 @@
       "Bash(sed -i 's/from core\\\\.portfolio_analytics import compute_portfolio_risk, hhi_label/from core.sizing import compute_portfolio_risk, hhi_label/' ui/portfolio_risk.py)",
       "Bash(sed -i '/from \\\\.risk_engine import RiskEngine/d' core/portfolio_manager.py)",
       "Bash(sed -i '/self\\\\._risk = RiskEngine\\(\\)/d' core/portfolio_manager.py)",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(uv python *)",
+      "Bash(uv sync *)"
     ]
   }
 }
