@@ -413,19 +413,18 @@ class RiskWorkspace(App):
         table.cursor_type = "row"
         table.add_column("TICKER", key="col_ticker")
         table.add_column("ACTION", key="col_action")
-        table.add_column("STOP BASE", key="col_base")
-        table.add_column("ATR", key="col_atr")
+        table.add_column("CUR P", key="col_cur_p")
         table.add_column("STOP P", key="col_stop_p")
         table.add_column("SL %", key="col_sl_pct")
+        table.add_column("R", key="col_r")
+        table.add_column("% NAV", key="col_nav_pct")
         table.add_column("P/L STOP", key="col_pl_stop")
-        table.add_column("MKT VAL", key="col_mkt_val")
-        table.add_column("COST", key="col_cost")
-        table.add_column("CUR P", key="col_cur_p")
+        table.add_column("STOP BASE", key="col_base")
+        table.add_column("ATR", key="col_atr")
         table.add_column("HIGH P", key="col_high_p")
         table.add_column("AVG COST", key="col_avg_cost")
-        table.add_column("% NAV", key="col_nav_pct")
-        table.add_column("R", key="col_r")
-        table.add_column("RR", key="col_rr")
+        table.add_column("MKT VAL", key="col_mkt_val")
+        table.add_column("COST", key="col_cost")
         
         # Setup Fixed Stop Table
         table_f = self.query_one("#fixed-stop-table", DataTable)
@@ -503,17 +502,16 @@ class RiskWorkspace(App):
                         action_display = f"[bold green]+{adj_pct:.1f}%[/]"
                     elif adj < -trim_threshold:
                         action_display = f"[bold red]{adj_pct:.1f}%[/]"
-                        # Add WARNING icon only if the trimming threshold is breached
-                        ticker_display += " [bold red]⚠[/]"
 
+            r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
+            nav_val = f"{row['NavPct']:.1f}% ({max_exp_pct:.1f}%)"
             cur_p_display = f"{cur_p_val:,.2f}"
             if has_risk and pd.notnull(sl_p) and cur_p_val <= sl_p:
                 cur_p_display = f"[on red][bold white] {cur_p_display} [/][/]"
+                ticker_display += " [bold white on red] BREACH [/]"
             else:
                 if has_risk and pd.notnull(tp_p) and cur_p_val >= tp_p:
                     ticker_display += " [bold cyan]★[/]"
-                r_val = f"{row['risk_pct_nav']:.1f}% ({max_r_pct:.1f}%)"
-            nav_val = f"{row['NavPct']:.1f}% ({max_exp_pct:.1f}%)"
             r_color = "red" if row['risk_pct_nav'] > (max_r_pct * RISK_RED_MULTIPLIER) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
             exp_color = "red" if row['NavPct'] > (max_exp_pct * EXPOSURE_RED_MULTIPLIER) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
             
@@ -523,10 +521,6 @@ class RiskWorkspace(App):
             mkt_color   = "green" if mkt_val >= cost_val else "red"
             mkt_display  = f"[{mkt_color}]{mkt_val:,.0f}[/]" if row['Qty'] > 0 else "---"
             cost_display = f"{cost_val:,.0f}" if cost_val > 0 else "---"
-            rr_val = row['RR_Ratio']
-            rr_display = f"{rr_val:.2f}" if has_risk else "---"
-            rr_color = "green" if rr_val > 3.0 else ("yellow" if rr_val > 1.0 else "red")
-            
             # ATR column: for FIXED, show signed stop-to-entry distance.
             # Positive (green) means stop is above entry — profit locked in.
             # Negative cases are impossible after max(0,...) but shown as absolute for safety.
@@ -545,19 +539,18 @@ class RiskWorkspace(App):
             table.add_row(
                 ticker_display,
                 action_display,
-                f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}",
-                atr_display,
+                cur_p_display,
                 f"{row['SL_Price']:,.2f}" if has_risk else "---",
                 f"{row['sl_pct_base']:.1f}%" if has_risk else "---",
+                f"[{r_color}]{r_val}[/]",
+                f"[{exp_color}]{nav_val}[/]",
                 pl_display,
-                mkt_display,
-                cost_display,
-                cur_p_display,
+                f"{(row['MaxSinceEntry'] if row['StopType'] == 'TRAILING' else row['Entry']):,.2f}",
+                atr_display,
                 f"{row['MaxSinceEntry']:,.2f}" if row['MaxSinceEntry'] > 0 else "---",
                 f"{row['Entry']:,.2f}" if row['Entry'] > 0 else "---",
-                f"[{exp_color}]{nav_val}[/]", 
-                f"[{r_color}]{r_val}[/]", 
-                f"[{rr_color}]{rr_display}[/]",
+                mkt_display,
+                cost_display,
                 key=conid_str
             )
 
@@ -851,7 +844,7 @@ class RiskWorkspace(App):
         if not any(p.conid == self.current_conid for p in self.positions):
             self.positions.append(phantom)
         if self.current_conid not in [r.value for r in table.rows]:
-            table.add_row(f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", key=self.current_conid)
+            table.add_row(f"[PROSPECT] {ticker}", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", key=self.current_conid)
         table.move_cursor(row=table.get_row_index(self.current_conid))
         self.fetch_atr_data(None, ticker=ticker)
 
