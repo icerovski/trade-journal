@@ -131,8 +131,10 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.sl_price = final_sl
 
     # 3. Take Profit
-    # FIXED: anchor to entry so the ladder is M1=+1, M2=+2, TP=+3 ATRs from entry.
-    # TRAILING: anchor to the current (ratcheted) stop so TP rises with the position.
+    # Both stop types anchor TP to entry so the ladder is uniform: M1=+1, M2=+2,
+    # TP=+3 ATRs from entry. (Anchoring TRAILING TP to the ratcheted stop made it
+    # collide with M2 at inception: stop = entry − ATR ⇒ stop + 3·ATR = entry + 2·ATR.)
+    # In a confirmed trend the user manually extends TP via the TP-stage guidance.
     if s_type == 'FIXED':
         if inception_atr and inception_atr > 0:
             atr_for_tp = inception_atr
@@ -145,7 +147,10 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
                 )
         position.tp_price = (position.entry_price + TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
     else:
-        position.tp_price = final_sl + (TP_ATR_MULTIPLE * atr)
+        position.tp_price = (
+            (position.entry_price + TP_ATR_MULTIPLE * atr)
+            if position.entry_price else (final_sl + TP_ATR_MULTIPLE * atr)
+        )
 
     # 4. Percentage Metrics
     if position.current_price > 0:

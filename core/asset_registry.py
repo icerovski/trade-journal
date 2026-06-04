@@ -12,6 +12,13 @@ class AssetRegistry:
     PERCENT_OF_PAR_ASSETS = ['BOND', 'BILL', 'FIXED']
 
     @classmethod
+    def is_income_asset(cls, asset_class: str) -> bool:
+        """True for income-bearing par assets (bonds/bills) whose total return is
+        dominated by coupon, not price. Price-only metrics (e.g. AAGR) systematically
+        understate them, so capital-efficiency flags must exclude these."""
+        return bool(asset_class) and asset_class.upper() in cls.PERCENT_OF_PAR_ASSETS
+
+    @classmethod
     def enrich_position_metadata(cls, position):
         """
         Applies heuristic corrections to position metadata based on asset class.

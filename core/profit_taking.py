@@ -1,15 +1,18 @@
 import traceback
 from models import Position
 from logger import logger
+from constants import REGIME_REVERSAL_CONFIRM_DAYS
 
 # Trim guidance matrix: (exit_stage, trend_regime) → (trim_fraction, rationale).
 # Rationale explains WHY; the UI renders the share count and % separately.
 # Lives here (strategy layer) so the UI imports it rather than owning strategy decisions.
 TRIM_MATRIX = {
-    ('M2', 'TREND'):   (0.15, (
+    # Fraction 0.0 = hold, do not trim. In a confirmed trend the trailing stop is the
+    # exit mechanism; trimming here would cut a compounder. Profits are banked at TP.
+    ('M2', 'TREND'):   (0.0, (
         "The 200-DMA has been rising for 21+ consecutive days with price above it — "
-        "the trend has genuine structural support. Take only a token slice to reduce "
-        "exposure lightly. Keep 85% of the position running for the continuation."
+        "the trend has genuine structural support. Do not trim here: let the trailing "
+        "stop run the winner and bank profits at the full target. Re-evaluate at TP."
     )),
     ('M2', 'NORMAL'):  (0.33, (
         "The trend is developing but not yet confirmed (DMA rising < 21 days). "
@@ -38,6 +41,26 @@ TRIM_MATRIX = {
 }
 
 
+def classify_regime(direction: str, dma_days: int, price_above_dma: bool) -> str:
+    """Pure 200-DMA regime decision. See TECHNICAL_DOCS §5.
+
+    - TREND:   DMA rising ≥ 21d AND price above the 200-DMA.
+    - NORMAL:  DMA rising 10–20d; a ≥21d rise while price is below the DMA (pullback);
+               or an unconfirmed reversal (< REGIME_REVERSAL_CONFIRM_DAYS down) held by hysteresis.
+    - RANGING: a confirmed decline, or a rise shorter than 10d.
+
+    The day count resets to ~1 on any reversal, so the hysteresis branch is what keeps a
+    single counter-trend day from crashing a long TREND straight to RANGING.
+    """
+    if direction == 'UP' and dma_days >= 21 and price_above_dma:
+        return "TREND"
+    if direction == 'UP' and dma_days >= 10:
+        return "NORMAL"
+    if direction == 'DOWN' and dma_days < REGIME_REVERSAL_CONFIRM_DAYS:
+        return "NORMAL"  # unconfirmed reversal — hysteresis hold
+    return "RANGING"
+
+
 def compute_exit_milestones(position: Position, atr_dist: float) -> None:
     """Sets m1_price, m2_price, and exit_stage on position based on ATR distance from entry."""
     if atr_dist <= 0 or not position.entry_price:
@@ -45,15 +68,20 @@ def compute_exit_milestones(position: Position, atr_dist: float) -> None:
     position.m1_price = position.entry_price + atr_dist
     position.m2_price = position.entry_price + 2.0 * atr_dist
     cur = position.current_price if position.current_price > 0 else position.mark_price
-    if cur > 0 and position.tp_price:
-        if cur >= position.tp_price:
-            position.exit_stage = "TP"
-        elif cur >= position.m2_price:
-            position.exit_stage = "M2"
-        elif cur >= position.m1_price:
-            position.exit_stage = "M1"
-        else:
-            position.exit_stage = "PRE-M1"
+    if not (cur > 0 and position.tp_price):
+        logger.debug(
+            f"[compute_exit_milestones] {position.ticker}: exit_stage not set "
+            f"(current={cur}, tp_price={position.tp_price}) — profit-taking panel suppressed"
+        )
+        return
+    if cur >= position.tp_price:
+        position.exit_stage = "TP"
+    elif cur >= position.m2_price:
+        position.exit_stage = "M2"
+    elif cur >= position.m1_price:
+        position.exit_stage = "M1"
+    else:
+        position.exit_stage = "PRE-M1"
 
 
 def enrich_regime(positions: list[Position], mapper) -> None:
@@ -81,17 +109,13 @@ def enrich_regime(positions: list[Position], mapper) -> None:
             p.regime_dma = f"{dma_signal} ({dma_days}d)"
             p.regime_dma_signal = dma_signal
             p.regime_dma_days = dma_days
+            p.regime_dma_direction = direction
             # Gate TREND on price being above the 200-DMA: a rising DMA with price
             # already below it indicates a pullback — full trend trim is too aggressive.
             price_above_dma = (
                 (p.current_price or p.mark_price) > p.regime_dma200
                 if p.regime_dma200 > 0 else True
             )
-            if direction == 'UP' and dma_days >= 21 and price_above_dma:
-                p.trend_regime = "TREND"
-            elif direction == 'UP' and dma_days >= 10:
-                p.trend_regime = "NORMAL"
-            else:
-                p.trend_regime = "RANGING"
+            p.trend_regime = classify_regime(direction, dma_days, price_above_dma)
         except Exception as e:
             logger.warning(f"[enrich_regime] {p.ticker} (conid={p.conid}): {e}\n{traceback.format_exc()}")

@@ -6,8 +6,21 @@ from config import DATA_DIR
 # Define log file path
 LOG_FILE = DATA_DIR / "trade_journal.log"
 
+def _ensure_utf8_console():
+    """Windows consoles often default to a legacy code page (e.g. cp1251) that cannot
+    encode emoji or accented characters. Without this, StreamHandler.emit raises
+    UnicodeEncodeError on any such character (e.g. the 🚀 milestone marker, or non-ASCII
+    ticker names). Reconfigure stdout/stderr to UTF-8 and degrade unencodable characters
+    rather than crash. No-op if the stream cannot be reconfigured (e.g. redirected pipe)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+        except Exception:
+            pass
+
 def setup_logging():
     """Configures logging to both file and console."""
+    _ensure_utf8_console()
     logger = logging.getLogger("trade_journal")
     logger.setLevel(logging.INFO)
 

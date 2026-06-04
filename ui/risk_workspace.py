@@ -17,7 +17,7 @@ from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
 from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting
 from logger import logger, suppress_console_logging
-from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
 
 PRESETS = {
     "S": {"label": "Small",       "max_exp_pct": 1.5, "max_r_pct": 0.30},
@@ -51,6 +51,7 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     regime     = getattr(pos, 'trend_regime', 'NORMAL')
     dma_signal = getattr(pos, 'regime_dma_signal', 'NEUTRAL')
     dma_days   = getattr(pos, 'regime_dma_days', 0)
+    direction  = getattr(pos, 'regime_dma_direction', 'UP')
     dma200     = getattr(pos, 'regime_dma200', 0.0)
     m1         = getattr(pos, 'm1_price', 0.0)
     m2         = getattr(pos, 'm2_price', 0.0)
@@ -90,12 +91,14 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
 
     if regime == 'TREND':
         verdict = f"[green]Rising {dma_days}d (≥ 21) → TREND[/]"
+    elif regime == 'NORMAL' and direction == 'DOWN':
+        verdict = f"[yellow]DMA reversed {dma_days}d (< {REGIME_REVERSAL_CONFIRM_DAYS}, unconfirmed) → held at NORMAL[/]"
     elif regime == 'NORMAL' and dma_days >= 21 and not price_above_dma:
         verdict = f"[yellow]Rising {dma_days}d (≥ 21) but price below 200-DMA → NORMAL[/]"
     elif regime == 'NORMAL':
         verdict = f"[white]Rising {dma_days}d (10–20) → NORMAL[/]"
-    elif dma_signal == 'SELL':
-        verdict = f"[red]Declining {dma_days}d → RANGING[/]"
+    elif direction == 'DOWN':
+        verdict = f"[red]Declining {dma_days}d (≥ {REGIME_REVERSAL_CONFIRM_DAYS}, confirmed) → RANGING[/]"
     else:
         verdict = f"[red]Rising only {dma_days}d (< 10) → RANGING[/]"
 
@@ -125,11 +128,23 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
         key = (stage, regime)
         if key in TRIM_MATRIX:
             pct, desc = TRIM_MATRIX[key]
-            shares = max(1, int(pos.qty * pct))
-            action = (
-                f"\n  [bold]→ Sell ~{shares} sh ({int(pct * 100)}%)[/]\n"
-                f"  [dim]{desc}[/]\n"
-            )
+            if pct <= 0:
+                # Hold directive (e.g. M2 in a confirmed TREND): no trim, let it run.
+                action = (
+                    f"\n  [bold green]→ Hold — no trim.[/]\n"
+                    f"  [dim]{desc}[/]\n"
+                )
+            else:
+                # Whole-share lots: round to nearest share, never exceed holdings, and
+                # never round a genuine trim down to zero. Fractional lots (bonds/options
+                # measured in fractional units) keep the fractional figure rather than
+                # being inflated to a full unit.
+                raw = pos.qty * pct
+                shares = min(int(pos.qty), max(1, round(raw))) if pos.qty >= 1 else round(raw, 4)
+                action = (
+                    f"\n  [bold]→ Sell ~{shares} sh ({int(pct * 100)}%)[/]\n"
+                    f"  [dim]{desc}[/]\n"
+                )
         else:
             action = ""
 
@@ -139,17 +154,35 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     if stage in ('M2', 'TP') and 0 < rr < 1.0:
         dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
         dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
-        stop_note = (
-            f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.\n"
-            f"  Consider raising the stop to restore RR ≥ 1.0 instead of exiting.[/]\n"
-        ) if sl > pos.entry_price else ""
-        action = (
-            f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered.[/]\n"
-            f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
-            f"  Remaining upside is smaller than remaining downside.[/]\n"
-            f"{stop_note}"
-            f"  [bold red]→ Exit all shares, or raise stop to restore RR ≥ 1.0.[/]\n"
-        )
+        profitable_stop = sl > pos.entry_price
+        if regime == 'RANGING':
+            # No structural support: tightening the stop to manufacture RR ≥ 1.0 just
+            # invites a whipsaw exit at a worse price. Full exit is the sole directive;
+            # tighten-and-hold is not offered here.
+            stop_note = (
+                f"  [dim]The stop ({sl:,.2f}) is above entry, so a stop-out is still profitable — "
+                f"but with no trend there is nothing to justify holding for the thin upside.[/]\n"
+            ) if profitable_stop else ""
+            action = (
+                f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered (RANGING, no support).[/]\n"
+                f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
+                f"  Remaining upside is smaller than remaining downside.[/]\n"
+                f"{stop_note}"
+                f"  [bold red]→ Exit all shares.[/]\n"
+            )
+        else:
+            # TREND / NORMAL: holding is defensible, so tighten-and-hold stays co-equal.
+            stop_note = (
+                f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.\n"
+                f"  Consider raising the stop to restore RR ≥ 1.0 instead of exiting.[/]\n"
+            ) if profitable_stop else ""
+            action = (
+                f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered.[/]\n"
+                f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
+                f"  Remaining upside is smaller than remaining downside.[/]\n"
+                f"{stop_note}"
+                f"  [bold red]→ Exit all shares, or raise stop to restore RR ≥ 1.0.[/]\n"
+            )
 
     stage_desc = _STAGE_DESC.get(stage, '')
     return (
@@ -613,7 +646,12 @@ class RiskWorkspace(App):
                 effective_atr = hypo_atr if hypo_atr is not None else pos.atr
 
             atr_width = effective_atr
-            efficiency = ((effective_stop + (3 * atr_width) - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
+            # TP is entry-anchored (entry + TP_ATR_MULTIPLE × ATR) for both stop types,
+            # matching pos.tp_price and the M1/M2/TP ladder. This keeps the audit-panel
+            # RR and the exit-stage efficiency floor from showing divergent numbers,
+            # while staying modeling-aware (uses active_entry / atr_width).
+            tp_target = active_entry + (TP_ATR_MULTIPLE * atr_width)
+            efficiency = ((tp_target - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
 
             # 2. Build Execution Plan
             exit_stage = getattr(pos, 'exit_stage', '')
@@ -633,6 +671,15 @@ class RiskWorkspace(App):
                     exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"
                 else:
                     exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
+
+            # Capital-efficiency nudge (orthogonal to the ATR ladder). Suppressed on a
+            # breach, where the exit directive already dominates. Reflects the live
+            # position's AAGR/age, not any modeling override.
+            if getattr(pos, 'is_stale', False) and not res['is_breached']:
+                exec_plan += (
+                    f"\n  - [bold red]⏳ STALE: {pos.aagr:+.1f}% AAGR over {pos.age_days}d — "
+                    f"below {CAPITAL_HURDLE_PCT:.0f}% hurdle. Review thesis or redeploy capital.[/]"
+                )
 
             # 3. Final Layout Assembly
             cost_val = (pos.qty * active_entry * pos.multiplier)
@@ -725,10 +772,23 @@ class RiskWorkspace(App):
                 if res.get('shares_to_trim') is not None and res['shares_to_trim'] >= 1:
                     remediation_str += f"  B) Trim [bold yellow]{int(res['shares_to_trim'])}[/] sh (keep stop @ {effective_stop:,.2f})"
 
+            # Capital-efficiency metric: annualised unrealised return vs the hurdle.
+            # Always shown for real holdings; the STALE badge mirrors pos.is_stale.
+            if pos.age_days > 0 and pos.qty > 0:
+                aagr_c = "green" if pos.aagr >= CAPITAL_HURDLE_PCT else ("yellow" if pos.aagr >= 0 else "red")
+                stale_badge = " [bold reverse red] STALE [/]" if getattr(pos, 'is_stale', False) else ""
+                capital_str = (
+                    f"  - Capital: [bold {aagr_c}]{pos.aagr:+.1f}% AAGR[/] over {pos.age_days}d "
+                    f"(hurdle {CAPITAL_HURDLE_PCT:.0f}%, ≥{STALE_MIN_AGE_DAYS}d){stale_badge}\n"
+                )
+            else:
+                capital_str = ""
+
             audit_content = (
                 f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
                 f"  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n"
                 f"  - Efficiency: [bold {'green' if efficiency>=2.0 else ('yellow' if efficiency>=1.0 else 'red')}]{efficiency:.2f} RR[/]\n"
+                f"{capital_str}"
                 f"{sizing_table}"
                 f"--------------------------------------\n"
                 f"INCEPTION STOP: [bold]{incep_stop_str}[/]{trailed_str}\n"

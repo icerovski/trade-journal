@@ -2,7 +2,7 @@ import pandas as pd
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-from constants import QTY_ZERO_THRESHOLD, AAGR_MIN_YEARS
+from constants import QTY_ZERO_THRESHOLD, AAGR_MIN_YEARS, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS
 
 @dataclass
 class Trade:
@@ -93,6 +93,7 @@ class Position:
     aagr: float = 0.0
     nav_pct: float = 0.0  # Exposure % of NAV
     age_days: int = 0
+    is_stale: bool = False  # capital below hurdle after min holding period (dead money)
     
     # Risk Metrics
     atr: float = 0.0
@@ -123,6 +124,7 @@ class Position:
     regime_dma200: float = 0.0    # current 200-DMA price level
     regime_dma_signal: str = ""   # "BUY", "SELL", or "NEUTRAL" (raw signal, no parsing needed)
     regime_dma_days: int = 0      # consecutive DMA direction days (raw count)
+    regime_dma_direction: str = ""  # "UP" or "DOWN" — raw 200-DMA slope direction
 
     @property
     def hcm_value(self) -> float:
@@ -162,6 +164,18 @@ class Position:
                 self.aagr = -100.0
         else:
             self.aagr = 0.0
+
+        # Capital-efficiency flag: held long enough to judge, yet annualised return
+        # is below the opportunity-cost hurdle. Young positions are exempt (AAGR noisy).
+        # Income assets (bonds/bills) are excluded: price-only AAGR ignores coupon and
+        # would flag a coupon-earning hold as dead money. Revisit if AAGR goes total-return.
+        from core.asset_registry import AssetRegistry
+        self.is_stale = (
+            self.qty > 0
+            and self.age_days >= STALE_MIN_AGE_DAYS
+            and self.aagr < CAPITAL_HURDLE_PCT
+            and not AssetRegistry.is_income_asset(self.asset_class)
+        )
 
     # Maps Position field name → DataFrame column name consumed by the view layer.
     # Update this mapping when renaming a field; column names are part of the UI contract.

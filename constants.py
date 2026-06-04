@@ -9,6 +9,19 @@ QTY_ZERO_THRESHOLD = 0.0001
 # Floors positions younger than ~2 weeks to avoid extreme AAGR readings.
 AAGR_MIN_YEARS = 0.04
 
+# Capital-efficiency ("dead money") flag. A position older than STALE_MIN_AGE_DAYS
+# whose annualised unrealised return (AAGR) is below CAPITAL_HURDLE_PCT is flagged
+# STALE — the capital is not clearing the opportunity-cost hurdle and warrants review.
+# Orthogonal to the ATR exit ladder: answers "is this capital working?", not "take profit?".
+CAPITAL_HURDLE_PCT = 8.0
+STALE_MIN_AGE_DAYS = 180
+
+# Regime hysteresis. The 200-DMA direction-day count resets to ~1 on any reversal,
+# so a single counter-trend day would otherwise crash a long TREND straight to RANGING.
+# A DMA reversal must persist this many days before it demotes the regime to RANGING;
+# until confirmed, the position is held one notch up at NORMAL. Dampens boundary whipsaw.
+REGIME_REVERSAL_CONFIRM_DAYS = 3
+
 # ATR-distance thresholds for the confluence engine.
 # A level within CONFLUENCE_ATR_THRESHOLD of price/stop is "in the zone".
 # Within CONFLUENCE_FORTRESS_THRESHOLD it is a "fortress" level.
@@ -20,6 +33,6 @@ CONFLUENCE_FORTRESS_THRESHOLD = 0.10
 RISK_RED_MULTIPLIER = 1.5
 EXPOSURE_RED_MULTIPLIER = 1.1
 
-# FIXED stops: TP is placed TP_ATR_MULTIPLE ATRs above entry → ladder is M1=+1, M2=+2, TP=+3.
-# TRAILING stops: TP is placed TP_ATR_MULTIPLE ATRs above the current (ratcheted) stop.
+# Both stop types: TP is placed TP_ATR_MULTIPLE ATRs above entry → ladder is M1=+1, M2=+2, TP=+3.
+# (Anchoring TRAILING TP to the ratcheted stop made it collide with M2 at inception.)
 TP_ATR_MULTIPLE = 3

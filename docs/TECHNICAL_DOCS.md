@@ -101,33 +101,49 @@ Market structure is classified per position using the 200-DMA consecutive rising
 
 Daily DMA change = `(today's close − close 200 days ago) / 200`. Because it averages 200 sessions, a single bad day barely moves it. The signal counts how many consecutive days the DMA has moved in the same direction without reversal.
 
+**Reversal hysteresis.** The consecutive-day count resets to ~1 on any direction reversal, so without dampening a single counter-trend day would crash a long TREND straight to RANGING. A DMA reversal must persist `REGIME_REVERSAL_CONFIRM_DAYS` (default 3) before it demotes the regime to RANGING; until then the position is held one notch up at **NORMAL** (unconfirmed reversal). This is stateless — it reads the live down-run length rather than persisting prior regime. The `risk_workspace.py` regime verdict labels this case explicitly ("DMA reversed Nd (< K, unconfirmed) → held at NORMAL").
+
 **Regime classification:**
 
 | Regime | 200-DMA Rising Days | Trim M2 | Trim TP |
 |--------|---------------------|---------|---------|
-| TREND  | ≥ 21                | 15%     | 20%     |
+| TREND  | ≥ 21                | Hold (0%) | 20%     |
 | NORMAL | 10 – 20             | 33%     | 33% or close |
 | RANGING | < 10 or declining  | 50%     | Close all |
 
+In a confirmed TREND the M2 trim is **0% (hold)** by design: trimming a confirmed compounder cuts the winner against the trend-following mandate. The trailing stop is the exit mechanism and profits are banked at TP. A `TRIM_MATRIX` fraction of `0.0` renders a "Hold — no trim" directive instead of a sell.
+
 ### Exit Stages
 
-Milestones are anchored to `entry_price + N × ATR_distance`:
+Milestones are anchored to `entry_price + N × ATR_distance` for **both** stop types, so the ladder is uniform (M1=+1, M2=+2, TP=+3 ATRs from entry):
 - **FIXED stop:** `ATR_distance = inception_atr` (the ATR at the time of first entry — the original risk unit). Falls back to `entry − final_sl` if inception_atr is unavailable.
 - **TRAILING stop:** `ATR_distance = live ATR dollar width` (current trailing distance).
+
+The TP is intentionally **entry-anchored, not stop-anchored**. Anchoring TP to the ratcheted stop made it collide with M2 at inception (`stop = entry − ATR ⇒ stop + 3×ATR = entry + 2×ATR`). In a confirmed trend the TP is extended manually via the TP-stage guidance, not automatically.
 
 | Stage  | Trigger                    | Action                         |
 |--------|---------------------------|-------------------------------|
 | PRE-M1 | price < entry + 1×ATR     | Hold — position not yet earned |
 | M1     | price ≥ entry + 1×ATR     | Raise stop to entry (free position) |
 | M2     | price ≥ entry + 2×ATR     | Partial trim by regime         |
-| TP     | price ≥ stop + 3×ATR      | Larger trim by regime; extend target in TREND |
+| TP     | price ≥ entry + 3×ATR     | Larger trim by regime; extend target in TREND |
 
 **Efficiency Floor (overrides all stages):** If RR (Efficiency) drops below 1.0 at any time, exit all remaining shares. This fires when price reverses toward the stop from the TP zone — remaining reward no longer justifies open risk.
 
+### Capital-Efficiency Flag (Dead Money)
+
+Orthogonal to the ATR exit ladder — it answers "is this capital working?", not "should I take profit?". A position is flagged **STALE** when both hold:
+- `age_days ≥ STALE_MIN_AGE_DAYS` (default 180 — below this, annualised return is too noisy/extrapolated to judge), **and**
+- `aagr < CAPITAL_HURDLE_PCT` (default 8% — the opportunity-cost hurdle).
+
+`aagr` is the existing annualised **unrealised** return (price-only, entry vs current) from `Position.calculate_financial_metrics()`; the flag is set there as `is_stale`. The `risk_workspace.py` PLAN panel always shows the `Capital: ±x% AAGR over Nd` metric line, and appends a `⏳ STALE … review or redeploy` nudge (suppressed on a stop breach, where the exit directive dominates). Thresholds live in `constants.py`.
+
+**Income-asset exclusion:** Bonds/bills (`AssetRegistry.is_income_asset`, i.e. `PERCENT_OF_PAR_ASSETS`) are never flagged STALE — price-only AAGR ignores coupon and would mislabel a coupon-earning hold as dead money. Revisit if/when AAGR becomes total-return.
+
 ### Technical Implementation
 
-- **`core/risk_engine.py`** section 8 of `calculate_position_risk()` — computes `m1_price`, `m2_price`, `exit_stage`. Fields stored on `Position` object.
-- **`core/portfolio_manager.py`** — `_compute_regime_atr()` module helper (Wilder ATR from price DataFrame); `_enrich_regime()` method sets `trend_regime`, `regime_ratio`, `regime_dma`, `regime_weekly_atr`, `regime_quarterly_atr`, `regime_dma200` on each position. Called as step 4 in `get_dashboard_df()`.
+- **`core/stop_loss.py`** — `calculate_position_risk()` sets `tp_price` (entry-anchored, §3) and calls `profit_taking.compute_exit_milestones()` (§8), which computes `m1_price`, `m2_price`, `exit_stage`. Fields stored on the `Position` object.
+- **`core/profit_taking.py`** — `enrich_regime(positions, mapper)` sets `trend_regime`, `regime_dma`, `regime_dma_signal`, `regime_dma_days`, `regime_dma200` on each position via the 200-DMA consecutive-rising-days signal (TREND gated on price > 200-DMA). `TRIM_MATRIX` holds the `(stage, regime) → (fraction, rationale)` guidance. Called as step 4 in `portfolio_manager.get_dashboard_df()`.
 - **`dashboard.py`** — EXIT column in main grid; EXIT MILESTONES sidebar panel with M1/M2 prices and trim share counts.
 - **`risk_workspace.py`** — PLAN section shows full regime calculation breakdown: raw ATRs, ratio with threshold verdict, 200-DMA level vs current price, DMA signal with consecutive-day count, combined regime verdict, milestone ladder (✓ passed, ◄ current, dim future), and trim action with share count.
 
