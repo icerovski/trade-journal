@@ -115,11 +115,9 @@ In a confirmed TREND the M2 trim is **0% (hold)** by design: trimming a confirme
 
 ### Exit Stages
 
-Milestones are anchored to `entry_price + N × ATR_distance` for **both** stop types, so the ladder is uniform (M1=+1, M2=+2, TP=+3 ATRs from entry):
-- **FIXED stop:** `ATR_distance = inception_atr` (the ATR at the time of first entry — the original risk unit). Falls back to `entry − final_sl` if inception_atr is unavailable.
-- **TRAILING stop:** `ATR_distance = live ATR dollar width` (current trailing distance).
+Milestones are anchored to `entry_price + N × R`, where `R` is the **inception ATR** (the ATR/risk unit at first entry) for **both** stop types. The ladder is uniform — M1=+1R, M2=+2R, TP=+3R from entry — and measures profit in *R-multiples*. Falls back to `entry − final_sl` if inception_atr is unavailable.
 
-The TP is intentionally **entry-anchored, not stop-anchored**. Anchoring TP to the ratcheted stop made it collide with M2 at inception (`stop = entry − ATR ⇒ stop + 3×ATR = entry + 2×ATR`). In a confirmed trend the TP is extended manually via the TP-stage guidance, not automatically.
+For TRAILING stops the ladder deliberately uses the **inception ATR, not the live trailing distance**. The live ATR governs only where the *stop* sits; using it for the reward ladder made the milestones drift away as volatility expanded (e.g. AVGO: live ATR 88 vs inception 57 pushed M1 to entry+88 ≈ 449, mislabelling a +33% winner as an early stage). The TP is also **entry-anchored, not stop-anchored** — anchoring to the ratcheted stop made it collide with M2 at inception. In a confirmed trend the TP is extended manually via the TP-stage guidance, not automatically.
 
 | Stage  | Trigger                    | Action                         |
 |--------|---------------------------|-------------------------------|

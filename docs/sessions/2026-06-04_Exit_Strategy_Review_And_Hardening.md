@@ -28,6 +28,18 @@ update all documentation including the F1 in-app help.
   `_ensure_utf8_console()` to reconfigure stdout/stderr to UTF-8 with `backslashreplace`,
   degrading unencodable characters instead of crashing. The file handler was already UTF-8.
 
+### Post-review fixes (live-data findings)
+- **Milestone/TP drift on TRAILING stops** (`core/stop_loss.py`) — milestones and TP for
+  trailing stops used the *live* ATR, so as volatility expanded the ladder drifted away
+  from price (AVGO: live ATR 88 vs inception 57 pushed M1 to entry+88 ≈ 449, mislabelling
+  a +33% winner as M1). Now both stop types anchor the ladder/TP to the **inception ATR**
+  (the original R unit); the live ATR governs only the stop. The panel efficiency RR uses
+  the same R unit so it stays consistent with `pos.rr_ratio`. AVGO now reads M2/TREND.
+- **AAGR display** (`ui/risk_workspace.py`) — relabelled the PLAN metric to `Return: ±x%
+  total · ±y%/yr · Nd`. Total return (always meaningful) leads; the annualised figure is
+  tagged `prelim` and dimmed below the 180-day horizon, where it is wild extrapolation
+  (a 2-month winner annualises to absurd %). Line now shows for any real holding (qty>0).
+
 ### Strategy refinements (approved via Q&A)
 - **Q1 — No M2 trim in TREND** — `TRIM_MATRIX[('M2','TREND')]` → `0.0` (hold). A `0.0`
   fraction renders a "Hold — no trim" directive; the trailing stop runs the winner and

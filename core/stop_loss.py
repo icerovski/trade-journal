@@ -131,26 +131,23 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.sl_price = final_sl
 
     # 3. Take Profit
-    # Both stop types anchor TP to entry so the ladder is uniform: M1=+1, M2=+2,
-    # TP=+3 ATRs from entry. (Anchoring TRAILING TP to the ratcheted stop made it
-    # collide with M2 at inception: stop = entry − ATR ⇒ stop + 3·ATR = entry + 2·ATR.)
-    # In a confirmed trend the user manually extends TP via the TP-stage guidance.
-    if s_type == 'FIXED':
-        if inception_atr and inception_atr > 0:
-            atr_for_tp = inception_atr
-        else:
-            atr_for_tp = max(0.0, (position.entry_price or 0.0) - final_sl)
-            if atr_for_tp > 0:
-                logger.warning(
-                    f"[calculate_position_risk] {position.ticker}: inception_atr missing, "
-                    f"using entry-stop distance {atr_for_tp:.4f} for TP"
-                )
-        position.tp_price = (position.entry_price + TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
+    # TP = entry + 3 × R, where R is the ORIGINAL risk unit (inception ATR) for BOTH
+    # stop types, so the ladder is uniform (M1=+1R, M2=+2R, TP=+3R from entry) and
+    # measures profit in R-multiples. For TRAILING this deliberately uses the inception
+    # ATR, not the live trailing distance: anchoring to live ATR makes the milestones
+    # drift away as volatility expands (e.g. AVGO live ATR 88 vs inception 57 pushed M1
+    # to entry+88). The live ATR governs only where the trailing STOP sits, not the
+    # reward ladder. In a confirmed trend the user manually extends TP via TP-stage guidance.
+    if inception_atr and inception_atr > 0:
+        atr_for_tp = inception_atr
     else:
-        position.tp_price = (
-            (position.entry_price + TP_ATR_MULTIPLE * atr)
-            if position.entry_price else (final_sl + TP_ATR_MULTIPLE * atr)
-        )
+        atr_for_tp = max(0.0, (position.entry_price or 0.0) - final_sl)
+        if atr_for_tp > 0:
+            logger.warning(
+                f"[calculate_position_risk] {position.ticker}: inception_atr missing, "
+                f"using entry-stop distance {atr_for_tp:.4f} for TP/milestones"
+            )
+    position.tp_price = (position.entry_price + TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
 
     # 4. Percentage Metrics
     if position.current_price > 0:
@@ -177,12 +174,9 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     else:
         position.sl_pct_base = (atr / stop_base * 100) if stop_base > 0 else 0
 
-    # 8. Exit milestones
-    if s_type == 'FIXED':
-        atr_dist = inception_atr if (inception_atr and inception_atr > 0) \
-                   else max(0.0, (position.entry_price or 0.0) - final_sl)
-    else:
-        atr_dist = atr
+    # 8. Exit milestones — same R unit as TP (inception ATR) for both stop types, so the
+    # ladder reflects profit in units of original risk rather than drifting with live vol.
+    atr_dist = atr_for_tp
     compute_exit_milestones(position, atr_dist)
 
     return position

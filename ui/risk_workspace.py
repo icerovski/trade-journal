@@ -646,11 +646,14 @@ class RiskWorkspace(App):
                 effective_atr = hypo_atr if hypo_atr is not None else pos.atr
 
             atr_width = effective_atr
-            # TP is entry-anchored (entry + TP_ATR_MULTIPLE × ATR) for both stop types,
-            # matching pos.tp_price and the M1/M2/TP ladder. This keeps the audit-panel
-            # RR and the exit-stage efficiency floor from showing divergent numbers,
-            # while staying modeling-aware (uses active_entry / atr_width).
-            tp_target = active_entry + (TP_ATR_MULTIPLE * atr_width)
+            # TP is anchored to entry + TP_ATR_MULTIPLE × R, where R is the ORIGINAL risk
+            # unit (inception ATR) — same as pos.tp_price and the M1/M2/TP ladder — so the
+            # audit-panel RR and the exit-stage efficiency floor never diverge. The live
+            # trailing ATR (atr_width) governs the stop, not the reward target. Falls back
+            # to entry-stop distance, and stays modeling-aware via active_entry/effective_stop.
+            r_unit = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) \
+                     else max(0.0, (active_entry or 0) - (effective_stop or active_entry or 0))
+            tp_target = active_entry + (TP_ATR_MULTIPLE * r_unit)
             efficiency = ((tp_target - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
 
             # 2. Build Execution Plan
@@ -772,14 +775,23 @@ class RiskWorkspace(App):
                 if res.get('shares_to_trim') is not None and res['shares_to_trim'] >= 1:
                     remediation_str += f"  B) Trim [bold yellow]{int(res['shares_to_trim'])}[/] sh (keep stop @ {effective_stop:,.2f})"
 
-            # Capital-efficiency metric: annualised unrealised return vs the hurdle.
-            # Always shown for real holdings; the STALE badge mirrors pos.is_stale.
-            if pos.age_days > 0 and pos.qty > 0:
-                aagr_c = "green" if pos.aagr >= CAPITAL_HURDLE_PCT else ("yellow" if pos.aagr >= 0 else "red")
+            # Capital-efficiency metric. Total return is always meaningful; the annualised
+            # figure (AAGR) is only decision-useful past the hurdle horizon — below that it
+            # is wild extrapolation (a 2-month winner annualises to absurd %), so it is
+            # dimmed and tagged 'prelim'. STALE badge mirrors pos.is_stale.
+            if pos.qty > 0 and pos.entry_price > 0:
+                ret_c = "green" if pos.pl_pct >= 0 else "red"
+                if pos.age_days >= STALE_MIN_AGE_DAYS:
+                    ann_c = "green" if pos.aagr >= CAPITAL_HURDLE_PCT else ("yellow" if pos.aagr >= 0 else "red")
+                    ann_str = f"[{ann_c}]{pos.aagr:+.0f}%/yr[/]"
+                elif pos.age_days > 0:
+                    ann_str = f"[dim]{pos.aagr:+.0f}%/yr prelim[/]"
+                else:
+                    ann_str = "[dim]—[/]"
                 stale_badge = " [bold reverse red] STALE [/]" if getattr(pos, 'is_stale', False) else ""
                 capital_str = (
-                    f"  - Capital: [bold {aagr_c}]{pos.aagr:+.1f}% AAGR[/] over {pos.age_days}d "
-                    f"(hurdle {CAPITAL_HURDLE_PCT:.0f}%, ≥{STALE_MIN_AGE_DAYS}d){stale_badge}\n"
+                    f"  - Return: [bold {ret_c}]{pos.pl_pct:+.1f}%[/] total · {ann_str} · {pos.age_days}d "
+                    f"[dim](hurdle {CAPITAL_HURDLE_PCT:.0f}%/yr ≥{STALE_MIN_AGE_DAYS}d)[/]{stale_badge}\n"
                 )
             else:
                 capital_str = ""

@@ -209,8 +209,11 @@ class HelpScreen(ModalScreen):
 
                         "[bold cyan]── EXIT STAGES ─────────────────────────────────────────────────────────[/]\n\n"
                         "Milestones form a uniform ladder anchored to entry for BOTH stop types:\n"
-                        "M1 = entry + 1×ATR, M2 = entry + 2×ATR, TP = entry + 3×ATR. (The ATR unit is\n"
-                        "the Inception ATR for Fixed stops, the live trailing distance for Trailing.)\n\n"
+                        "M1 = entry + 1×R, M2 = entry + 2×R, TP = entry + 3×R, where R is the\n"
+                        "[bold]Inception ATR[/] — the original risk you took at entry. Profit is therefore\n"
+                        "measured in R-multiples. For a trailing stop the live ATR only sets where the\n"
+                        "STOP sits; it does not move the reward ladder (which would otherwise drift\n"
+                        "away as volatility expands and mislabel a healthy winner).\n\n"
                         " Stage    │ Trigger                  │ Action\n"
                         "──────────┼──────────────────────────┼──────────────────────────────────\n"
                         " [dim]PRE-M1[/]  │ price < entry + 1×ATR    │ Hold — stop is the only exit\n"

@@ -107,17 +107,23 @@ def test_exit_milestones_falls_back_to_mark_price():
 
 # --- TP anchoring in calculate_position_risk (#1 regression) ---------------
 
-def test_trailing_tp_is_entry_anchored(monkeypatch):
-    """Regression: TRAILING TP used to be stop-anchored (final_sl + 3*ATR), which at
-    inception equals M2. It must be entry-anchored so the ladder stays uniform."""
+def test_trailing_ladder_uses_inception_atr_not_live(monkeypatch):
+    """Regression (AVGO): the TRAILING ladder/TP must use the inception ATR (original R),
+    not the live trailing ATR. Otherwise the milestones drift away as volatility expands
+    and a healthy winner gets mislabelled as an early stage. The live ATR sets only the
+    stop. Also covers the prior stop-anchored TP collision (TP must not equal M2)."""
     monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
-    atr = 5.0
-    p = _pos(entry_price=100.0, current_price=112.0, max_since_entry=112.0)
-    profile = RiskProfile(conid="1", ticker="TST", atr_value=atr, stop_type="TRAILING",
-                          highest_sl=0.0, inception_atr=atr)
+    p = _pos(entry_price=100.0, current_price=130.0, max_since_entry=140.0)
+    # Live ATR (atr_value) = 20 has expanded well beyond the inception ATR (R) = 5.
+    profile = RiskProfile(conid="1", ticker="TST", atr_value=20.0, stop_type="TRAILING",
+                          highest_sl=0.0, inception_atr=5.0)
     calculate_position_risk(p, {"1": profile})
-    assert p.tp_price == pytest.approx(100.0 + TP_ATR_MULTIPLE * atr)  # 115, not 122
+    assert p.tp_price == pytest.approx(115.0)   # entry + 3*inception, not + 3*live (160)
+    assert p.m1_price == pytest.approx(105.0)   # entry + 1*inception, not 120
+    assert p.m2_price == pytest.approx(110.0)
     assert p.tp_price != p.m2_price
+    # The stop still trails on the live ATR: max_since (140) - live ATR (20) = 120.
+    assert p.sl_price == pytest.approx(120.0)
 
 
 def test_fixed_tp_is_entry_anchored(monkeypatch):
