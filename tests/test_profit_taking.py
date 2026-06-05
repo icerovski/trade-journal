@@ -195,6 +195,43 @@ def test_efficiency_floor_suppressed_for_trailing_stop():
     assert "TREND" in out
 
 
+# --- Break-even goal-seek (Strategy Lab "BE") ------------------------------
+
+def test_solve_breakeven_add_voo_case():
+    """VOO: 220 sh @ 520.27, stop 538.68, price 696.05 → add ~26 to push avg cost to the
+    stop (P/L @ Stop = 0)."""
+    from ui.risk_workspace import solve_breakeven_add
+    add = solve_breakeven_add(qty=220, entry=520.27, stop=538.68, price=696.05)
+    assert add == 26
+    # Verify the blended average cost lands on the stop.
+    new_entry = (520.27 * 220 + 696.05 * add) / (220 + add)
+    assert new_entry == pytest.approx(538.68, abs=0.5)
+
+
+def test_solve_breakeven_add_buys_low_to_lower_avg():
+    """Avg cost above the stop: buying below the stop averages the cost down onto it."""
+    add = _be(qty=100, entry=110.0, stop=100.0, price=90.0)
+    assert add == 100
+    new_entry = (110.0 * 100 + 90.0 * add) / (100 + add)
+    assert new_entry == pytest.approx(100.0)
+
+
+def test_solve_breakeven_returns_none_when_unreachable_by_buying():
+    """Avg above stop but price also above stop: no purchase can pull the avg down to the
+    stop (and trimming can't move a WAC), so there is no break-even add."""
+    assert _be(qty=100, entry=110.0, stop=100.0, price=120.0) is None
+
+
+def test_solve_breakeven_no_solution_edge_cases():
+    assert _be(qty=100, entry=110.0, stop=100.0, price=100.0) is None  # price == stop
+    assert _be(qty=0, entry=110.0, stop=100.0, price=120.0) is None     # no position
+
+
+def _be(**kw):
+    from ui.risk_workspace import solve_breakeven_add
+    return solve_breakeven_add(**kw)
+
+
 # --- Capital-efficiency / stale flag (Q2) ----------------------------------
 
 def test_stale_flag_flat_old_position():

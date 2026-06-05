@@ -63,6 +63,19 @@ def _stage_desc(stage: str, regime: str) -> str:
         }.get(regime, _STAGE_DESC['TP'])
     return _STAGE_DESC.get(stage, '')
 
+def solve_breakeven_add(qty: float, entry: float, stop: float, price: float) -> Optional[float]:
+    """Shares to BUY at `price` so the aggregate average cost equals `stop` (P/L @ Stop = 0).
+    Derivation: solve the WAC blend (entry·qty + price·add)/(qty + add) = stop  →
+    add = qty·(entry − stop)/(stop − price). Returns None when no purchase achieves it —
+    price == stop, no current quantity, or the math yields a non-positive add (trimming
+    can't move a weighted-average cost, so break-even is only reachable by buying)."""
+    denom = stop - price
+    if denom == 0 or qty <= 0:
+        return None
+    add = qty * (entry - stop) / denom
+    return round(add) if add > 0 else None
+
+
 def _exit_guidance_str(pos, cur_p: float) -> str:
     stage      = getattr(pos, 'exit_stage', '')
     regime     = getattr(pos, 'trend_regime', 'NORMAL')
@@ -626,18 +639,26 @@ class RiskWorkspace(App):
             self.query_one("#trailing-stop-table", DataTable).clear()
             self.fetch_atr_data(conid)
 
-    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None) -> None:
+    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None, hypo_add: Optional[float] = None, goal_seek: Optional[str] = None) -> None:
         if not self.current_conid:
             return
         pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
         if not pos:
             return
-        
+
         # Prospect Price Recovery: Phantom positions have 0.0 price until cache is checked
         disc = self.discovery_cache.get(self.current_conid)
         cur_p = hypo_entry if hypo_entry is not None else (pos.current_price or pos.mark_price)
         if cur_p == 0 and disc:
             cur_p = disc.get('current_price', 0.0)
+
+        # Quantity modeling (+N / -N / BE goal-seek) transacts at the LIVE market price, not
+        # the modeled entry that stop-analysis anchors to — so an add reflects what you would
+        # actually pay now. active_entry still holds the real average cost for the WAC blend.
+        if hypo_add is not None or goal_seek:
+            market_p = pos.current_price or pos.mark_price
+            if market_p and market_p > 0:
+                cur_p = market_p
 
         active_max_r = hypo_max_r if hypo_max_r is not None else pos.max_r_pct
         active_max_exp = hypo_max_exp if hypo_max_exp is not None else pos.max_exp_pct
@@ -679,11 +700,33 @@ class RiskWorkspace(App):
             tp_target = active_entry + (TP_ATR_MULTIPLE * r_unit)
             efficiency = ((tp_target - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
 
+            # User-driven scenario: an explicit +/- quantity or a goal-seek overrides the
+            # system's recommended adjustment so the sizing table reflects YOUR what-if.
+            modeled_add = None
+            if goal_seek == 'BE':
+                modeled_add = solve_breakeven_add(active_qty, active_entry, effective_stop, cur_p)
+            elif hypo_add is not None:
+                modeled_add = int(hypo_add)
+
             # 2. Build Execution Plan
             exit_stage = getattr(pos, 'exit_stage', '')
             if res['is_breached']:
                 exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
                 target_qty = 0
+            elif modeled_add is not None:
+                target_qty = int(active_qty + modeled_add)
+                verb = "ADD" if modeled_add >= 0 else "TRIM"
+                tag = " (P/L@Stop → 0)" if goal_seek == 'BE' else ""
+                exec_plan = (
+                    f"  - [bold reverse magenta] MODELING: {verb} {abs(int(modeled_add))} SHARES{tag} [/] "
+                    f"@ {cur_p:,.2f} (→ {target_qty} sh)"
+                )
+            elif goal_seek == 'BE':
+                target_qty = int(active_qty)
+                exec_plan = (
+                    f"  - [bold magenta]GOAL-SEEK:[/] P/L@Stop = 0 is not reachable by buying "
+                    f"at {cur_p:,.2f} (would require trimming, which can't move average cost)."
+                )
             else:
                 room = int(res['adjustment'])
                 target_qty = int(pos.qty + room)
@@ -988,7 +1031,19 @@ class RiskWorkspace(App):
             if e_m:
                 m_e = float(e_m.group(1))
                 raw = raw.replace(e_m.group(0), "").strip()
-            
+
+            # Quantity modeling: +N / -N shares at the live price, or BE = solve P/L@Stop → 0.
+            # Parsed before the stop-value regex so the digits in "+26" aren't read as a stop.
+            hypo_add = None
+            goal_seek = None
+            if re.search(r"\bBE\b", raw):
+                goal_seek = 'BE'
+                raw = re.sub(r"\bBE\b", "", raw).strip()
+            add_m = re.search(r"([+\-]\d+(?:\.\d+)?)", raw)
+            if add_m:
+                hypo_add = float(add_m.group(1))
+                raw = raw.replace(add_m.group(1), "").strip()
+
             if 'T' in raw:
                 s_type = "TRAILING"
                 raw = raw.replace('T', "").strip()
@@ -1075,7 +1130,7 @@ class RiskWorkspace(App):
 
             self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
-            self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry)
+            self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek)
             
         except Exception as e:
             logger.error(f"Modeling Error: {e}")

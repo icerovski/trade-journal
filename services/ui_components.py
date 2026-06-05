@@ -52,10 +52,16 @@ class HelpScreen(ModalScreen):
                             "[bold cyan]ACTION TRIGGERS[/]\n"
                             "• [b][on red] Price [/][/]: [bold red]EMERGENCY.[/] Stop breached. Exit position.\n"
                             "• [b][bold cyan]★[/][/]: [bold cyan]TAKE PROFIT HIT.[/] Price reached 3x ATR target.\n"
-                            "• [b][bold red]⚠[/][/]: [bold red]LIMIT EXCEEDED.[/] Risk or Exposure above your Max limit.\n\n"
+                            "• [b][bold red]⚠[/][/]: [bold red]LIMIT EXCEEDED.[/] Risk or Exposure above your Max limit.\n"
+                            "• [b][reverse red] STALE [/][/]: [bold red]DEAD MONEY.[/] Held ≥180d but annual return below the 8% hurdle.\n"
+                            "    [dim]e.g. 'Return: +1.7% total · +1%/yr · 637d  STALE' → review or redeploy.[/]\n"
+                            "• [b][reverse magenta] MODELING [/][/]: a what-if scenario in the PLAN section (nothing saved).\n"
+                            "    [dim]e.g. type 'BE' → 'MODELING: ADD 26 SHARES (P/L@Stop → 0) @ 696.05'.[/]\n\n"
                             "[bold cyan]COLOR METRICS[/]\n"
                             "• [b]Risk (% NAV):[/] [green]< Max R[/] | [yellow]Max R - 1.5x Max R[/] | [red]> 1.5x Max R[/]\n"
+                            "    [dim]e.g. limit 1.0%: 0.6% green, 1.2% yellow, 1.8% red.[/]\n"
                             "• [b]RR (Efficiency):[/] [green]> 3.0[/] | [yellow]1.0 - 3.0[/] | [red]< 1.0[/]\n"
+                            "    [dim]e.g. RR 0.75 (red) = more downside to stop than upside to target.[/]\n"
                         )
                 with TabPane("Metrics & Audit", id="tab-metrics"):
                     with ScrollableContainer(classes="help-scroll"):
@@ -65,12 +71,23 @@ class HelpScreen(ModalScreen):
                             "• [b]Pilot Stop:[/] The 'Roadmap Destination'. The stop price for the [b]entire aggregate position[/] if you were to add shares at current prices.\n"
                             "• [b]Stop Base:[/] Reference point (Avg Cost for Fixed | Max High for Trailing).\n"
                             "• [b]Stop P:[/] Active exit price. Fixed: the literal price you set. Trailing: High − ATR.\n"
+                            "    [dim]e.g. Trailing: High 700 − ATR 88 = Stop 612.[/]\n"
                             "• [b]SL %:[/] Fixed: entry→stop distance as % of entry. Trailing: ATR as % of High.\n"
-                            "• [b]R (% NAV):[/] Risk at Stop. Total potential loss as a % of your portfolio.\n"
-                            "• [b]RR (Efficiency):[/] Reward-to-Risk Ratio. (TP - Price) / (Price - Stop).\n\n"
+                            "• [b]R (% NAV):[/] Risk at Stop. Total potential loss as a % of your portfolio. Negative when the stop is above entry (a stop-out is profitable).\n"
+                            "    [dim]e.g. VOO stop above entry → R = −0.13% (cannot lose at this stop).[/]\n"
+                            "• [b]RR (Efficiency):[/] (TP − Price) / (Price − Stop), where TP = entry + 3×R and R is the inception ATR. RR < 1.0 trips the efficiency floor [b]on FIXED stops only[/] — a trailing stop's exit is the stop itself, not a fixed target.\n"
+                            "    [dim]e.g. (532 − 478) / (478 − 406) = 0.75 → upside < downside.[/]\n\n"
+                            "[bold cyan]RETURN & CAPITAL EFFICIENCY[/]\n"
+                            "• [b]Return (total):[/] Unrealised gain since the true first entry, price-only.\n"
+                            "    [dim]e.g. VOO entry 520 → 696 = +33.8% total.[/]\n"
+                            "• [b]AAGR (per yr):[/] The return annualised. Tagged 'prelim' and dimmed under 180 days held — too short a window to annualise meaningfully.\n"
+                            "    [dim]e.g. +34% over 56d annualises to a meaningless '+533%/yr prelim'.[/]\n"
+                            "• [b][reverse red] STALE [/][/]: Held ≥ 180 days yet AAGR < 8% hurdle — capital not clearing its opportunity cost. Bonds/bills are exempt (price-only ignores their coupon).\n"
+                            "    [dim]e.g. a name flat for 2 years: 'Return: +1.7% · +1%/yr · 637d  STALE'.[/]\n\n"
                             "[bold cyan]DUAL-CONSTRAINT AUDIT[/]\n"
                             "• [b]Risk Limit (Default 1.0%):[/] Potential Loss from Entry to Stop.\n"
                             "• [b]Exposure Limit (Default 5.0%):[/] Total Position Value limit.\n"
+                            "    [dim]e.g. the tighter of the two binds — VOO is capped by Exposure (4.94% of 5.0%), so only ~3 more shares are allowed.[/]\n"
                         )
                 with TabPane("Watch List & Entry", id="tab-watchlist"):
                     with ScrollableContainer(classes="help-scroll"):
@@ -90,7 +107,7 @@ class HelpScreen(ModalScreen):
                         "[bold cyan]═══ HOW TO ENTER A STOP LOSS ════════════════════════════════════════[/]\n\n"
 
                         "The input box accepts a command in this form:\n"
-                        "  [bold cyan]VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x][/]\n\n"
+                        "  [bold cyan]VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [+N/-N]  [BE][/]\n\n"
                         "The tokens can appear in any order. Only the parts you want to change\n"
                         "are required — everything else is preserved from the saved profile.\n\n"
 
@@ -138,6 +155,19 @@ class HelpScreen(ModalScreen):
                         "  [dim]  R:0.5          → max 0.5% of NAV at risk (keeps current E)[/]\n\n"
                         "[bold]E:x — Override exposure limit only[/]\n"
                         "  [dim]  E:4.0          → max 4% of NAV in the position (keeps current R)[/]\n\n"
+
+                        "[bold cyan]─── QUANTITY MODELING (what-if, nothing saved) ──────────────────────[/]\n\n"
+                        "These let you test buying/selling at the [bold]current market price[/] and watch\n"
+                        "the sizing table update P/L@Stop, R%, Exp%, HCM and the new average cost.\n\n"
+                        "[bold]+N / -N — model adding / trimming N shares[/]\n"
+                        "  [dim]  +26            → model buying 26 more shares at the live price\n"
+                        "  -50            → model selling 50 shares[/]\n\n"
+                        "[bold]BE — goal-seek: how many shares to buy so P/L@Stop = 0[/]\n"
+                        "  Solves the buy that pulls your average cost onto the stop, so a stop-out\n"
+                        "  would break even. The sizing table shows the effect — watch Exp%: it may\n"
+                        "  turn red if the required size breaches your exposure limit. If break-even\n"
+                        "  can't be reached by buying (avg already past the stop), it says so.\n"
+                        "  [dim]  BE             → e.g. VOO: 'ADD 26 SHARES (P/L@Stop → 0)'[/]\n\n"
 
                         "[bold cyan]─── COMBINED EXAMPLES ───────────────────────────────────────────────[/]\n\n"
                         "  [dim]20.31 T P:B     → trailing $20.31, standard preset\n"
