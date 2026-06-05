@@ -177,3 +177,37 @@ def test_position_not_in_snapshot_built_from_deltas():
     assert len(positions) == 1
     assert positions[0].qty == 75.0
     assert positions[0].entry_price == pytest.approx(80.0)
+
+
+# ---------------------------------------------------------------------------
+# Inception date healing
+# ---------------------------------------------------------------------------
+
+def _mk_pos(conid="C001", date_entry=None, entry=0.0, inception=0.0, qty=200.0):
+    p = Position(name="Test", ticker="TEST", conid=conid, asset_class="STK", ccy="USD",
+                 date_entry=date_entry, qty=qty, entry_price=entry)
+    p.inception_price = inception
+    return p
+
+
+def test_inception_date_healed_from_global_ledger():
+    """Regression (BXMT): a position accumulated across many dates must take its inception
+    DATE — not just its price — from the consolidated global ledger. A recent re-entry or
+    broker-snapshot date must not override the true first-entry date of a continuous hold."""
+    snap = _mk_pos(date_entry=pd.Timestamp("2026-04-07"), entry=18.50, inception=18.50)
+    gp = _mk_pos(date_entry=pd.Timestamp("2024-09-05"), entry=18.29, inception=18.01)
+
+    RECON._heal_from_ledger(snap, {}, {}, {"C001": gp})
+
+    assert snap.date_entry == pd.Timestamp("2024-09-05")      # healed, not the 2026 re-entry
+    assert snap.inception_price == pytest.approx(18.01)
+    assert snap.entry_price == pytest.approx(18.29)           # global cost basis
+
+
+def test_snapshot_date_preserved_when_no_global_match():
+    """With no ledger history to heal from, the snapshot's own date is left intact."""
+    snap = _mk_pos(date_entry=pd.Timestamp("2026-04-07"), entry=18.50, inception=18.50)
+
+    RECON._heal_from_ledger(snap, {}, {}, {})
+
+    assert snap.date_entry == pd.Timestamp("2026-04-07")

@@ -25,9 +25,9 @@ TRIM_MATRIX = {
         "exit at the first sign of further deterioration."
     )),
     ('TP', 'TREND'):   (0.20, (
-        "Target hit inside a confirmed trend. Take a modest additional trim, then raise your TP "
-        "to stop + 3×weekly ATR to capture the larger structural move. "
-        "The trailing stop remains the ultimate exit — do not close the core position."
+        "Target hit inside a confirmed trend. Take a modest additional trim and let the stop "
+        "carry the rest of the move — the stop, not a fixed target, is the ultimate exit. "
+        "Do not close the core position."
     )),
     ('TP', 'NORMAL'):  (0.33, (
         "Target reached but the trend is not confirmed. Take meaningful profits. "

@@ -46,6 +46,23 @@ _STAGE_DESC = {
     'TP':     "Full 3×ATR target reached. Larger trim or full exit, sized to the trend regime.",
 }
 
+def _stage_desc(stage: str, regime: str) -> str:
+    """Stage description, regime-aware for M2/TP so the blurb matches the action directive
+    below it (e.g. M2 in a confirmed TREND is hold, not trim)."""
+    if stage == 'M2':
+        return {
+            'TREND':   "Two ATRs of profit banked. In a confirmed trend, hold — let the trailing stop run the winner and bank at the target.",
+            'NORMAL':  "Two ATRs of profit banked. Take partial profits (about a third) and let the remainder run.",
+            'RANGING': "Two ATRs of profit banked. No structural support — protect gains by trimming about half.",
+        }.get(regime, _STAGE_DESC['M2'])
+    if stage == 'TP':
+        return {
+            'TREND':   "Full 3R target reached in a confirmed trend. Take a modest slice and let the rest run on its stop.",
+            'NORMAL':  "Full 3R target reached. Take meaningful profits (about a third); keep a runner only while RR stays above 1.0.",
+            'RANGING': "Full 3R target reached with no structural support. Close the position in full.",
+        }.get(regime, _STAGE_DESC['TP'])
+    return _STAGE_DESC.get(stage, '')
+
 def _exit_guidance_str(pos, cur_p: float) -> str:
     stage      = getattr(pos, 'exit_stage', '')
     regime     = getattr(pos, 'trend_regime', 'NORMAL')
@@ -149,9 +166,14 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
             action = ""
 
     rr = getattr(pos, 'rr_ratio', 0.0)
-    # Efficiency floor applies only at M2/TP — at M1 a sub-1.0 RR is expected when
-    # the stop has been raised to lock in profits, which is the correct M1 action.
-    if stage in ('M2', 'TP') and 0 < rr < 1.0:
+    stop_type = getattr(pos, 'stop_type', 'FIXED')
+    # Efficiency floor is a FIXED-stop concept: it compares a defined target to a defined
+    # stop. A TRAILING stop has no real target — its exit IS the stop, and the +3R level is
+    # only a checkpoint — so a sub-1.0 RR there is an artifact (wide live-ATR stop vs a fixed
+    # entry-anchored TP) and must not force an exit. For trailing stops the milestone ladder
+    # and regime trims stand on their own and the stop is monitored directly.
+    # Also skipped at M1, where a sub-1.0 RR is the expected result of raising the stop to entry.
+    if stop_type == 'FIXED' and stage in ('M2', 'TP') and 0 < rr < 1.0:
         dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
         dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
         profitable_stop = sl > pos.entry_price
@@ -172,19 +194,20 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
             )
         else:
             # TREND / NORMAL: holding is defensible, so tighten-and-hold stays co-equal.
-            stop_note = (
-                f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.\n"
-                f"  Consider raising the stop to restore RR ≥ 1.0 instead of exiting.[/]\n"
+            # The stop that restores RR = 1.0 is where downside equals upside: SL = 2P − TP.
+            restore_sl = (2 * cur_p - tp) if (tp > 0 and cur_p > 0) else 0.0
+            profit_note = (
+                f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.[/]\n"
             ) if profitable_stop else ""
             action = (
                 f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered.[/]\n"
                 f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
                 f"  Remaining upside is smaller than remaining downside.[/]\n"
-                f"{stop_note}"
-                f"  [bold red]→ Exit all shares, or raise stop to restore RR ≥ 1.0.[/]\n"
+                f"{profit_note}"
+                f"  [bold red]→ Exit all shares, or raise stop to [bold]{restore_sl:,.2f}[/] (restores RR ≥ 1.0).[/]\n"
             )
 
-    stage_desc = _STAGE_DESC.get(stage, '')
+    stage_desc = _stage_desc(stage, regime)
     return (
         f"\n──────────────────────────────────────────\n"
         f"EXIT STAGE: [{sc}][bold]{stage}[/][/]   "

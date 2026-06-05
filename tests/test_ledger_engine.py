@@ -1,4 +1,5 @@
 import pytest
+import pandas as pd
 from models import Trade
 from core.ledger_engine import LedgerEngine
 
@@ -74,6 +75,9 @@ def test_full_exit_then_reentry_resets_cost_basis():
     assert p.qty == 50.0
     assert p.entry_price == pytest.approx(80.0)
     assert p.inception_price == pytest.approx(80.0)   # new inception after reset
+    # Inception DATE must reset to the re-entry, not the original 2024-01-01 entry.
+    # The reconciliation date-healing relies on this (see BXMT regression).
+    assert p.date_entry == pd.Timestamp("2024-02-01")
 
 
 def test_full_exit_produces_no_position():

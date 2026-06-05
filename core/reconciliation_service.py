@@ -133,15 +133,24 @@ class ReconciliationService:
         elif lp and (not pos.entry_price or pos.entry_price == 0):
             pos.entry_price = lp.entry_price
 
-        # 2. Date and Multiplier Healing
-        if lp:
-            if not pos.date_entry or pd.isna(pos.date_entry):       
-                pos.date_entry = lp.date_entry
-            if not pos.multiplier or pos.multiplier == 1.0:
-                pos.multiplier = lp.multiplier
-            
-        # 3. Inception Healing: Always trace back to the very first global purchase
-        pos.inception_price = gp.inception_price if gp else (lp.inception_price if lp else pos.entry_price)
+        # 2. Multiplier Healing
+        if lp and (not pos.multiplier or pos.multiplier == 1.0):
+            pos.multiplier = lp.multiplier
+
+        # 3. Inception Healing: Always trace back to the very first global purchase.
+        # The inception DATE must come from the SAME account-agnostic global position as the
+        # inception PRICE — otherwise a recent re-entry or the broker snapshot date
+        # misrepresents how long the position has truly been held. (BXMT, accumulated across
+        # 2024-2026, reported 58d instead of its 2024-09-05 inception because only the price
+        # was healed.) The consolidated global replay already honours reset-on-zero, so a
+        # position that genuinely went flat and was reopened still dates from its reopening.
+        src = gp or lp
+        if src:
+            pos.inception_price = src.inception_price
+            if src.date_entry and pd.notnull(src.date_entry):
+                pos.date_entry = src.date_entry
+        else:
+            pos.inception_price = pos.entry_price
 
     def _apply_intraday_deltas(self, pos: Position, deltas: List[Trade], ledger_engine) -> None:
         """Applies relevant intraday trades to a position's quantity and cost basis."""

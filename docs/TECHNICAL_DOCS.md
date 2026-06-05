@@ -126,7 +126,9 @@ For TRAILING stops the ladder deliberately uses the **inception ATR, not the liv
 | M2     | price ≥ entry + 2×ATR     | Partial trim by regime         |
 | TP     | price ≥ entry + 3×ATR     | Larger trim by regime; extend target in TREND |
 
-**Efficiency Floor (overrides all stages):** If RR (Efficiency) drops below 1.0 at any time, exit all remaining shares. This fires when price reverses toward the stop from the TP zone — remaining reward no longer justifies open risk.
+**Efficiency Floor (FIXED stops only):** If RR (Efficiency) drops below 1.0 at M2/TP on a **FIXED-stop** position, the remaining reward no longer justifies the open risk → in RANGING exit all; in TREND/NORMAL exit all *or* raise the stop to restore RR ≥ 1.0 (the panel prints the exact stop = `2·P − TP`). Skipped at M1 (a sub-1.0 RR there is the expected result of moving the stop to entry).
+
+The floor does **not** apply to TRAILING stops. A trailing stop has no real target — its exit *is* the stop, and the +3R level is only a checkpoint. A sub-1.0 RR there is an artifact of comparing a fixed entry-anchored TP against a stop that trails on the (often wider) live ATR; forcing an exit on it would cut a trend short. Trailing positions are managed by the stop directly, with the milestone ladder and regime trims as the profit-taking overlay (checkpoints-for-trims).
 
 ### Capital-Efficiency Flag (Dead Money)
 
