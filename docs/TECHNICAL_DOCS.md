@@ -165,9 +165,44 @@ Orthogonal to the ATR exit ladder — it answers "is this capital working?", not
 - **`core/stop_loss.py`** — `calculate_position_risk()` sets `tp_price` (entry-anchored, §3) and calls `profit_taking.compute_exit_milestones()` (§8), which computes `m1_price`, `m2_price`, `exit_stage`. Fields stored on the `Position` object.
 - **`core/profit_taking.py`** — `enrich_regime(positions, mapper)` sets `trend_regime`, `regime_dma`, `regime_dma_signal`, `regime_dma_days`, `regime_dma200` on each position via the 200-DMA consecutive-rising-days signal (TREND gated on price > 200-DMA). `TRIM_MATRIX` holds the `(stage, regime) → (fraction, rationale)` guidance. Called as step 4 in `portfolio_manager.get_dashboard_df()`.
 - **`dashboard.py`** — EXIT column in main grid; EXIT MILESTONES sidebar panel with M1/M2 prices and trim share counts.
-- **`risk_workspace.py`** — PLAN section shows full regime calculation breakdown: raw ATRs, ratio with threshold verdict, 200-DMA level vs current price, DMA signal with consecutive-day count, combined regime verdict, milestone ladder (✓ passed, ◄ current, dim future), and trim action with share count.
+- **`risk_workspace.py`** — the exit ladder is one input to the reconciled verdict that leads the asset context window (see §6). The full regime-calculation breakdown (raw ATRs, 200-DMA level vs current price, DMA signal with consecutive-day count, combined regime verdict) and the trim-action prose now live in that panel's demoted **DETAILS** block; the milestone ladder (✓ passed, ◄ current, dim future) sits in the top metric strip.
 
 ### Portfolio Risk Report (Menu Option 7)
 
 - **`core/portfolio_analytics.py`** — Pure computation module. Inputs: enriched positions DataFrame. Outputs: `total_stop_out` (Σ Risk_Val × FXRate in NAV currency), `total_r_pct` (Σ risk_pct_nav), `total_e_pct` (Σ NavPct), `headroom`, `pct_budget_used`, HHI concentration index, currency breakdown, breached tickers, unmanaged positions list.
 - **`portfolio_risk.py`** — Rich console display: panel header with NAV/count/breach flags, AGGREGATE RISK table, CONCENTRATION (top-5 by exposure and risk), CURRENCY EXPOSURE table, unmanaged positions warning.
+
+---
+
+## 6. Reconciled Verdict & the Asset Context Window
+
+Every open position is judged on **three independent axes**, and the risk workspace reconciles them into a *single* directive rather than showing them raw:
+
+| Axis | Question | Source |
+|---|---|---|
+| **Exposure / sizing** | Do I have capital room to add? | `audit_position_risk` → `adjustment` (the tighter of the R and exposure constraints) |
+| **Risk (R %)** | Is my downside within budget? | same audit |
+| **Exit ladder** | A winner at its target — bank or run? | `profit_taking` stage × regime (§5) |
+
+These axes are orthogonal *inputs* but must collapse to one action. Left unreconciled they contradict each other: raising the exposure limit opens sizing room, so the ACTION column would say "+44.7% ADD" while the exit ladder — which is independent of exposure — still says "trim at TP". The ★ in the table is purely a *target marker* (`current ≥ tp_price`); it cannot move with exposure.
+
+### The reconciliation fundamental
+
+> Exposure headroom sizes a **new or early** position. It is never licence to add to a winner that has reached a profit-taking stage.
+
+Precedence, strict order: **breach → urgent RR-floor exit → exit-stage ladder → sizing add/trim → hold.** At an exit stage the ladder governs and any exposure headroom is reported but muted ("3.4% exposure room exists, but no adds at target"). This is enforced in both the panel verdict and the table **ACTION** column, so the row and the panel can never disagree.
+
+### Single source of truth
+
+`risk_workspace._exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type)` is a **pure function** returning the structured exit directive `{verb, color, headline, shares, pct, restore_sl, urgent, reason}` (or `None` when no stage). It encodes M1 (make risk-free, never sell), the FIXED-only RR efficiency floor (§5), and the `TRIM_MATRIX`. It drives **all three** consumers — the panel verdict line, the detailed exit-guidance prose, and the table ACTION cell — so the headline action and its justification cannot drift. `_trim_shares()` is the shared whole-share rounding (never rounds a genuine trim to zero, never exceeds holdings).
+
+### Panel layout (verdict-led)
+
+The asset context window (`#position-context`, built in `refresh_risk_checklist`) is ordered by decision weight:
+
+1. **▶ VERDICT** — the one reconciled directive + a one-line rationale (and a `⏳ STALE` nudge when applicable).
+2. **Metric strip** — `R · Exp · RR · stop-buffer` on a single line, then the **M1/M2/TP ladder** (`_ladder_str`).
+3. **Sizing-impact table** — the `INFO / BAL-BEG / ADD / BALANCE` projection, shown only when there is a real add/trim or an active `+N / -N / BE` model (gated on `net_action ≠ 0`).
+4. **DETAILS** — demoted diagnostics: capital-efficiency line, inception stop/ATR with vol delta, R-compliance remediation, and the full regime-calculation breakdown + exit prose.
+
+The verdict is modeling-aware: an explicit `+N / -N` or a `BE` goal-seek overrides the system directive so the panel reflects the user's what-if.

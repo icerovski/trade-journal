@@ -76,6 +76,89 @@ def solve_breakeven_add(qty: float, entry: float, stop: float, price: float) -> 
     return round(add) if add > 0 else None
 
 
+def _trim_shares(qty: float, pct: float) -> float:
+    """Whole-share lots: round to nearest, never exceed holdings, never round a genuine
+    trim down to zero. Fractional lots (bonds/options) keep the fractional figure."""
+    raw = qty * pct
+    return min(int(qty), max(1, round(raw))) if qty >= 1 else round(raw, 4)
+
+
+def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type) -> Optional[dict]:
+    """Single source of truth for the profit-taking directive at an exit stage.
+
+    Returns a dict {verb, color, headline, shares, pct, restore_sl, urgent, reason} or
+    None when the position carries no exit stage. Pure — drives BOTH the one-line verdict
+    (panel header + table ACTION column) and the detailed exit-guidance prose, so the
+    headline action and the justification below it can never diverge.
+
+    Precedence within the exit axis mirrors the trading logic: M1 makes the position
+    risk-free (never sells); a sub-1.0 RR efficiency floor on a FIXED M2/TP stop forces an
+    exit; otherwise the TRIM_MATRIX maps (stage, regime) → trim fraction (0.0 == let it run).
+    """
+    if not stage:
+        return None
+    sl = sl or 0.0
+    tp = tp or 0.0
+
+    # M1: make the position risk-free — never sell here.
+    if stage == 'M1':
+        if sl > entry:
+            return {'verb': 'HOLD', 'color': 'cyan', 'shares': 0, 'pct': 0.0,
+                    'restore_sl': None, 'urgent': False,
+                    'headline': 'HOLD — stop already locks in profit',
+                    'reason': f'Stop {sl:,.2f} locks +{sl - entry:.2f}/sh. Risk-free; monitor for M2.'}
+        return {'verb': 'STOP→ENTRY', 'color': 'cyan', 'shares': 0, 'pct': 0.0,
+                'restore_sl': entry, 'urgent': False,
+                'headline': f'RAISE STOP to entry ({entry:,.2f}) — do not sell',
+                'reason': 'Makes the position risk-free; hold the full position.'}
+
+    # RR efficiency floor (FIXED M2/TP only): remaining upside has shrunk below downside.
+    if stop_type == 'FIXED' and stage in ('M2', 'TP') and 0 < rr < 1.0:
+        if regime == 'RANGING':
+            return {'verb': 'EXIT', 'color': 'red', 'shares': int(qty), 'pct': 1.0,
+                    'restore_sl': None, 'urgent': True,
+                    'headline': f'EXIT all — RR {rr:.2f}, no support',
+                    'reason': 'Remaining upside < downside and no trend to justify the hold.'}
+        restore_sl = (2 * cur_p - tp) if (tp > 0 and cur_p > 0) else 0.0
+        return {'verb': 'EXIT', 'color': 'red', 'shares': int(qty), 'pct': 1.0,
+                'restore_sl': restore_sl, 'urgent': True,
+                'headline': f'EXIT all, or raise stop to {restore_sl:,.2f} — RR {rr:.2f}',
+                'reason': 'Remaining upside is smaller than remaining downside.'}
+
+    # TRIM_MATRIX: (stage, regime) → (fraction, rationale). 0.0 == hold / let it run.
+    key = (stage, regime)
+    if key in TRIM_MATRIX:
+        pct, desc = TRIM_MATRIX[key]
+        if pct <= 0:
+            return {'verb': 'HOLD', 'color': 'green', 'shares': 0, 'pct': 0.0,
+                    'restore_sl': None, 'urgent': False,
+                    'headline': 'HOLD — let it run', 'reason': desc}
+        shares = _trim_shares(qty, pct)
+        return {'verb': 'TRIM', 'color': 'yellow', 'shares': shares, 'pct': pct,
+                'restore_sl': None, 'urgent': False,
+                'headline': f'TRIM ~{shares} sh ({int(pct * 100)}%)', 'reason': desc}
+    return None
+
+
+def _ladder_str(stage, m1, m2, tp) -> str:
+    """One-line M1/M2/TP milestone ladder with the current stage marked (◄) and passed
+    milestones checked (✓)."""
+    sc = _STAGE_C.get(stage, 'white')
+    order = ('PRE-M1', 'M1', 'M2', 'TP')
+    cur_idx = order.index(stage) if stage in order else 0
+
+    def _ms(label, price, idx):
+        if price <= 0:
+            return f"[dim]{label}: ---[/]"
+        if idx < cur_idx:
+            return f"[green]{label}: {price:,.2f} ✓[/]"
+        if idx == cur_idx:
+            return f"[{sc}][bold]{label}: {price:,.2f} ◄[/][/]"
+        return f"[dim]{label}: {price:,.2f}[/]"
+
+    return f"  {_ms('M1', m1, 1)}   {_ms('M2', m2, 2)}   {_ms('TP', tp, 3)}"
+
+
 def _exit_guidance_str(pos, cur_p: float) -> str:
     stage      = getattr(pos, 'exit_stage', '')
     regime     = getattr(pos, 'trend_regime', 'NORMAL')
@@ -92,21 +175,6 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
 
     sc = _STAGE_C.get(stage, 'white')
     rc = _REGIME_C.get(regime, 'white')
-
-    # ── Milestone ladder ──────────────────────────────────────────────────────
-    order   = ('PRE-M1', 'M1', 'M2', 'TP')
-    cur_idx = order.index(stage) if stage in order else 0
-
-    def _ms(label, price, idx):
-        if price <= 0:
-            return f"[dim]{label}: ---[/]"
-        if idx < cur_idx:
-            return f"[green]{label}: {price:,.2f} ✓[/]"
-        if idx == cur_idx:
-            return f"[{sc}][bold]{label}: {price:,.2f} ◄[/][/]"
-        return f"[dim]{label}: {price:,.2f}[/]"
-
-    ladder = (f"  {_ms('M1', m1, 1)}   {_ms('M2', m2, 2)}   {_ms('TP', tp, 3)}\n")
 
     # ── Regime calculation breakdown ─────────────────────────────────────────
     dma_c = 'green' if dma_signal == 'BUY' else ('red' if dma_signal == 'SELL' else 'yellow')
@@ -138,62 +206,45 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
         f"  DMA signal: [{dma_c}]{dma_signal} ({dma_days}d)[/]  →  {verdict}\n"
     )
 
-    # ── Action ────────────────────────────────────────────────────────────────
+    # ── Action ── single-sourced from _exit_recommendation so this detailed prose and
+    # the one-line verdict in the panel header can never disagree. The efficiency-floor
+    # (sub-1.0 RR) exit is a FIXED-stop concept handled inside the recommendation: a
+    # TRAILING stop has no real target so its sub-1.0 RR is an artifact, and M1 is exempt
+    # because raising the stop to entry is expected to produce a sub-1.0 RR.
     sl = getattr(pos, 'sl_price', None) or 0.0
-    if stage == 'M1':
-        if sl > pos.entry_price:
-            locked = sl - pos.entry_price
-            action = (
-                f"\n  [bold cyan]→ Stop already above entry — position is risk-free.[/]\n"
-                f"  [dim]Your stop at {sl:,.2f} locks in a minimum profit of +{locked:.2f}/sh.\n"
-                f"  No action needed at this stage. Hold and monitor for M2.[/]\n"
-            )
-        else:
-            action = (
-                f"\n  [bold cyan]→ Move stop to entry ({pos.entry_price:,.2f}) — do not sell any shares.[/]\n"
-                f"  [dim]The position is now risk-free. The stop at entry means you exit at break-even\n"
-                f"  at worst, regardless of what happens next. Hold the full position.[/]\n"
-            )
-    else:
-        key = (stage, regime)
-        if key in TRIM_MATRIX:
-            pct, desc = TRIM_MATRIX[key]
-            if pct <= 0:
-                # Hold directive (e.g. M2 in a confirmed TREND): no trim, let it run.
-                action = (
-                    f"\n  [bold green]→ Hold — no trim.[/]\n"
-                    f"  [dim]{desc}[/]\n"
-                )
-            else:
-                # Whole-share lots: round to nearest share, never exceed holdings, and
-                # never round a genuine trim down to zero. Fractional lots (bonds/options
-                # measured in fractional units) keep the fractional figure rather than
-                # being inflated to a full unit.
-                raw = pos.qty * pct
-                shares = min(int(pos.qty), max(1, round(raw))) if pos.qty >= 1 else round(raw, 4)
-                action = (
-                    f"\n  [bold]→ Sell ~{shares} sh ({int(pct * 100)}%)[/]\n"
-                    f"  [dim]{desc}[/]\n"
-                )
-        else:
-            action = ""
-
+    entry = pos.entry_price
     rr = getattr(pos, 'rr_ratio', 0.0)
-    stop_type = getattr(pos, 'stop_type', 'FIXED')
-    # Efficiency floor is a FIXED-stop concept: it compares a defined target to a defined
-    # stop. A TRAILING stop has no real target — its exit IS the stop, and the +3R level is
-    # only a checkpoint — so a sub-1.0 RR there is an artifact (wide live-ATR stop vs a fixed
-    # entry-anchored TP) and must not force an exit. For trailing stops the milestone ladder
-    # and regime trims stand on their own and the stop is monitored directly.
-    # Also skipped at M1, where a sub-1.0 RR is the expected result of raising the stop to entry.
-    if stop_type == 'FIXED' and stage in ('M2', 'TP') and 0 < rr < 1.0:
+    rec = _exit_recommendation(stage, regime, pos.qty, entry, sl, tp, cur_p, rr,
+                               getattr(pos, 'stop_type', 'FIXED'))
+    if rec is None:
+        action = ""
+    elif rec['verb'] == 'STOP→ENTRY':
+        action = (
+            f"\n  [bold cyan]→ Move stop to entry ({entry:,.2f}) — do not sell any shares.[/]\n"
+            f"  [dim]The position is now risk-free. The stop at entry means you exit at break-even\n"
+            f"  at worst, regardless of what happens next. Hold the full position.[/]\n"
+        )
+    elif rec['verb'] == 'HOLD' and stage == 'M1':
+        action = (
+            f"\n  [bold cyan]→ Stop already above entry — position is risk-free.[/]\n"
+            f"  [dim]Your stop at {sl:,.2f} locks in a minimum profit of +{sl - entry:.2f}/sh.\n"
+            f"  No action needed at this stage. Hold and monitor for M2.[/]\n"
+        )
+    elif rec['verb'] == 'HOLD':
+        action = (
+            f"\n  [bold green]→ Hold — no trim.[/]\n"
+            f"  [dim]{rec['reason']}[/]\n"
+        )
+    elif rec['verb'] == 'TRIM':
+        action = (
+            f"\n  [bold]→ Sell ~{rec['shares']} sh ({int(rec['pct'] * 100)}%)[/]\n"
+            f"  [dim]{rec['reason']}[/]\n"
+        )
+    else:  # EXIT — RR efficiency floor
         dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
         dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
-        profitable_stop = sl > pos.entry_price
-        if regime == 'RANGING':
-            # No structural support: tightening the stop to manufacture RR ≥ 1.0 just
-            # invites a whipsaw exit at a worse price. Full exit is the sole directive;
-            # tighten-and-hold is not offered here.
+        profitable_stop = sl > entry
+        if rec['restore_sl'] is None:  # RANGING — no structural support; tighten-and-hold not offered
             stop_note = (
                 f"  [dim]The stop ({sl:,.2f}) is above entry, so a stop-out is still profitable — "
                 f"but with no trend there is nothing to justify holding for the thin upside.[/]\n"
@@ -206,9 +257,6 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
                 f"  [bold red]→ Exit all shares.[/]\n"
             )
         else:
-            # TREND / NORMAL: holding is defensible, so tighten-and-hold stays co-equal.
-            # The stop that restores RR = 1.0 is where downside equals upside: SL = 2P − TP.
-            restore_sl = (2 * cur_p - tp) if (tp > 0 and cur_p > 0) else 0.0
             profit_note = (
                 f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.[/]\n"
             ) if profitable_stop else ""
@@ -217,7 +265,7 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
                 f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
                 f"  Remaining upside is smaller than remaining downside.[/]\n"
                 f"{profit_note}"
-                f"  [bold red]→ Exit all shares, or raise stop to [bold]{restore_sl:,.2f}[/] (restores RR ≥ 1.0).[/]\n"
+                f"  [bold red]→ Exit all shares, or raise stop to [bold]{rec['restore_sl']:,.2f}[/] (restores RR ≥ 1.0).[/]\n"
             )
 
     stage_desc = _stage_desc(stage, regime)
@@ -226,7 +274,6 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
         f"EXIT STAGE: [{sc}][bold]{stage}[/][/]   "
         f"Regime: [{rc}][bold]{regime}[/][/]\n"
         f"  [dim]{stage_desc}[/]\n"
-        f"{ladder}"
         f"{calc}"
         f"{action}"
     )
@@ -563,11 +610,28 @@ class RiskWorkspace(App):
                 if qty == 0: # Prospect
                     action_display = f"[bold cyan]BUY {int(adj)}[/]"
                 else:
+                    # Reconcile sizing against the exit ladder so the ACTION column agrees with
+                    # the panel verdict: a position at a profit-taking stage shows the ladder
+                    # directive, never a raw +X% ADD. The exposure headroom is real but is not
+                    # licence to add to a winner that has reached its target.
+                    exit_rec = _exit_recommendation(
+                        row.get('ExitStage', ''), row.get('TrendRegime', 'NORMAL'), qty,
+                        effective_entry, sl_p, tp_p, cur_p_val,
+                        row.get('RR_Ratio', 0.0), row.get('StopType', 'FIXED'),
+                    )
                     adj_pct = (adj / qty) * 100
                     add_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
-                    trim_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
+                    trim_threshold = add_threshold
 
-                    if adj > add_threshold:
+                    if res['is_breached'] or (exit_rec and exit_rec['urgent']):
+                        action_display = "[bold red]EXIT[/]"
+                    elif exit_rec and exit_rec['verb'] == 'TRIM':
+                        action_display = f"[bold yellow]TRIM {int(exit_rec['pct'] * 100)}%[/]"
+                    elif exit_rec and exit_rec['verb'] == 'STOP→ENTRY':
+                        action_display = "[bold cyan]STOP→E[/]"
+                    elif exit_rec:  # HOLD — M1 risk-free or let-it-run
+                        action_display = "[bold green]HOLD[/]"
+                    elif adj > add_threshold:
                         action_display = f"[bold green]+{adj_pct:.1f}%[/]"
                     elif adj < -trim_threshold:
                         action_display = f"[bold red]{adj_pct:.1f}%[/]"
@@ -679,9 +743,9 @@ class RiskWorkspace(App):
         stop_p = hypo_stop if hypo_stop is not None else pos.sl_price
         
         audit_content = "[dim]Enter ATR/Stop in Lab to calculate risk...[/]"
-        integ_content = "---"
-        pilot_content = ""
-        
+        exit_stage = getattr(pos, 'exit_stage', '')
+        regime = getattr(pos, 'trend_regime', 'NORMAL')
+
         is_modeling = self.current_conid in self.drafts
         
         # Determine effective stop for audit logic (Default to entry if none set)
@@ -690,7 +754,6 @@ class RiskWorkspace(App):
         if pd.notnull(effective_stop) and cur_p > 0:
             is_safe = cur_p > effective_stop
             buffer = ((cur_p - effective_stop) / cur_p * 100) if cur_p > 0 else 0
-            integ_content = f"[bold {'green' if is_safe else 'red'}]Price {' > ' if is_safe else ' <= '} Stop[/] | {'[SAFE]' if is_safe else '[BREACHED]'} [dim]({buffer:.1f}% Buffer)[/]"
             res = audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp, fx_rate=pos.fx_rate)
             
             # For FIXED stop: pos.atr holds the stop price, not an ATR distance.
@@ -720,46 +783,59 @@ class RiskWorkspace(App):
             elif hypo_add is not None:
                 modeled_add = int(hypo_add)
 
-            # 2. Build Execution Plan
-            exit_stage = getattr(pos, 'exit_stage', '')
+            # 2. Reconciled verdict — ONE directive across the three axes, by precedence:
+            #    breach → urgent RR-exit → exit-stage ladder → sizing add/trim → hold.
+            #    The fundamental that resolves the add-vs-trim conflict: exposure headroom
+            #    sizes a new/early position; it is never licence to add to a winner that has
+            #    reached a profit-taking stage. So at an exit stage the ladder governs and the
+            #    headroom is reported but muted (mirrors the table ACTION column outward).
+            exit_rec = _exit_recommendation(exit_stage, regime, active_qty, active_entry,
+                                            effective_stop, pos.tp_price, cur_p, efficiency,
+                                            pos.stop_type)
+            room = int(res['adjustment'])
             if res['is_breached']:
-                exec_plan = "[bold red]STOP BREACHED. EXIT FULL POSITION NOW.[/]"
+                v_color, v_label = 'red', 'EXIT NOW — stop breached'
+                v_sub = f"Sell all {int(active_qty)} sh @ {cur_p:,.2f}."
                 target_qty = 0
             elif modeled_add is not None:
                 target_qty = int(active_qty + modeled_add)
                 verb = "ADD" if modeled_add >= 0 else "TRIM"
                 tag = " (P/L@Stop → 0)" if goal_seek == 'BE' else ""
-                exec_plan = (
-                    f"  - [bold reverse magenta] MODELING: {verb} {abs(int(modeled_add))} SHARES{tag} [/] "
-                    f"@ {cur_p:,.2f} (→ {target_qty} sh)"
-                )
+                v_color, v_label = 'magenta', f"MODELING: {verb} {abs(int(modeled_add))} sh{tag}"
+                v_sub = f"@ {cur_p:,.2f} → {target_qty} sh"
             elif goal_seek == 'BE':
                 target_qty = int(active_qty)
-                exec_plan = (
-                    f"  - [bold magenta]GOAL-SEEK:[/] P/L@Stop = 0 is not reachable by buying "
-                    f"at {cur_p:,.2f} (would require trimming, which can't move average cost)."
-                )
+                v_color, v_label = 'magenta', "GOAL-SEEK: P/L@Stop = 0 not reachable by buying"
+                v_sub = f"Would require trimming at {cur_p:,.2f}, which can't move average cost."
+            elif exit_rec and exit_rec['urgent']:
+                target_qty = 0
+                v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
+            elif exit_rec:
+                target_qty = int(active_qty)   # never add at a profit-taking stage
+                v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
+                if room > 0:
+                    headroom = active_max_exp - res['current_exposure_pct']
+                    v_sub += f"  [dim]({headroom:.1f}% exposure room exists, but no adds at target.)[/]"
+            elif room > 0:
+                target_qty = int(active_qty + room)
+                v_color, v_label = 'green', f"ADD +{room} sh"
+                v_sub = f"@ {cur_p:,.2f} → {target_qty} sh — room to the {active_max_exp:.1f}% exposure limit."
+            elif room < 0:
+                target_qty = int(active_qty + room)
+                v_color, v_label = 'yellow', f"TRIM {abs(room)} sh"
+                v_sub = f"Over the {active_max_exp:.1f}% exposure limit @ {cur_p:,.2f}."
             else:
-                room = int(res['adjustment'])
-                target_qty = int(pos.qty + room)
-                if room > 0 and exit_stage in ('M1', 'M2', 'TP'):
-                    # Sizing has headroom but position is in profit-taking — adding is wrong
-                    exec_plan = f"  - [bold yellow]EXIT STAGE ACTIVE ({exit_stage}): Hold or trim — no new entries.[/]"
-                    target_qty = int(pos.qty)
-                elif room > 0:
-                    exec_plan = f"  - [bold reverse green] ADD +{room} SHARES [/] @ {cur_p:,.2f} (To reach {target_qty} sh)"
-                elif room < 0:
-                    exec_plan = f"  - [bold reverse yellow] TRIM {abs(room)} SHARES [/] @ {cur_p:,.2f} (Limit: {active_max_exp}% Exp)"
-                else:
-                    exec_plan = "  - [bold white]MAX SIZE REACHED.[/] (No adjustment needed)"
+                target_qty = int(active_qty)
+                v_color, v_label = 'white', "HOLD — at max size"
+                v_sub = "Within all limits; no adjustment needed."
 
-            # Capital-efficiency nudge (orthogonal to the ATR ladder). Suppressed on a
-            # breach, where the exit directive already dominates. Reflects the live
-            # position's AAGR/age, not any modeling override.
+            # Capital-efficiency nudge (orthogonal to the ATR ladder). Suppressed on a breach,
+            # where the exit directive already dominates. Reflects the live position's AAGR/age.
+            stale_line = ""
             if getattr(pos, 'is_stale', False) and not res['is_breached']:
-                exec_plan += (
-                    f"\n  - [bold red]⏳ STALE: {pos.aagr:+.1f}% AAGR over {pos.age_days}d — "
-                    f"below {CAPITAL_HURDLE_PCT:.0f}% hurdle. Review thesis or redeploy capital.[/]"
+                stale_line = (
+                    f"  [bold red]⏳ STALE: {pos.aagr:+.1f}% AAGR over {pos.age_days}d — "
+                    f"below {CAPITAL_HURDLE_PCT:.0f}% hurdle. Review thesis or redeploy capital.[/]\n"
                 )
 
             # 3. Final Layout Assembly
@@ -874,28 +950,50 @@ class RiskWorkspace(App):
             else:
                 capital_str = ""
 
-            audit_content = (
-                f"  - Risk: [bold {'red' if res['current_risk_pct'] > (active_max_r * 1.5) else ('yellow' if res['current_risk_pct'] > active_max_r else 'green')}]{res['current_risk_pct']:.2f}%[/] (Lim: {active_max_r}%)\n"
-                f"  - Exp:  [bold {'red' if res['current_exposure_pct'] > (active_max_exp * 1.1) else ('yellow' if res['current_exposure_pct'] >= active_max_exp else 'green')}]{res['current_exposure_pct']:.2f}%[/] (Lim: {active_max_exp}%)\n"
-                f"  - Efficiency: [bold {'green' if efficiency>=2.0 else ('yellow' if efficiency>=1.0 else 'red')}]{efficiency:.2f} RR[/]\n"
+            # Compact metric strip: the three audit axes + stop integrity on one line.
+            r_pct, e_pct = res['current_risk_pct'], res['current_exposure_pct']
+            r_c = 'red' if r_pct > active_max_r * 1.5 else ('yellow' if r_pct > active_max_r else 'green')
+            e_c = 'red' if e_pct > active_max_exp * 1.1 else ('yellow' if e_pct >= active_max_exp else 'green')
+            eff_c = 'green' if efficiency >= 2.0 else ('yellow' if efficiency >= 1.0 else 'red')
+            buf_c = 'green' if is_safe else 'red'
+            strip = (
+                f"  R [bold {r_c}]{r_pct:.2f}%[/][dim]/{active_max_r}[/]   "
+                f"Exp [bold {e_c}]{e_pct:.2f}%[/][dim]/{active_max_exp}[/]   "
+                f"RR [bold {eff_c}]{efficiency:.2f}[/]   "
+                f"[{buf_c}]{'SAFE' if is_safe else 'BREACH'} {buffer:.0f}% buf[/]\n"
+            )
+            ladder = (_ladder_str(exit_stage, pos.m1_price, pos.m2_price, pos.tp_price) + "\n") if exit_stage else ""
+
+            # DETAILS — the supporting calculations, demoted below the verdict.
+            details = (
+                f"--------------------------------------\n[dim]DETAILS[/]\n"
                 f"{capital_str}"
-                f"{sizing_table}"
-                f"--------------------------------------\n"
                 f"INCEPTION STOP: [bold]{incep_stop_str}[/]{trailed_str}\n"
                 f"INCEPTION ATR:  [bold]{incep_atr_str}[/]{vol_delta_str}\n"
                 f"{remediation_str}"
-                f"--------------------------------------\n"
-                f"PLAN:\n"
-                f"{exec_plan}\n"
                 f"{_exit_guidance_str(pos, cur_p)}"
             )
 
+            # Verdict-led layout: the single reconciled directive first, then the metric
+            # strip + ladder, then the kept sizing-impact table, then the demoted details.
+            audit_content = (
+                f"▶ [bold {v_color}]{v_label}[/]\n"
+                f"  [dim]{v_sub}[/]\n"
+                f"{stale_line}"
+                f"--------------------------------------\n"
+                f"{strip}"
+                f"{ladder}"
+                f"{sizing_table}"
+                f"{details}"
+            )
+
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"
-        audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})\nINCEPTION: [bold cyan]{incep_str}[/]"
+        stage_tag = f"  ·  [{_STAGE_C.get(exit_stage, 'white')}]{exit_stage}[/] · [{_REGIME_C.get(regime, 'white')}]{regime}[/]" if exit_stage else ""
+        audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})  ·  INCEPTION [cyan]{incep_str}[/]{stage_tag}"
         if is_modeling:
             audit_header = "[bold reverse yellow] MODELING STRATEGY [/]\n" + audit_header
-            
-        audit_text = f"{audit_header}\n--------------------------------------\nINTEGRITY: {integ_content}\n--------------------------------------\n{audit_content}"
+
+        audit_text = f"{audit_header}\n--------------------------------------\n{audit_content}"
         self.query_one("#position-context", Static).update(audit_text)
 
     @work(exclusive=True, thread=True)
