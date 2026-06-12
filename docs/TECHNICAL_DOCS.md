@@ -87,6 +87,26 @@ The system implements an institutional "Volatility Buffer" approach to stop loss
 *   **Monitoring**: The `RiskEngine.calculate_position_risk` method uses this fixed `atr_value` to derive the `sl_price` and `tp_price` during every dashboard refresh.
 *   **Manual Re-anchoring**: If a user wishes to "reset" the stop to a constant percentage after a significant price move, they must manually re-enter the percentage in the **Strategy Lab** (e.g., `15 T`), which triggers a new dollar calculation based on the current (higher) price.
 
+### Live P/L at Stop (Breach Degradation)
+
+The **P/L STOP** column normally shows the *planned* outcome — the profit or loss you would realise if the position exits cleanly at the stop price: `(stop − entry) × qty × multiplier`. But a stop is not a guarantee of fill: gaps, illiquidity, or simple failure to act can carry price *below* the stop, where the realisable exit is worse than planned.
+
+The **Live P/L at Stop** tracks this. It is the P/L at the effective exit price, defined as:
+
+```
+effective P/L = (min(stop, current_price) − entry) × qty × multiplier
+```
+
+*   **Price at or above the stop**: `min(stop, current) = stop`, so the figure equals the planned stop-out. No visual change.
+*   **Price below the stop (BREACH)**: `min` follows the live price down, so the figure degrades past the plan and keeps falling with the price. The column shows the live value with the original planned figure in parentheses — e.g. `-100 (-50)` — so the slippage past plan is visible at a glance.
+*   **Price reclaims the stop**: the figure snaps back to the planned value. Nothing is persisted; it is recomputed every refresh.
+*   **Trailing stops**: new highs ratchet the stop up via the high-water mark (the Ratchet Rule), which lifts the *planned* value on its own. The breach logic above sits on top of that — together: P/L rises as price makes new highs, and falls once price breaks below the (ratcheted) stop.
+
+### Technical Implementation Details — Live P/L
+*   **Fields**: `Position.risk_val` holds the planned stop-out (unchanged — still feeds the portfolio stop-out aggregate in `core/sizing.py`); `Position.risk_val_live` holds the breach-aware figure. Both are set in `calculate_position_risk` step 5.
+*   **Display**: `ui/risk_workspace.py` renders the `live (planned)` form in the P/L STOP column only while breached; `ui/dashboard.py` mirrors it in the position detail panel as `live (was planned)`.
+*   **Scope**: The Strategy Lab's hypothetical P/L still shows the *planned* what-if value, since it models a stop you have not yet hit.
+
 ---
 
 ## 5. Profit-Taking System: Exit Stages & Trend Regime

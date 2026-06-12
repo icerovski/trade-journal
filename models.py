@@ -107,6 +107,7 @@ class Position:
     down_pct: float = 0.0
     up_pct: float = 0.0
     risk_val: float = 0.0
+    risk_val_live: float = 0.0  # realisable P/L at exit: degrades below stop, recovers on reclaim
     reward_val: float = 0.0
     rr_ratio: float = 0.0
     sl_pct_base: float = 0.0
@@ -192,7 +193,8 @@ class Position:
         'max_r_pct': 'MaxRPct', 'max_exp_pct': 'MaxExpPct',
         'sl_price': 'SL_Price', 'tp_price': 'TP_Price',
         'down_pct': 'Down_Pct', 'up_pct': 'Up_Pct',
-        'risk_val': 'Risk_Val', 'reward_val': 'Reward_Val', 'rr_ratio': 'RR_Ratio',
+        'risk_val': 'Risk_Val', 'risk_val_live': 'Risk_Val_Live',
+        'reward_val': 'Reward_Val', 'rr_ratio': 'RR_Ratio',
         'sl_pct_base': 'sl_pct_base', 'risk_pct_nav': 'risk_pct_nav',
         'max_since_entry': 'MaxSinceEntry', 'nav_pct': 'NavPct',
         'listing_exchange': 'ListingExchange',

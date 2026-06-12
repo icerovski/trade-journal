@@ -162,6 +162,19 @@ class TradingCockpit(App):
     def color_fmt(val, fmt=",.0f", suffix=""):
         return UIUtils.color_fmt(val, fmt, suffix)
 
+    @staticmethod
+    def _pl_at_stop_str(row) -> str:
+        """P/L at stop. If price has breached the stop, show the degraded live exit P/L
+        with the original planned stop-out in parens for comparison."""
+        planned = row['Risk_Val']
+        live = row.get('Risk_Val_Live', planned)
+        sl_p = row.get('SL_Price')
+        cur_p = row.get('Price', 0.0)
+        breached = pd.notnull(sl_p) and cur_p > 0 and cur_p <= sl_p
+        if breached:
+            return f"{UIUtils.color_fmt(live, ',.0f')} [dim](was {planned:,.0f})[/]"
+        return UIUtils.color_fmt(planned, ',.0f')
+
     class DataRefreshed(Message):
         """Internal message to update UI after background fetch."""
         def __init__(self, df: pd.DataFrame, df_view: pd.DataFrame, nav: float, report_date: str):
@@ -420,7 +433,7 @@ class TradingCockpit(App):
                     f"Stop Price:     [bold red]{row['SL_Price']:,.2f}[/]\n"
                     f"Inception Stop: {incep_stop_str}{trailed_str}\n"
                     f"Initial ATR:    {row.get('InceptionATR', 0.0):.2f}\n"
-                    f"P/L at Stop:    {self.color_fmt(row['Risk_Val'], ',.0f')}\n"
+                    f"P/L at Stop:    {self._pl_at_stop_str(row)}\n"
                     f"Buffer to SL:   {self.color_fmt(row['Down_Pct'], '.1f', '%')}\n\n"
 
                     f"[bold cyan]TARGET PROFIT[/bold cyan]\n"

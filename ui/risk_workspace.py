@@ -584,7 +584,19 @@ class RiskWorkspace(App):
             r_color = "red" if row['risk_pct_nav'] > (max_r_pct * RISK_RED_MULTIPLIER) else ("yellow" if row['risk_pct_nav'] > max_r_pct else "white")
             exp_color = "red" if row['NavPct'] > (max_exp_pct * EXPOSURE_RED_MULTIPLIER) else ("yellow" if row['NavPct'] > max_exp_pct else "white")
             
-            pl_display = UIUtils.color_fmt(row['Risk_Val']) if has_risk else "---"
+            if not has_risk:
+                pl_display = "---"
+            else:
+                planned_pl = row['Risk_Val']
+                live_pl = row.get('Risk_Val_Live', planned_pl)
+                breached = pd.notnull(sl_p) and cur_p_val > 0 and cur_p_val <= sl_p
+                if breached:
+                    # Below the stop: realisable exit has degraded past the planned stop-out.
+                    # Show the live figure with the original P/L-at-stop in parens to compare.
+                    live_color = "green" if live_pl >= 0 else "red"
+                    pl_display = f"[{live_color}]{live_pl:,.0f}[/] [dim]({planned_pl:,.0f})[/]"
+                else:
+                    pl_display = UIUtils.color_fmt(planned_pl)
             mkt_val  = row['MarketValue']
             cost_val = row['CostBasis']
             mkt_color   = "green" if mkt_val >= cost_val else "red"

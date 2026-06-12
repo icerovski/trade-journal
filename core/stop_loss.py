@@ -157,6 +157,16 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
 
     # 5. Outcome at Stop / Target
     position.risk_val = (position.sl_price - position.entry_price) * position.qty * position.multiplier
+    # Live P/L at exit: while price holds at/above the stop this equals the planned stop-out
+    # (risk_val); once price breaches the stop the realisable exit is the live price, so the
+    # figure degrades with price and snaps back to risk_val on reclaim. For TRAILING, new highs
+    # ratchet the stop up, lifting risk_val itself (handled in step 2 via the high-water mark).
+    effective_exit = (
+        min(position.sl_price, position.current_price)
+        if position.current_price and position.current_price > 0
+        else position.sl_price
+    )
+    position.risk_val_live = (effective_exit - position.entry_price) * position.qty * position.multiplier
     position.reward_val = (
         (position.tp_price - position.entry_price) * position.qty * position.multiplier
         if position.tp_price else 0.0

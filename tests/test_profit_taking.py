@@ -147,6 +147,41 @@ def test_fixed_tp_fallback_uses_entry_minus_stop(monkeypatch):
     assert p.tp_price == pytest.approx(115.0)
 
 
+# --- Live P/L at stop (degrades on breach, recovers on reclaim) -------------
+
+def _fixed_stop_pos(current_price):
+    """FIXED stop at 95, entry 100, 10 shares. risk_val (planned) = -50."""
+    p = _pos(entry_price=100.0, current_price=current_price, qty=10.0)
+    profile = RiskProfile(conid="1", ticker="TST", atr_value=95.0, stop_type="FIXED",
+                          highest_sl=0.0, inception_atr=5.0)
+    calculate_position_risk(p, {"1": profile})
+    return p
+
+
+def test_risk_val_live_equals_planned_above_stop(monkeypatch):
+    """While price holds above the stop, the live figure equals the planned stop-out."""
+    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
+    p = _fixed_stop_pos(current_price=110.0)
+    assert p.risk_val == pytest.approx(-50.0)        # (95 - 100) * 10
+    assert p.risk_val_live == pytest.approx(-50.0)   # price above stop -> planned holds
+
+
+def test_risk_val_live_degrades_below_stop(monkeypatch):
+    """Once price breaches the stop, the realisable exit is the live price, so the
+    figure degrades past the planned stop-out and tracks the price down."""
+    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
+    p = _fixed_stop_pos(current_price=90.0)          # 5 below the 95 stop
+    assert p.risk_val == pytest.approx(-50.0)        # planned unchanged
+    assert p.risk_val_live == pytest.approx(-100.0)  # (90 - 100) * 10
+
+
+def test_risk_val_live_recovers_on_reclaim(monkeypatch):
+    """Exactly at the stop the live figure snaps back to the planned value."""
+    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
+    p = _fixed_stop_pos(current_price=95.0)          # back at the stop
+    assert p.risk_val_live == pytest.approx(-50.0)
+
+
 # --- Trim matrix (Q1) ------------------------------------------------------
 
 def test_trim_matrix_trend_m2_holds():
