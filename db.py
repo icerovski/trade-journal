@@ -86,6 +86,11 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN profile TEXT")
     except Exception: pass
+    # Per-position take-profit override: a multiple of the frozen inception ATR.
+    # NULL = use the default TP_ATR_MULTIPLE (3R). See core/stop_loss.py.
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN tp_atr_mult REAL")
+    except Exception: pass
 
     # Migration: Tag existing positions that matched old preset definitions, and update
     # their limits to the new values. The WHERE profile IS NULL guard makes this a no-op
@@ -178,8 +183,17 @@ def wipe_trades_only():
     conn.close()
     init_db()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None):
-    """Saves or updates a risk profile (ACTIVE or WATCH) for a conid."""
+# Sentinel for set_position_risk: distinguishes "leave the TP override untouched" (default,
+# for callers that don't manage it) from an explicit None ("clear the override → default 3R").
+_KEEP = object()
+
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP):
+    """Saves or updates a risk profile (ACTIVE or WATCH) for a conid.
+
+    tp_atr_mult: take-profit override as a multiple of the inception ATR. Pass a number to
+    set it, None to clear it (revert to the default 3R), or omit it (_KEEP sentinel) to leave
+    the stored value untouched — unlike the write-once inception fields, this is write-many.
+    """
     conn = get_conn()
     conid = str(conid)
     cursor = conn.execute("SELECT id, inception_stop, inception_atr FROM risk_profiles WHERE conid = ? AND status = ?", (conid, status))
@@ -204,6 +218,11 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
             sql += ", profile = ?"
             params.append(profile or None)
 
+        # Write-many: set/clear the TP override only when the caller explicitly passes it.
+        if tp_atr_mult is not _KEEP:
+            sql += ", tp_atr_mult = ?"
+            params.append(float(tp_atr_mult) if tp_atr_mult is not None else None)
+
         if reset_sl:
             sql += ", highest_sl = 0.0"
         sql += " WHERE id = ?"
@@ -213,12 +232,13 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
         # For new profiles, use provided values or current atr/stop as inception
         i_stop = float(inception_stop) if inception_stop is not None else None
         i_atr = float(inception_atr) if inception_atr is not None else float(atr)
+        i_tp = float(tp_atr_mult) if (tp_atr_mult is not _KEEP and tp_atr_mult is not None) else None
 
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None))
-    
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp))
+
     conn.commit()
     conn.close()
 

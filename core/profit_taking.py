@@ -68,6 +68,13 @@ def compute_exit_milestones(position: Position, atr_dist: float) -> None:
     position.m1_price = position.entry_price + atr_dist
     position.m2_price = position.entry_price + 2.0 * atr_dist
     cur = position.current_price if position.current_price > 0 else position.mark_price
+    # Monotonicity guard: a TP override below the M2 milestone (< 2R) inverts the ladder.
+    # The stage logic still resolves (reaching the target reads TP), but flag the unusual setup.
+    if position.tp_price and position.tp_price <= position.m2_price and getattr(position, 'tp_is_override', False):
+        logger.warning(
+            f"[compute_exit_milestones] {position.ticker}: TP override {position.tp_price:.2f} "
+            f"is at/below M2 {position.m2_price:.2f} (< 2R) — ladder is non-monotonic"
+        )
     if not (cur > 0 and position.tp_price):
         logger.debug(
             f"[compute_exit_milestones] {position.ticker}: exit_stage not set "

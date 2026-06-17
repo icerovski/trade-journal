@@ -35,4 +35,13 @@ EXPOSURE_RED_MULTIPLIER = 1.1
 
 # Both stop types: TP is placed TP_ATR_MULTIPLE ATRs above entry → ladder is M1=+1, M2=+2, TP=+3.
 # (Anchoring TRAILING TP to the ratcheted stop made it collide with M2 at inception.)
+# This is the DEFAULT multiple; a per-position override (risk_profiles.tp_atr_mult) can
+# extend the target to any multiple of the SAME frozen inception ATR (e.g. 4R, 5R), keeping
+# the target reachable and stable — editing the live stop ATR never moves it. M1/M2 always
+# stay on the inception ATR for reference.
 TP_ATR_MULTIPLE = 3
+
+# Setup reward:risk floor. When a target is set, the FORWARD reward:risk from the current
+# price — (target − price) / (price − stop) — is flagged if it falls below this. Lets the
+# user control that an extended target still pays at least 3:1 from here.
+RR_SETUP_FLOOR = 3.0

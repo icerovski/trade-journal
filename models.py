@@ -59,6 +59,7 @@ class RiskProfile:
     inception_atr: Optional[float] = None
     status: str = "ACTIVE"
     profile: Optional[str] = None
+    tp_atr_mult: Optional[float] = None  # TP override as a multiple of inception ATR; None = default 3R
 
 @dataclass
 class Position:
@@ -104,6 +105,8 @@ class Position:
     inception_stop: Optional[float] = None
     inception_atr: Optional[float] = None
     tp_price: Optional[float] = None
+    tp_atr_mult: float = 0.0       # effective TP multiple of inception ATR (3 = default, else override)
+    tp_is_override: bool = False   # True when a per-position TP override is set
     down_pct: float = 0.0
     up_pct: float = 0.0
     risk_val: float = 0.0

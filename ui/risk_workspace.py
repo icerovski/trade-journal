@@ -17,7 +17,7 @@ from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
 from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting
 from logger import logger, suppress_console_logging
-from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
 
 PRESETS = {
     "S": {"label": "Small",       "max_exp_pct": 1.5, "max_r_pct": 0.30},
@@ -74,6 +74,41 @@ def solve_breakeven_add(qty: float, entry: float, stop: float, price: float) -> 
         return None
     add = qty * (entry - stop) / denom
     return round(add) if add > 0 else None
+
+
+def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
+    """Resolve a `TP:` token into a multiple of the inception ATR.
+
+    Returns (mult, clear, ok):
+      • clear=True  → user typed `TP:-` (revert to the default 3R), mult is None.
+      • ok=False    → token could not be resolved (missing inception ATR, or a $ target
+                      with no quantity); caller should warn and ignore.
+    Accepted forms (token already upper-cased, `TP:` stripped):
+      4 | 4R           → explicit multiple of inception ATR
+      +35% | 35%       → gain as % of entry, divided by inception ATR
+      $60K | $60000 | 60K → absolute profit, per-share / inception ATR (needs qty)
+    """
+    token = (token or "").strip()
+    if token == '-':
+        return None, True, True
+    if not inception_atr or inception_atr <= 0 or not entry or entry <= 0:
+        return None, False, False
+    try:
+        if token.endswith('R'):
+            return float(token[:-1]), False, True
+        if token.endswith('%'):
+            pct = float(token.rstrip('%').lstrip('+'))
+            return (entry * pct / 100.0) / inception_atr, False, True
+        if token.startswith('$') or token.endswith('K'):
+            amt = token.lstrip('$')
+            scale = 1000.0 if amt.endswith('K') else 1.0
+            amt = float(amt.rstrip('K')) * scale
+            if qty <= 0:
+                return None, False, False  # $ target needs a share count
+            return (amt / qty) / inception_atr, False, True
+        return float(token), False, True  # plain number → multiple
+    except ValueError:
+        return None, False, False
 
 
 def _trim_shares(qty: float, pct: float) -> float:
@@ -505,7 +540,7 @@ class RiskWorkspace(App):
                             id="discover-input"
                         )
                         yield Input(
-                            placeholder="F: price  |  T: %/$  |  [P:S/B/L] [R:x] [E:x]",
+                            placeholder="F: price  |  T: %/$  |  [P:S/B/L] [R:x] [E:x] [TP:n]",
                             id="atr-input"
                         )
                     yield Label(_preset_legend(), id="preset-legend")
@@ -715,7 +750,7 @@ class RiskWorkspace(App):
             self.query_one("#trailing-stop-table", DataTable).clear()
             self.fetch_atr_data(conid)
 
-    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None, hypo_add: Optional[float] = None, goal_seek: Optional[str] = None) -> None:
+    def refresh_risk_checklist(self, hypo_stop: Optional[float] = None, hypo_atr: Optional[float] = None, hypo_max_r: Optional[float] = None, hypo_max_exp: Optional[float] = None, hypo_qty: Optional[float] = None, hypo_entry: Optional[float] = None, hypo_add: Optional[float] = None, goal_seek: Optional[str] = None, hypo_tp_mult: float = -1.0) -> None:
         if not self.current_conid:
             return
         pos = next((p for p in self.positions if str(p.conid) == self.current_conid), None)
@@ -772,7 +807,13 @@ class RiskWorkspace(App):
             # to entry-stop distance, and stays modeling-aware via active_entry/effective_stop.
             r_unit = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) \
                      else max(0.0, (active_entry or 0) - (effective_stop or active_entry or 0))
-            tp_target = active_entry + (TP_ATR_MULTIPLE * r_unit)
+            # Effective TP multiple: a modeled override (hypo_tp_mult ≠ -1, where None→default)
+            # takes precedence; otherwise the saved override; otherwise the default 3R.
+            if hypo_tp_mult != -1.0:
+                tp_mult_eff = hypo_tp_mult if (hypo_tp_mult and hypo_tp_mult > 0) else TP_ATR_MULTIPLE
+            else:
+                tp_mult_eff = pos.tp_atr_mult if (getattr(pos, 'tp_is_override', False) and pos.tp_atr_mult) else TP_ATR_MULTIPLE
+            tp_target = active_entry + (tp_mult_eff * r_unit)
             efficiency = ((tp_target - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
 
             # User-driven scenario: an explicit +/- quantity or a goal-seek overrides the
@@ -964,6 +1005,17 @@ class RiskWorkspace(App):
             )
             ladder = (_ladder_str(exit_stage, pos.m1_price, pos.m2_price, pos.tp_price) + "\n") if exit_stage else ""
 
+            # Target line: shown whenever a TP override is in force (saved or being modeled).
+            # Flags the FORWARD reward:risk — (target − price)/(price − stop) — against the 3:1
+            # setup floor so an extended target that no longer pays 3:1 from here is visible.
+            if tp_mult_eff != TP_ATR_MULTIPLE and tp_target > 0:
+                trr_c = 'green' if efficiency >= RR_SETUP_FLOOR else ('yellow' if efficiency >= 1.0 else 'red')
+                trr_flag = '' if efficiency >= RR_SETUP_FLOOR else f"  [bold red]⚠ below {RR_SETUP_FLOOR:.0f}:1[/]"
+                tp_line = (f"  [bold]TARGET[/] {tp_mult_eff:.1f}R → [bold]{tp_target:,.2f}[/]  ·  "
+                           f"fwd RR [bold {trr_c}]{efficiency:.2f}[/][dim] vs {RR_SETUP_FLOOR:.0f}[/]{trr_flag}\n")
+            else:
+                tp_line = ""
+
             # DETAILS — the supporting calculations, demoted below the verdict.
             details = (
                 f"--------------------------------------\n[dim]DETAILS[/]\n"
@@ -982,6 +1034,7 @@ class RiskWorkspace(App):
                 f"{stale_line}"
                 f"--------------------------------------\n"
                 f"{strip}"
+                f"{tp_line}"
                 f"{ladder}"
                 f"{sizing_table}"
                 f"{details}"
@@ -1142,6 +1195,23 @@ class RiskWorkspace(App):
                 m_e = float(e_m.group(1))
                 raw = raw.replace(e_m.group(0), "").strip()
 
+            # TP override: TP:4 / TP:4R / TP:+35% / TP:$60K / TP:- (clear). A multiple of the
+            # frozen inception ATR — stays put when the stop ATR changes. Parsed BEFORE the
+            # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity.
+            existing_tp = pos.tp_atr_mult if getattr(pos, 'tp_is_override', False) else None
+            tp_final = existing_tp
+            tp_m = re.search(r"TP:(\-|\+?\$?\d+(?:\.\d+)?[%KR]?)", raw)
+            if tp_m:
+                raw = raw.replace(tp_m.group(0), "").strip()
+                inc_atr = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
+                mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr, pos.qty)
+                if not ok:
+                    self.notify("TP target needs an inception ATR (and a share count for $ targets).", severity="warning")
+                elif clear:
+                    tp_final = None
+                else:
+                    tp_final = mult
+
             # Quantity modeling: +N / -N shares at the live price, or BE = solve P/L@Stop → 0.
             # Parsed before the stop-value regex so the digits in "+26" aren't read as a stop.
             hypo_add = None
@@ -1238,9 +1308,9 @@ class RiskWorkspace(App):
             else:
                 save_incep_atr = f_atr
 
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None}
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
-            self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek)
+            self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek, hypo_tp_mult=tp_final)
             
         except Exception as e:
             logger.error(f"Modeling Error: {e}")
@@ -1249,7 +1319,7 @@ class RiskWorkspace(App):
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'))
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'), tp_atr_mult=d.get('tp_atr_mult'))
                 self.notify(f"COMMITTED: {d['ticker']}")
                 self.query_one("#atr-input", Input).value = ""
                 self.query_one("#discover-input", Input).value = ""
@@ -1269,7 +1339,7 @@ class RiskWorkspace(App):
         if not self.drafts:
             return
         for cid, d in self.drafts.items():
-            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'))
+            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'), tp_atr_mult=d.get('tp_atr_mult'))
         self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
         self.drafts.clear()
         self.load_portfolio()

@@ -78,7 +78,7 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 - **`core/confluence.py`** — `evaluate_confluence()` measures ATR-distance from price and stop to all configured DMAs; returns strength score and zone list.
 - **`services/ibkr_parser.py`** — CSV interpretation. External ID fingerprint = `TransactionID-AccountID-Side` for de-duplication. Updates `ticker_info` (Asset Master) during ingestion.
 - **`services/ticker_mapper.py`** — IBKR → Yahoo Finance symbol resolution. Priority: DB conid lookup → YF ISIN search → heuristics (exchange suffixes `.DE`, `.L`, `.AS`).
-- **`ui/risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). Command syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x]`. Drafting workflow holds bulk updates in-memory before committing. PLAN section includes full exit stage and regime breakdown.
+- **`ui/risk_workspace.py`** — ACTION column uses asymmetric thresholds: ≥10% budget remaining triggers Add, ≥5% triggers Trim (filters transaction noise). Command syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n]` (TP:n sets the take-profit override; shows a TARGET line with forward RR flagged against `RR_SETUP_FLOOR`). Drafting workflow holds bulk updates in-memory before committing. PLAN section includes full exit stage and regime breakdown.
 - **`ui/watch_list_workspace.py`** — Confluence distances are measured in Daily ATR units; < 0.25R is a meaningful zone. Undisturbed Trend Engine tracks 200-DMA direction changes with a 21-day confirmation trigger (🟢 BUY / 🔴 SELL).
 - **`ui/chart_utils.py`** — `launch_price_chart(display_ticker, conid, yf_ticker)` spawns `chart_worker.py` as a subprocess. Triggered by `G` key in all three workspaces.
 - **`ui/chart_worker.py`** — Standalone subprocess entry point. Renders price + 200 DMA chart (5Y) via matplotlib/TkAgg in its own main thread. Never imported directly.
@@ -102,7 +102,7 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 **RR Efficiency:** `(TP − Price) / (Price − Stop)`. Exit signal: < 1.0. Color bands: 🟢 ≥ 1.0, 🟡 ≥ 0.5.
 
-**Exit Milestones & Regime:** Milestones computed in `profit_taking.compute_exit_milestones()`; regime in `profit_taking.enrich_regime()`/`classify_regime()` (step 4 of `get_dashboard_df`). TP and milestones are entry-anchored and use the inception ATR (R-multiple) for both stop types; the live trailing ATR sets only the stop. Full thresholds and trim guidance in `docs/TECHNICAL_DOCS.md` §5.
+**Exit Milestones & Regime:** Milestones computed in `profit_taking.compute_exit_milestones()`; regime in `profit_taking.enrich_regime()`/`classify_regime()` (step 4 of `get_dashboard_df`). TP and milestones are entry-anchored and use the inception ATR (R-multiple) for both stop types; the live trailing ATR sets only the stop. The TP top rung is overridable per position via `risk_profiles.tp_atr_mult` (a multiple of the *frozen inception* ATR; `NULL` = default `TP_ATR_MULTIPLE` = 3R) — set with the `TP:n` command (`resolve_tp_mult`); M1/M2 stay at 1R/2R. Full thresholds and trim guidance in `docs/TECHNICAL_DOCS.md` §5.
 
 **Capital-Efficiency Flag (Dead Money):** `Position.is_stale` (set in `calculate_financial_metrics`) flags a holding older than `STALE_MIN_AGE_DAYS` whose price-only `aagr` is below `CAPITAL_HURDLE_PCT`. Orthogonal to the exit ladder; income assets (`AssetRegistry.is_income_asset`) are excluded. Surfaced in the `risk_workspace.py` PLAN panel.
 

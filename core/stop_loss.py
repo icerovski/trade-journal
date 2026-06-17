@@ -102,6 +102,7 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     highest_sl = profile.highest_sl
     inception_stop = profile.inception_stop
     inception_atr = profile.inception_atr
+    tp_mult_override = getattr(profile, 'tp_atr_mult', None)
 
     # 1. Base Stop Loss
     if s_type == 'FIXED':
@@ -147,7 +148,13 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
                 f"[calculate_position_risk] {position.ticker}: inception_atr missing, "
                 f"using entry-stop distance {atr_for_tp:.4f} for TP/milestones"
             )
-    position.tp_price = (position.entry_price + TP_ATR_MULTIPLE * atr_for_tp) if atr_for_tp > 0 else None
+    # Per-position TP override extends the target to any multiple of the SAME frozen inception
+    # ATR (e.g. 4R, 5R). M1/M2 below always stay at +1R/+2R, so the override only lifts the top
+    # rung. None/0 → default 3R. The override never touches the live stop ATR.
+    tp_mult = float(tp_mult_override) if (tp_mult_override and tp_mult_override > 0) else TP_ATR_MULTIPLE
+    position.tp_is_override = bool(tp_mult_override and tp_mult_override > 0)
+    position.tp_atr_mult = tp_mult
+    position.tp_price = (position.entry_price + tp_mult * atr_for_tp) if atr_for_tp > 0 else None
 
     # 4. Percentage Metrics
     if position.current_price > 0:
