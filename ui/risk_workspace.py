@@ -111,6 +111,28 @@ def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
         return None, False, False
 
 
+def resolve_tp_ratio(ratio: float, entry: float, inception_atr: float, price: float, stop: float):
+    """Resolve an N:1 forward reward:risk goal into a multiple of the inception ATR.
+
+    The target that pays `ratio`:1 measured from the CURRENT price against `stop` is
+        target = price + ratio × (price − stop)
+    i.e. `ratio` units of upside from here for every unit given back to the stop. It is then
+    expressed — like every stored TP — as a multiple of the frozen inception ATR from entry,
+    so the saved value does not drift when the stop is later tightened. This is the same
+    measure the panel's TARGET line flags against, so a freshly set N:1 target reads exactly
+    N.00 forward RR.
+
+    Returns (mult, ok); ok=False when the inputs cannot form a positive-risk target — price
+    at/below the stop (no risk to pay 3:1 on), or a missing inception ATR.
+    """
+    if not inception_atr or inception_atr <= 0 or not entry or entry <= 0:
+        return None, False
+    if ratio <= 0 or price <= stop:
+        return None, False
+    target = price + ratio * (price - stop)
+    return (target - entry) / inception_atr, True
+
+
 def _trim_shares(qty: float, pct: float) -> float:
     """Whole-share lots: round to nearest, never exceed holdings, never round a genuine
     trim down to zero. Fractional lots (bonds/options) keep the fractional figure."""
@@ -471,8 +493,8 @@ class RiskWorkspace(App):
         margin-top: 0;
         height: 3;
     }
-    #discover-input { width: 2fr; min-width: 20; }
-    #atr-input { width: 3fr; min-width: 40; }
+    #discover-input { width: 1fr; min-width: 14; }
+    #atr-input { width: 4fr; min-width: 54; }
     #preset-legend { height: 1; text-align: center; padding: 0 1; }
     #help-modal { background: $surface-darken-3; border: tall $accent; width: 80%; height: 80%; padding: 1 2; align: center middle; margin: 5 10; }
     #close-hint { text-align: center; color: $text-muted; margin-top: 1; }
@@ -536,7 +558,7 @@ class RiskWorkspace(App):
                     yield Label("RISK STRATEGY & TICKER DISCOVERY", classes="panel-header")
                     with Horizontal(id="lab-inputs"):
                         yield Input(
-                            placeholder="Discover Ticker (e.g. NVDA)",
+                            placeholder="Ticker (NVDA)",
                             id="discover-input"
                         )
                         yield Input(
@@ -1200,17 +1222,28 @@ class RiskWorkspace(App):
             # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity.
             existing_tp = pos.tp_atr_mult if getattr(pos, 'tp_is_override', False) else None
             tp_final = existing_tp
-            tp_m = re.search(r"TP:(\-|\+?\$?\d+(?:\.\d+)?[%KR]?)", raw)
-            if tp_m:
-                raw = raw.replace(tp_m.group(0), "").strip()
-                inc_atr = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
-                mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr, pos.qty)
-                if not ok:
-                    self.notify("TP target needs an inception ATR (and a share count for $ targets).", severity="warning")
-                elif clear:
-                    tp_final = None
-                else:
-                    tp_final = mult
+            # TP:N:1 — set the target to an N:1 forward reward:risk vs the MODELED stop (e.g.
+            # TP:3:1). The ratio is measured from current price to the stop, so it is captured
+            # and stripped here but RESOLVED below, once sl_p is known. Checked before the
+            # fixed-form regex so "3:1" isn't misread as the fixed multiple "3" (leaving ":1").
+            tp_ratio = None
+            tpr_m = re.search(r"TP:(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)", raw)
+            if tpr_m:
+                raw = raw.replace(tpr_m.group(0), "").strip()
+                num, den = float(tpr_m.group(1)), float(tpr_m.group(2))
+                tp_ratio = (num / den) if den > 0 else None
+            else:
+                tp_m = re.search(r"TP:(\-|\+?\$?\d+(?:\.\d+)?[%KR]?)", raw)
+                if tp_m:
+                    raw = raw.replace(tp_m.group(0), "").strip()
+                    inc_atr = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
+                    mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr, pos.qty)
+                    if not ok:
+                        self.notify("TP target needs an inception ATR (and a share count for $ targets).", severity="warning")
+                    elif clear:
+                        tp_final = None
+                    else:
+                        tp_final = mult
 
             # Quantity modeling: +N / -N shares at the live price, or BE = solve P/L@Stop → 0.
             # Parsed before the stop-value regex so the digits in "+26" aren't read as a stop.
@@ -1257,7 +1290,18 @@ class RiskWorkspace(App):
                 sl_p = f_atr
             else:
                 sl_p = base_p - f_atr
-            
+
+            # Deferred TP:N:1 — now that the modeled stop price (sl_p) is known, set the target
+            # to an N:1 forward reward:risk from the current price. Stored as a frozen
+            # inception-ATR multiple, so it won't drift if the stop is later tightened.
+            if tp_ratio is not None:
+                inc_atr_r = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
+                mult_r, ok_r = resolve_tp_ratio(tp_ratio, pos.entry_price, inc_atr_r, cur_p_d, sl_p)
+                if ok_r:
+                    tp_final = mult_r
+                else:
+                    self.notify("TP ratio needs the price above the stop and an inception ATR.", severity="warning")
+
             # Hypothetical Quantity (Sizing Discovery)
             calc_q = pos.qty
             if calc_q == 0 and self.total_nav > 0:
