@@ -1031,8 +1031,12 @@ class RiskWorkspace(App):
             # Flags the FORWARD reward:risk — (target − price)/(price − stop) — against the 3:1
             # setup floor so an extended target that no longer pays 3:1 from here is visible.
             if tp_mult_eff != TP_ATR_MULTIPLE and tp_target > 0:
-                trr_c = 'green' if efficiency >= RR_SETUP_FLOOR else ('yellow' if efficiency >= 1.0 else 'red')
-                trr_flag = '' if efficiency >= RR_SETUP_FLOOR else f"  [bold red]⚠ below {RR_SETUP_FLOOR:.0f}:1[/]"
+                # Compare at the same 2-dp precision the value is shown in, so the badge never
+                # contradicts the printed number: a fwd RR that rounds to 3.00 isn't "below 3:1"
+                # just because it sits a few cents short (set-time price/stop vs live re-compute).
+                floor_met = round(efficiency, 2) >= RR_SETUP_FLOOR
+                trr_c = 'green' if floor_met else ('yellow' if efficiency >= 1.0 else 'red')
+                trr_flag = '' if floor_met else f"  [bold red]⚠ below {RR_SETUP_FLOOR:.0f}:1[/]"
                 tp_line = (f"  [bold]TARGET[/] {tp_mult_eff:.1f}R → [bold]{tp_target:,.2f}[/]  ·  "
                            f"fwd RR [bold {trr_c}]{efficiency:.2f}[/][dim] vs {RR_SETUP_FLOOR:.0f}[/]{trr_flag}\n")
             else:
