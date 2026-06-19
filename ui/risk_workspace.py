@@ -779,6 +779,19 @@ class RiskWorkspace(App):
         if not pos:
             return
 
+        # Rehydrate the in-progress draft on a BARE refresh (row highlight, ATR-discovery
+        # finishing) so the panel reproduces the full what-if — including the +N/-N/BE quantity
+        # model — instead of reverting the verdict/sizing while the MODELING header (keyed off the
+        # draft) stays lit. on_strategy_change passes hypo_stop explicitly, so it bypasses this.
+        d = self.drafts.get(self.current_conid)
+        if d is not None and hypo_stop is None and hypo_add is None and not goal_seek:
+            hypo_stop    = d.get('hypo_stop')
+            hypo_atr     = d.get('atr')
+            hypo_max_r   = d.get('max_r_pct')
+            hypo_max_exp = d.get('max_exp_pct')
+            hypo_add     = d.get('hypo_add')
+            goal_seek    = d.get('goal_seek')
+
         # Audit price: an EXISTING position is always priced at the live market price
         # (current_price resolves live → cached DB close → mark upstream); NEVER at the entry
         # price, which would fabricate a stop breach for a winner whose stop sits above cost.
@@ -1362,7 +1375,7 @@ class RiskWorkspace(App):
             else:
                 save_incep_atr = f_atr
 
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final}
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek, hypo_tp_mult=tp_final)
             
