@@ -198,6 +198,22 @@ class PriceService:
         df = self.get_prices(conid, start_date=since, timeframe=timeframe)
         return None if df.empty else df["High"].max()
 
+    def latest_close(self, conid: str):
+        """Most recent cached daily close for a conid, or None if the cache is empty.
+
+        Single-row lookup — the canonical fallback when a live quote is unavailable, so the
+        price never degrades to the entry price (which would fabricate a stop breach for a
+        winner whose stop sits above cost)."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT close FROM prices_daily WHERE conid = ? ORDER BY date DESC LIMIT 1",
+                (str(conid),)
+            ).fetchone()
+        finally:
+            conn.close()
+        return float(row[0]) if row and row[0] is not None else None
+
     def get_trend_analysis(self, conid: str, yf_ticker: str) -> dict:
         """
         Calculates the 200-DMA trend over the last 100 days.

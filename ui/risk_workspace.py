@@ -779,9 +779,15 @@ class RiskWorkspace(App):
         if not pos:
             return
 
-        # Prospect Price Recovery: Phantom positions have 0.0 price until cache is checked
+        # Audit price: an EXISTING position is always priced at the live market price
+        # (current_price resolves live → cached DB close → mark upstream); NEVER at the entry
+        # price, which would fabricate a stop breach for a winner whose stop sits above cost.
+        # A PROSPECT (qty 0) has no market position, so it prices the hypothetical entry.
         disc = self.discovery_cache.get(self.current_conid)
-        cur_p = hypo_entry if hypo_entry is not None else (pos.current_price or pos.mark_price)
+        if pos.qty > 0:
+            cur_p = pos.current_price or pos.mark_price
+        else:
+            cur_p = hypo_entry if hypo_entry is not None else (pos.current_price or pos.mark_price)
         if cur_p == 0 and disc:
             cur_p = disc.get('current_price', 0.0)
 

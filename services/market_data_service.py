@@ -114,8 +114,13 @@ class MarketDataService:
                         pass
 
                 for p in pos_list:
-                    # Final fallback to IBKR mark price
-                    p.current_price = price if (not np.isnan(price) and price > 0) else p.mark_price
+                    # Price chain: live quote → most recent cached DB close → IBKR mark price.
+                    # Never let it fall through to the entry price — that fabricates a stop
+                    # breach for any winner whose stop has ratcheted above cost.
+                    if not np.isnan(price) and price > 0:
+                        p.current_price = price
+                    else:
+                        p.current_price = ps.latest_close(p.conid) or p.mark_price
                     
                     # 4. Update Max High using PriceService (Local Cache)
                     try:
@@ -142,8 +147,15 @@ class MarketDataService:
 
         except Exception as e:
             logger.error(f"Market Data Error: {e}")
+            # Live fetch failed wholesale — still honour the chain: cached DB close → mark.
+            try:
+                from services.price_service import PriceService
+                ps_fallback = PriceService()
+            except Exception:
+                ps_fallback = None
             for p in positions:
-                p.current_price = p.mark_price
+                db_close = ps_fallback.latest_close(p.conid) if ps_fallback else None
+                p.current_price = db_close or p.mark_price
                 p.max_since_entry = max(p.max_since_entry, p.current_price)
 
         return positions
