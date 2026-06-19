@@ -290,6 +290,20 @@ def update_high_water_mark(conid, sl_price):
     conn.commit()
     conn.close()
 
+def reset_inception_on_reopen(conid, new_start_date):
+    """Clear the stale ratchet and frozen inception for a position that went flat (reset-on-zero)
+    and was reopened, re-anchoring start_date to the new lot. highest_sl rebuilds from the new
+    lot's high-water mark; inception_stop/atr re-freeze on the next stop save. Prevents a prior
+    lot's settings (e.g. a ratcheted stop above the new lot's high) from fabricating a breach."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE risk_profiles SET highest_sl = 0.0, inception_stop = NULL, inception_atr = NULL, "
+        "start_date = ? WHERE conid = ? AND status = 'ACTIVE'",
+        (new_start_date, str(conid))
+    )
+    conn.commit()
+    conn.close()
+
 def get_all_risk_settings():
     conn = get_conn()
     cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'ACTIVE'")

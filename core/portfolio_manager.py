@@ -6,7 +6,7 @@ from services.market_data_service import MarketDataService
 from .profit_taking import enrich_regime
 from .asset_registry import AssetRegistry
 from .reconciliation_service import ReconciliationService
-from db import get_all_risk_settings
+from db import get_all_risk_settings, reset_inception_on_reopen
 from .stop_loss import calculate_position_risk
 from models import Position
 from logger import logger
@@ -94,7 +94,12 @@ class PortfolioManager:
             AssetRegistry.enrich_position_metadata(p)
 
     def _heal_inception_dates(self, positions: list[Position], risk_settings: dict):
-        """Force priority to Risk Profile Start Date for Inception if available."""
+        """Prefer the Risk Profile start date for inception — but never let it predate the
+        current ledger lot. A position that went flat and reopened (reset-on-zero) carries a
+        stale profile start_date from the PRIOR lot; forcing it would backdate the position,
+        dragging an old price peak into the high-water mark and fabricating a stop breach
+        (e.g. AGQ/UGL: profile 2026-02-23 vs ledger reopening 2026-06-15). The reset-on-zero
+        ledger date is authoritative in that case."""
         for p in positions:
             conid_str = str(p.conid)
             if conid_str in risk_settings:
@@ -102,6 +107,18 @@ class PortfolioManager:
                 if profile.start_date:
                     profile_date = pd.to_datetime(profile.start_date)
                     if pd.notnull(profile_date):
+                        if p.date_entry and pd.notnull(p.date_entry) and profile_date < p.date_entry:
+                            # The current ledger lot is newer than the profile: the position
+                            # went flat (reset-on-zero) and reopened, so the profile's ratchet
+                            # and frozen inception belong to the CLOSED lot. Reset them (DB +
+                            # in-memory) and re-anchor to the new lot; the ledger date wins.
+                            new_date = p.date_entry.strftime('%Y-%m-%d')
+                            reset_inception_on_reopen(p.conid, new_date)
+                            profile.highest_sl = 0.0
+                            profile.inception_stop = None
+                            profile.inception_atr = None
+                            profile.start_date = new_date
+                            continue
                         p.date_entry = profile_date
 
     def _enrich_metrics(self, positions: list[Position], risk_settings: dict, total_nav: float | None):
