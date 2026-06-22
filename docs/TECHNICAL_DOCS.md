@@ -210,3 +210,41 @@ The asset context window (`#position-context`, built in `refresh_risk_checklist`
 4. **DETAILS** — demoted diagnostics: capital-efficiency line, inception stop/ATR with vol delta, R-compliance remediation, and the full regime-calculation breakdown + exit prose.
 
 The verdict is modeling-aware: an explicit `+N / -N` or a `BE` goal-seek overrides the system directive so the panel reflects the user's what-if.
+
+## 7. Entry/Exit Zone Scanner (Menu Option 8)
+
+The Zone Scanner finds where current price sits on a cluster of independent structural levels and converts a flagged zone into a stop and position size. It scans the same universe as the Watch List: open holdings plus `status='WATCH'` prospects.
+
+### Operational Workflow
+
+Launch with menu option **8**. The scan runs across the universe and lists each ticker, sorted flagged-first then by proximity to the nearest level. Select a row to see the full breakdown.
+
+- **TAG** — `ZONE` (a confluence zone), `ZONE-MOMO` (zone in a momentum regime), or `—` (no zone).
+- **Detail panel** — the converging signals (each with its ATR-distance and a `★` for fortress-tight levels), the chosen stop and its source, the target, and the share count under each risk preset (Small / Base / Large).
+
+A zone is flagged when **two or more** structural levels converge within the confluence band of the current price.
+
+### The Signals
+
+For each ticker the scanner computes:
+
+- **Composite Volume Profile** (6-month and 12-month) — POC (point of control), VAH/VAL (value-area bounds holding ~70% of volume), and naked POCs (unretested high-volume shelves). This is a **daily-bar approximation**, not a tick-derived profile — Yahoo Finance exposes no intraday volume-at-price. Each day's volume is smeared across its high-low range weighted toward the close. A footer notes this in the panel.
+- **Anchored VWAP** — from the most recent swing low (support) and swing high (resistance).
+- **Moving Averages** — 50-day and 200-day.
+
+### Momentum Regime: Dynamic Stop-Tier
+
+For names running far above their longer-term support, a 6-month VAL stop is too distant for a momentum-flag entry (a 20%+ stop). When price is more than the configured premium above the 6-month VAL, the ticker enters a **Momentum Regime**:
+
+- The stop drops to **micro-structure** from the last ~2 weeks of bars: the micro volume-profile VAL and an AVWAP anchored to the most recent swing low, whichever sits nearest below price, placed a small ATR buffer beneath it.
+- The row is tagged **`ZONE-MOMO`** and the stop source is shown (e.g. `stop=206.15 (VAL_14d)`).
+- A clean break of that micro level means the parabolic move is broken — the exit signal.
+
+Names not extended above their 6-month VAL stay in the normal regime (`ZONE`) and use their true structural support.
+
+### Technical Implementation Details
+
+- Confluence is measured in **ATR units**; the percent confluence band is converted to ATR per ticker so one threshold works across price scales.
+- The stop is the nearest invalidating support below price (tightest of VAL / anchored-VWAP), or the momentum micro-structure in a momentum regime; targets follow the existing reward framework (next naked POC, else the 3:1 reward floor).
+- Position size is computed under all three presets via the existing dual R%/exposure-constraint sizer; NAV comes from the broker snapshot.
+- Engine: `core/zone_scan.py` (orchestrator), `core/volume_profile.py`, `core/anchored_vwap.py`, `core/confluence.py`. UI: `ui/zone_scan_workspace.py`. The scan is read-only — it never writes to the database.
