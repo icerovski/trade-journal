@@ -45,3 +45,43 @@ TP_ATR_MULTIPLE = 3
 # price — (target − price) / (price − stop) — is flagged if it falls below this. Lets the
 # user control that an extended target still pays at least 3:1 from here.
 RR_SETUP_FLOOR = 3.0
+
+# --- Entry/Exit Zone Scanner ------------------------------------------------
+# Composite volume profile, anchored VWAP, and MA confluence used by the zone
+# scanner (core/volume_profile.py, core/anchored_vwap.py, core/zone_scan.py).
+
+# Composite volume-profile lookbacks (months). Two profiles are built in
+# parallel per ticker; a level confirmed on both windows is stronger.
+VP_LOOKBACKS_MONTHS = (6, 12)
+
+# Price-bucket width as a fraction of the window's reference price (0.5%).
+# This is the histogram row size — finer buckets sharpen POC but add noise.
+VP_BUCKET_PCT = 0.005
+
+# Fraction of total volume contained in the value area around the POC.
+# VAH/VAL are the upper/lower bounds of this band (institutional standard 70%).
+VP_VALUE_AREA_PCT = 0.70
+
+# Pivot swing-detection window (bars each side) for anchored-VWAP anchor points.
+# A bar is a swing high/low if it exceeds all PIVOT_WINDOW bars on both sides.
+PIVOT_WINDOW = 10
+
+# Confluence band for the zone scanner: current price must sit within this
+# fraction of a structural level (VAL/VAH/POC, AVWAP, 50/200 DMA) for it to
+# count toward a zone. Reconciled to ATR units internally for display.
+ZONE_CONFLUENCE_PCT = 0.025
+
+# Minimum number of distinct structural signals converging at the current price
+# for the scanner to flag an entry zone (the brief's "2 or more align").
+ZONE_MIN_CONFLUENCE = 2
+
+# Momentum-regime stop tiering. When price runs more than MOMENTUM_VAL_PREMIUM_PCT
+# above the 6-month VAL, the 6mo support is too far for a momentum-flag entry
+# (a 20%+ stop). The scanner switches to a micro-structure stop built from the
+# last MICRO_LOOKBACK_DAYS bars: the micro volume-profile VAL and an AVWAP
+# anchored to the most recent swing low in that window. The stop sits
+# MICRO_STOP_BUFFER_ATR daily-ATRs below the nearest micro support — a clean
+# break of it means the parabolic move is done. Tagged ZONE-MOMO in output.
+MOMENTUM_VAL_PREMIUM_PCT = 0.10
+MICRO_LOOKBACK_DAYS = 14
+MICRO_STOP_BUFFER_ATR = 0.25

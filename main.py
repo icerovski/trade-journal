@@ -79,6 +79,10 @@ def show_menu():
     menu_text.append("PORTFOLIO RISK   ", style="bold white")
     menu_text.append("(Aggregate R%, Stop-Out Loss, Concentration, FX)\n", style="dim")
 
+    menu_text.append("[8] ", style="bold cyan")
+    menu_text.append("ZONE SCANNER     ", style="bold white")
+    menu_text.append("(Entry/Exit Zones: Volume Profile + AVWAP + MA Confluence)\n", style="dim")
+
     menu_text.append("\n[0] EXIT", style="bold red")
 
     console.print(Panel(menu_text, title="[bold]TRADE JOURNAL & RISK MANAGEMENT[/bold]", subtitle="Institutional Portfolio System", border_style="blue"))
@@ -200,6 +204,11 @@ def handle_portfolio_risk():
     from ui.portfolio_risk import run_portfolio_risk
     run_portfolio_risk()
 
+def handle_zone_scanner():
+    """Launch the Entry/Exit Zone Scanner workspace."""
+    from ui.zone_scan_workspace import run_zone_scan_workspace
+    run_zone_scan_workspace()
+
 def main():
     sync_config.smart_sync()
     init_db()
@@ -222,6 +231,8 @@ def main():
             handle_watch_list()
         elif choice == '7':
             handle_portfolio_risk()
+        elif choice == '8':
+            handle_zone_scanner()
         elif choice == '0':
             sys.exit()
         else:

@@ -12,7 +12,7 @@ from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr
 from db import get_all_monitored_profiles, delete_risk_profile
 from logger import logger, suppress_console_logging
 from .chart_utils import launch_price_chart
-from constants import CONFLUENCE_ATR_THRESHOLD
+from core.confluence import evaluate_confluence
 from core.ui_utils import UIUtils
 
 class WatchListWorkspace(App):
@@ -224,55 +224,34 @@ class WatchListWorkspace(App):
         stop_price = data['current_price'] - assigned_atr
         
         dmas = trend_data.get('dmas', {})
-        
-        # Populate Table
-        c_table = self.query_one("#confluence-table", DataTable)
-        c_table.clear()
-        
-        # Define the order of indicators for the UI
+
+        # Build the ordered level map and score it through the shared engine.
         indicators = [
-            'DMA200', 'EMA200', 
-            'DMA100', 'EMA100', 
-            'DMA50', 'EMA50', 
+            'DMA200', 'EMA200',
+            'DMA100', 'EMA100',
+            'DMA50', 'EMA50',
             'DMA10', 'EMA10'
         ]
-        
-        for name in indicators:
-            val = dmas.get(name)
-            if val is None: continue
-            
-            # Distance to Current Price
-            dist_p = abs(data['current_price'] - val)
-            pct_p = (dist_p / data['current_price'] * 100) if data['current_price'] > 0 else 0
-            atr_p = dist_p / atr_14 if atr_14 > 0 else 0
-            
-            # Distance to Stop Price
-            dist_s = abs(stop_price - val)
-            pct_s = (dist_s / stop_price * 100) if stop_price > 0 else 0
-            atr_s = dist_s / atr_14 if atr_14 > 0 else 0
-            
-            # Highlight if very close (Confluence)
-            p_style = "bold green" if atr_p < CONFLUENCE_ATR_THRESHOLD else "white"
-            s_style = "bold cyan" if atr_s < CONFLUENCE_ATR_THRESHOLD else "white"
-            
-            # Add Row: Indicator, Price Dist (%), Price Dist (ATR), Stop Dist (%), Stop Dist (ATR)
+        levels = {name: dmas.get(name) for name in indicators}
+        conf = evaluate_confluence(data['current_price'], stop_price, levels, atr_14)
+
+        # Populate Table — one row per level, highlighting in-zone distances.
+        c_table = self.query_one("#confluence-table", DataTable)
+        c_table.clear()
+        for lvl in conf['levels']:
+            p_style = "bold green" if lvl['price_in_zone'] else "white"
+            s_style = "bold cyan" if lvl['stop_in_zone'] else "white"
+            # Indicator, Price Dist (%), Price Dist (ATR), Stop Dist (%), Stop Dist (ATR)
             c_table.add_row(
-                name,
-                f"[{p_style}]{pct_p:.2f}%[/]",
-                f"[{p_style}]{atr_p:.2f}R[/]",
-                f"[{s_style}]{pct_s:.2f}%[/]",
-                f"[{s_style}]{atr_s:.2f}R[/]"
+                lvl['name'],
+                f"[{p_style}]{lvl['price_pct']:.2f}%[/]",
+                f"[{p_style}]{lvl['price_atr']:.2f}R[/]",
+                f"[{s_style}]{lvl['stop_pct']:.2f}%[/]",
+                f"[{s_style}]{lvl['stop_atr']:.2f}R[/]"
             )
 
-        # Update Confluence Strength (Point count)
-        # Strength = how many indicators are within CONFLUENCE_ATR_THRESHOLD ATR of price or stop
-        strength = 0
-        for name in indicators:
-            val = dmas.get(name)
-            if val:
-                if abs(data['current_price'] - val) / atr_14 < CONFLUENCE_ATR_THRESHOLD: strength += 1
-                if abs(stop_price - val) / atr_14 < CONFLUENCE_ATR_THRESHOLD: strength += 1
-        
+        # Strength = in-zone hits within CONFLUENCE_ATR_THRESHOLD of price or stop.
+        strength = conf['strength']
         score_color = "green" if strength >= 3 else ("yellow" if strength >= 1 else "red")
         self.query_one("#confluence-strength", Static).update(f"[{score_color}]{strength}-Point Cluster Detected[/]")
 
