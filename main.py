@@ -1,5 +1,6 @@
 import sys
 import warnings
+from pathlib import Path
 from db import init_db, wipe_trades_only, get_watch_list_profiles
 from services.ibkr import (
     process_local_csvs, 
@@ -44,6 +45,28 @@ def print_watch_list_summary():
         )
     
     console.print(table)
+
+def print_open_items():
+    """Surface unchecked items from docs/OPEN_ITEMS.md on startup. Tracked in git,
+    so the reminder travels across machines (the .claude memory store does not)."""
+    path = Path(__file__).parent / "docs" / "OPEN_ITEMS.md"
+    if not path.exists():
+        return
+    items = [
+        line.strip()[6:].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("- [ ]")
+    ]
+    if not items:
+        return
+
+    body = Text()
+    for item in items:
+        body.append("  • ", style="bold yellow")
+        body.append(f"{item}\n", style="white")
+    body.append("\n  See docs/OPEN_ITEMS.md to tick off or edit.", style="dim")
+    console.print(Panel(body, title=f"[bold yellow]OPEN ITEMS ({len(items)})[/bold yellow]",
+                        border_style="yellow"))
 
 def show_menu():
     from db import get_watch_list_profiles
@@ -213,6 +236,8 @@ def main():
     sync_config.smart_sync()
     init_db()
     manager = PortfolioManager()
+
+    print_open_items()
 
     while True:
         show_menu()
