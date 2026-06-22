@@ -85,3 +85,16 @@ ZONE_MIN_CONFLUENCE = 2
 MOMENTUM_VAL_PREMIUM_PCT = 0.10
 MICRO_LOOKBACK_DAYS = 14
 MICRO_STOP_BUFFER_ATR = 0.25
+
+# Momentum stop-tier v2 micro-anchors. Beyond the micro VAL and swing-low AVWAP,
+# two more anchors are considered in the momentum window, and the tightest
+# qualifying one below price wins (stop still set MICRO_STOP_BUFFER_ATR below it):
+#  - Breakout gap: the most recent up-gap (today's low above yesterday's high)
+#    leaves an unfilled shelf. Its floor (the pre-gap high) is where a clean fill
+#    breaks momentum. Only gaps >= GAP_MIN_ATR daily-ATRs count (filters trivial
+#    gaps); the floor (not the gap top) is used so a partial fill doesn't shake out.
+#  - High-volume node: the nearest heavy volume shelf below price in the micro
+#    profile — a local histogram peak clearing HVN_MIN_PROMINENCE of the tallest
+#    bucket. Tighter and more precise than the VAL edge when volume has stacked.
+GAP_MIN_ATR = 0.5
+HVN_MIN_PROMINENCE = 0.5

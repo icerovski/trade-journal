@@ -26,6 +26,7 @@ from core.ui_utils import UIUtils
 from core.zone_scan import build_zone_report
 from db import get_presets
 from logger import logger, suppress_console_logging
+from services.price_service import PriceService
 
 # Fallback presets if the DB matrix is empty (mirrors risk_workspace defaults).
 _DEFAULT_PRESETS = {
@@ -101,8 +102,34 @@ class ZoneScanWorkspace(App):
     def __init__(self):
         super().__init__()
         self.pm = PortfolioManager()
+        self.ps = PriceService()
         self.results: list = []
         self.by_ticker: dict = {}
+
+    def _load_or_fetch_ohlcv(self, item: dict) -> pd.DataFrame:
+        """Cache-first price loader for the scan. Reads prices.db; if a conid has
+        no cached history (the WATCH case — the daily sync covers only open
+        positions), back-fills it once via PriceService, then re-reads.
+
+        Open positions always have cache, so they never trigger a network round-
+        trip here. A fetch failure on one ticker logs and returns empty rather
+        than aborting the whole scan."""
+        conid = item.get("conid")
+        df = _load_ohlcv(conid)
+        if not df.empty or not conid:
+            return df
+
+        try:
+            yf_ticker = self.pm.mapper.resolve_yf_ticker(item.get("ticker", ""), conid=conid)
+            if not yf_ticker:
+                return df
+            logger.info(f"Zone scan: back-filling prices for WATCH name {item.get('ticker')} ({yf_ticker})")
+            self.ps.fetch_and_store(conid, yf_ticker)
+        except Exception as e:
+            logger.warning(f"Zone scan: price back-fill failed for {item.get('ticker')}: {e}")
+            return df
+
+        return _load_ohlcv(conid)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -158,7 +185,7 @@ class ZoneScanWorkspace(App):
                     })
 
                 presets = get_presets() or _DEFAULT_PRESETS
-                results = build_zone_report(universe, lambda it: _load_ohlcv(it["conid"]),
+                results = build_zone_report(universe, self._load_or_fetch_ohlcv,
                                             total_nav, presets)
             self.post_message(self.ScanLoaded(results, total_nav, nav_ccy))
         except Exception as e:

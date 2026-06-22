@@ -14,7 +14,7 @@ prices_daily cache via services/price_service.py is the intended source).
 import numpy as np
 import pandas as pd
 
-from constants import VP_BUCKET_PCT, VP_VALUE_AREA_PCT
+from constants import HVN_MIN_PROMINENCE, VP_BUCKET_PCT, VP_VALUE_AREA_PCT
 
 
 def _bar_weights(centers: np.ndarray, low: float, high: float, close: float) -> np.ndarray:
@@ -235,3 +235,31 @@ def find_naked_pocs(ohlcv: pd.DataFrame, profile: dict, min_prominence: float = 
 
     naked.sort(key=lambda d: d["volume"], reverse=True)
     return naked
+
+
+def find_high_volume_nodes(profile: dict, min_prominence: float = HVN_MIN_PROMINENCE) -> list[dict]:
+    """High-volume nodes (local histogram peaks) in a profile — the price shelves
+    where volume has stacked, used as support/resistance anchors.
+
+    Unlike find_naked_pocs, this does NOT require the level to be untested: a node
+    is a shelf whether or not price has since traded back through it. A peak must
+    clear `min_prominence` of the tallest bucket to count (filtering the small
+    discretisation peaks the daily-bar smear leaves behind). Returns nodes sorted
+    by volume (descending), each: {price, volume}.
+    """
+    if not profile:
+        return []
+
+    hist_df = profile["hist"]
+    prices = hist_df["price"].to_numpy(dtype=float)
+    vols = hist_df["volume"].to_numpy(dtype=float)
+    if len(prices) < 3:
+        return []
+
+    peak_floor = vols.max() * min_prominence
+    nodes = [
+        {"price": float(prices[i]), "volume": float(vols[i])}
+        for i in _plateau_peaks(vols, peak_floor)
+    ]
+    nodes.sort(key=lambda d: d["volume"], reverse=True)
+    return nodes

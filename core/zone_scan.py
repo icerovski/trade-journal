@@ -16,6 +16,8 @@ import math
 import pandas as pd
 
 from constants import (
+    GAP_MIN_ATR,
+    HVN_MIN_PROMINENCE,
     MICRO_LOOKBACK_DAYS,
     MICRO_STOP_BUFFER_ATR,
     MOMENTUM_VAL_PREMIUM_PCT,
@@ -27,7 +29,11 @@ from constants import (
 from core.anchored_vwap import anchored_vwap, compute_anchored_vwaps
 from core.confluence import evaluate_confluence
 from core.sizing import compute_position_size
-from core.volume_profile import compute_volume_profile, find_naked_pocs
+from core.volume_profile import (
+    compute_volume_profile,
+    find_high_volume_nodes,
+    find_naked_pocs,
+)
 
 
 def _wilder_atr(ohlcv: pd.DataFrame, window: int = 14) -> float:
@@ -101,14 +107,45 @@ def _nearest_support(levels: dict, price: float) -> tuple[float | None, str | No
     return candidates[name], name
 
 
+def _breakout_gap_floor(
+    micro: pd.DataFrame, price: float, atr: float, gap_min_atr: float
+) -> float | None:
+    """Floor of the most recent significant up-gap in the window, if it sits below
+    price. An up-gap (a bar whose low is above the prior bar's high) leaves an
+    unfilled shelf; the pre-gap high is the floor where a clean fill of the gap
+    breaks the momentum. Only gaps of at least `gap_min_atr` daily-ATRs count, and
+    the floor (not the gap top) is returned so a partial fill doesn't shake out.
+
+    Returns the floor price, or None if there is no qualifying gap below price.
+    """
+    if micro is None or len(micro) < 2 or atr <= 0:
+        return None
+
+    highs = micro["high"].to_numpy(dtype=float)
+    lows = micro["low"].to_numpy(dtype=float)
+    min_gap = gap_min_atr * atr
+
+    # Walk from the most recent bar backward — the latest qualifying gap wins.
+    for i in range(len(micro) - 1, 0, -1):
+        floor = highs[i - 1]
+        if lows[i] - floor >= min_gap and floor < price:
+            return float(floor)
+    return None
+
+
 def _micro_support(
-    ohlcv: pd.DataFrame, price: float, atr: float, micro_days: int, buffer_atr: float
+    ohlcv: pd.DataFrame, price: float, atr: float, micro_days: int, buffer_atr: float,
+    *, gap_min_atr: float = GAP_MIN_ATR, hvn_min_prominence: float = HVN_MIN_PROMINENCE,
 ) -> tuple[float | None, str | None]:
     """Short-term support for a momentum-flag entry, from the last `micro_days`
-    bars: the micro volume-profile VAL and an AVWAP anchored to the most recent
-    swing low (the lowest low in the window). Picks the nearest of those that
-    sits below price and places the stop `buffer_atr` daily-ATRs beneath it — a
-    clean break of that level means the parabolic move is broken.
+    bars. Four anchor types are considered below price:
+      - VAL:   the micro volume-profile value-area low,
+      - HVN:   the nearest high-volume node (heavier shelf than the VAL edge),
+      - AVWAP: anchored to the most recent swing low (the lowest low in the window),
+      - GAP:   the floor of the most recent significant breakout gap.
+    The nearest of those below price wins (tightest), and the stop sits `buffer_atr`
+    daily-ATRs beneath it — a clean break of that level means the parabolic move
+    is broken.
 
     Returns (stop_price, source_label) or (None, None) if no micro support exists
     below price (e.g. price is sitting on the micro low).
@@ -120,13 +157,22 @@ def _micro_support(
     candidates: dict[str, float] = {}
 
     prof = compute_volume_profile(micro)
-    if prof and prof["val"] < price:
-        candidates[f"VAL_{micro_days}d"] = prof["val"]
+    if prof:
+        if prof["val"] < price:
+            candidates[f"VAL_{micro_days}d"] = prof["val"]
+        # Nearest high-volume node below price — a heavier shelf than the VAL edge.
+        hvns_below = [n["price"] for n in find_high_volume_nodes(prof, hvn_min_prominence) if n["price"] < price]
+        if hvns_below:
+            candidates[f"HVN_{micro_days}d"] = max(hvns_below)
 
     anchor_pos = int(micro["low"].to_numpy().argmin())  # most recent swing low in window
     av = anchored_vwap(micro.reset_index(drop=True), anchor_pos)
     if math.isfinite(av) and av < price:
         candidates[f"AVWAP_{micro_days}d"] = av
+
+    gap_floor = _breakout_gap_floor(micro, price, atr, gap_min_atr)
+    if gap_floor is not None:
+        candidates[f"GAP_{micro_days}d"] = gap_floor
 
     if not candidates:
         return None, None

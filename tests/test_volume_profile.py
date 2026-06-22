@@ -2,7 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from core.volume_profile import compute_volume_profile, find_naked_pocs
+from core.volume_profile import (
+    compute_volume_profile,
+    find_high_volume_nodes,
+    find_naked_pocs,
+)
 
 
 def _bars(rows):
@@ -67,3 +71,35 @@ def test_naked_poc_flags_abandoned_shelf():
     prof = compute_volume_profile(df)
     naked = find_naked_pocs(df, prof)
     assert any(n["side"] == "below" and 99 <= n["price"] <= 101 for n in naked)
+
+
+def test_high_volume_nodes_empty_profile():
+    assert find_high_volume_nodes({}) == []
+
+
+def test_high_volume_nodes_finds_both_shelves_sorted_by_volume():
+    # Bimodal: a heavy shelf at ~110 and a lighter one at ~90, with quiet bars in
+    # between. Both surface as nodes; the heavier one ranks first. (Unlike naked
+    # POCs, retesting does not disqualify a node.) A lower prominence floor is used
+    # so the secondary shelf clears the bar even when it splits across two buckets.
+    rows = [(110.5, 109.5, 110.0, 6000) for _ in range(20)]
+    rows += [(100.5, 99.5, 100.0, 50) for _ in range(10)]
+    rows += [(90.5, 89.5, 90.0, 5000) for _ in range(20)]
+    prof = compute_volume_profile(_bars(rows))
+    nodes = find_high_volume_nodes(prof, min_prominence=0.3)
+    prices = [n["price"] for n in nodes]
+    assert any(abs(p - 110.0) <= prof["bucket_width"] for p in prices)
+    assert any(abs(p - 90.0) <= prof["bucket_width"] for p in prices)
+    # Sorted by volume desc -> the 110 shelf (heaviest) leads.
+    assert abs(nodes[0]["price"] - 110.0) <= prof["bucket_width"]
+
+
+def test_high_volume_nodes_prominence_filters_minor_peaks():
+    # One dominant shelf plus a tiny bump well under the prominence floor. With a
+    # high prominence threshold only the dominant shelf qualifies.
+    rows = [(100.5, 99.5, 100.0, 5000) for _ in range(30)]
+    rows += [(120.5, 119.5, 120.0, 100) for _ in range(2)]
+    prof = compute_volume_profile(_bars(rows))
+    nodes = find_high_volume_nodes(prof, min_prominence=0.5)
+    assert len(nodes) == 1
+    assert abs(nodes[0]["price"] - 100.0) <= prof["bucket_width"]

@@ -7,6 +7,7 @@ from core.zone_scan import (
     _slice_months,
     _nearest_support,
     _micro_support,
+    _breakout_gap_floor,
     scan_ticker,
     build_zone_report,
 )
@@ -85,6 +86,54 @@ def test_micro_support_from_recent_window_below_price():
     stop, src = _micro_support(df, price=101.0, atr=1.0, micro_days=14, buffer_atr=0.25)
     assert src.endswith("14d")
     assert stop < 101.0 and stop > 95.0  # tight micro stop, not far below
+
+
+def _gap_window(base_high=90.5, gap_low=95.0, n_base=12, base_vol=10000.0, post_vol=100.0):
+    """A flat heavy base then an up-gap into a light two-bar shelf. VAL/HVN/AVWAP
+    all pin to the heavy base (~90); the gap floor (base high) is the sole support
+    above it. Returns a micro-window DataFrame."""
+    rows = [(base_high, base_high - 1.0, base_high - 0.5, base_vol) for _ in range(n_base)]
+    rows += [(gap_low + 1.0, gap_low, gap_low + 0.5, post_vol)]       # the gap-up bar
+    rows += [(gap_low + 1.5, gap_low + 0.5, gap_low + 1.0, post_vol)]  # follow-through
+    return pd.DataFrame(rows, columns=["high", "low", "close", "volume"])
+
+
+def test_breakout_gap_floor_returns_pregap_high():
+    df = _gap_window(base_high=90.5, gap_low=95.0)
+    floor = _breakout_gap_floor(df, price=97.0, atr=1.0, gap_min_atr=0.5)
+    assert floor == pytest.approx(90.5)  # the pre-gap high, not the gap top
+
+
+def test_breakout_gap_floor_ignores_subthreshold_gap():
+    # A 0.3-wide gap with atr=1 and gap_min_atr=0.5 -> below threshold -> None.
+    df = _gap_window(base_high=90.5, gap_low=90.8)
+    assert _breakout_gap_floor(df, price=97.0, atr=1.0, gap_min_atr=0.5) is None
+
+
+def test_breakout_gap_floor_none_when_floor_above_price():
+    df = _gap_window(base_high=90.5, gap_low=95.0)
+    # Price sitting inside the base, below the gap floor -> floor is not support.
+    assert _breakout_gap_floor(df, price=90.0, atr=1.0, gap_min_atr=0.5) is None
+
+
+def test_micro_support_selects_gap_floor_when_tightest():
+    df = _gap_window(base_high=90.5, gap_low=95.0)
+    stop, src = _micro_support(df, price=97.0, atr=1.0, micro_days=14, buffer_atr=0.25)
+    assert src == "GAP_14d"
+    assert stop == pytest.approx(90.5 - 0.25)  # floor minus the ATR buffer
+
+
+def test_micro_support_selects_hvn_when_tightest():
+    # A moderate-volume ramp 90->95 then a heavy shelf at ~96 (the HVN), price 100.
+    # The volume spread below the peak pushes VAL down to ~93, so the 96 node is a
+    # strictly tighter support than the VAL edge -> HVN wins. No gaps.
+    ramp = np.linspace(90.0, 95.0, 9)
+    rows = [(c + 0.5, c - 0.5, c, 2000) for c in ramp]
+    rows += [(96.5, 95.5, 96.0, 3000) for _ in range(5)]
+    df = pd.DataFrame(rows, columns=["high", "low", "close", "volume"])
+    stop, src = _micro_support(df, price=100.0, atr=1.0, micro_days=14, buffer_atr=0.25)
+    assert src == "HVN_14d"
+    assert 95.0 < stop < 96.5  # node ~96 minus the buffer
 
 
 def test_momentum_regime_tags_and_uses_micro_stop():
