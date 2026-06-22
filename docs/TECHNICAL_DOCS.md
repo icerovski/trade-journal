@@ -236,15 +236,21 @@ For each ticker the scanner computes:
 
 For names running far above their longer-term support, a 6-month VAL stop is too distant for a momentum-flag entry (a 20%+ stop). When price is more than the configured premium above the 6-month VAL, the ticker enters a **Momentum Regime**:
 
-- The stop drops to **micro-structure** from the last ~2 weeks of bars: the micro volume-profile VAL and an AVWAP anchored to the most recent swing low, whichever sits nearest below price, placed a small ATR buffer beneath it.
-- The row is tagged **`ZONE-MOMO`** and the stop source is shown (e.g. `stop=206.15 (VAL_14d)`).
+- The stop drops to **micro-structure** from the last ~2 weeks of bars. Four anchor types are considered below price and the **tightest** (nearest below price) wins, placed a small ATR buffer beneath it:
+    - **`VAL_14d`** — the micro volume-profile value-area low.
+    - **`HVN_14d`** — the nearest **high-volume node** below price (a heavy volume shelf; tighter and more precise than the VAL edge).
+    - **`AVWAP_14d`** — an AVWAP anchored to the most recent swing low *inside* the window.
+    - **`GAP_14d`** — the **floor of the most recent breakout gap** (the pre-gap high; only gaps ≥ 0.5 ATR count). A clean fill of the gap undoes the move that started the leg.
+- The row is tagged **`ZONE-MOMO`** and the winning stop source is shown (e.g. `stop=206.15 (HVN_14d)`).
 - A clean break of that micro level means the parabolic move is broken — the exit signal.
+
+  > The `HVN` and `GAP` anchors are the **v2** stop-tier additions. The `VAL`/`HVN`/`GAP` thresholds are tuned by `MICRO_STOP_BUFFER_ATR`, `HVN_MIN_PROMINENCE`, and `GAP_MIN_ATR` in `constants.py`. Operator-facing reading guide: `docs/guides/Zone_Scanner_Guide.md`.
 
 Names not extended above their 6-month VAL stay in the normal regime (`ZONE`) and use their true structural support.
 
 ### Technical Implementation Details
 
 - Confluence is measured in **ATR units**; the percent confluence band is converted to ATR per ticker so one threshold works across price scales.
-- The stop is the nearest invalidating support below price (tightest of VAL / anchored-VWAP), or the momentum micro-structure in a momentum regime; targets follow the existing reward framework (next naked POC, else the 3:1 reward floor).
+- The stop is the nearest invalidating support below price (tightest of VAL / anchored-VWAP), or the momentum micro-structure in a momentum regime (tightest of micro VAL / high-volume node / swing-low AVWAP / breakout-gap floor); targets follow the existing reward framework (next naked POC, else the 3:1 reward floor).
 - Position size is computed under all three presets via the existing dual R%/exposure-constraint sizer; NAV comes from the broker snapshot.
 - Engine: `core/zone_scan.py` (orchestrator), `core/volume_profile.py`, `core/anchored_vwap.py`, `core/confluence.py`. UI: `ui/zone_scan_workspace.py`. The scan is read-only — it never writes to the database.
