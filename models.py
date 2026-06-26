@@ -1,5 +1,5 @@
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Optional
 from constants import QTY_ZERO_THRESHOLD, AAGR_MIN_YEARS, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS
@@ -60,6 +60,13 @@ class RiskProfile:
     status: str = "ACTIVE"
     profile: Optional[str] = None
     tp_atr_mult: Optional[float] = None  # TP override as a multiple of inception ATR; None = default 3R
+
+    @classmethod
+    def from_row(cls, row) -> "RiskProfile":
+        """Builds a RiskProfile from a DB row, ignoring columns the dataclass
+        no longer declares (e.g. orphaned legacy columns like tp_atr_mult)."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in dict(row).items() if k in known})
 
 @dataclass
 class Position:

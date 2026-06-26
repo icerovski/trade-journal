@@ -247,7 +247,7 @@ def get_watch_list_profiles():
     cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'WATCH'")
     rows = cursor.fetchall()
     conn.close()
-    return [RiskProfile(**dict(r)) for r in rows]
+    return [RiskProfile.from_row(r) for r in rows]
 
 def get_all_monitored_profiles():
     """Retrieves all risk profiles with status 'WATCH' or 'ACTIVE'."""
@@ -255,7 +255,7 @@ def get_all_monitored_profiles():
     cursor = conn.execute("SELECT * FROM risk_profiles WHERE status IN ('WATCH', 'ACTIVE') ORDER BY ticker ASC")
     rows = cursor.fetchall()
     conn.close()
-    return [RiskProfile(**dict(r)) for r in rows]
+    return [RiskProfile.from_row(r) for r in rows]
 
 def promote_prospect_to_active(ticker, real_conid):
     conn = get_conn()
@@ -309,7 +309,7 @@ def get_all_risk_settings():
     cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'ACTIVE'")
     rows = cursor.fetchall()
     conn.close()
-    return {r['conid']: RiskProfile(**dict(r)) for r in rows}
+    return {r['conid']: RiskProfile.from_row(r) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False
