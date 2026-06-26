@@ -149,8 +149,10 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
     headline action and the justification below it can never diverge.
 
     Precedence within the exit axis mirrors the trading logic: M1 makes the position
-    risk-free (never sells); a sub-1.0 RR efficiency floor on a FIXED M2/TP stop forces an
-    exit; otherwise the TRIM_MATRIX maps (stage, regime) → trim fraction (0.0 == let it run).
+    risk-free (never sells); otherwise the TRIM_MATRIX maps (stage, regime) → trim fraction
+    (0.0 == let it run). Exits are driven by the stop and a RANGING regime, not by RR — RR is
+    shown as information in the PLAN panel but no longer forces an exit. (rr/cur_p/stop_type
+    are retained in the signature for call-site stability.)
     """
     if not stage:
         return None
@@ -168,19 +170,6 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
                 'restore_sl': entry, 'urgent': False,
                 'headline': f'RAISE STOP to entry ({entry:,.2f}) — do not sell',
                 'reason': 'Makes the position risk-free; hold the full position.'}
-
-    # RR efficiency floor (FIXED M2/TP only): remaining upside has shrunk below downside.
-    if stop_type == 'FIXED' and stage in ('M2', 'TP') and 0 < rr < 1.0:
-        if regime == 'RANGING':
-            return {'verb': 'EXIT', 'color': 'red', 'shares': int(qty), 'pct': 1.0,
-                    'restore_sl': None, 'urgent': True,
-                    'headline': f'EXIT all — RR {rr:.2f}, no support',
-                    'reason': 'Remaining upside < downside and no trend to justify the hold.'}
-        restore_sl = (2 * cur_p - tp) if (tp > 0 and cur_p > 0) else 0.0
-        return {'verb': 'EXIT', 'color': 'red', 'shares': int(qty), 'pct': 1.0,
-                'restore_sl': restore_sl, 'urgent': True,
-                'headline': f'EXIT all, or raise stop to {restore_sl:,.2f} — RR {rr:.2f}',
-                'reason': 'Remaining upside is smaller than remaining downside.'}
 
     # TRIM_MATRIX: (stage, regime) → (fraction, rationale). 0.0 == hold / let it run.
     key = (stage, regime)
@@ -264,10 +253,8 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     )
 
     # ── Action ── single-sourced from _exit_recommendation so this detailed prose and
-    # the one-line verdict in the panel header can never disagree. The efficiency-floor
-    # (sub-1.0 RR) exit is a FIXED-stop concept handled inside the recommendation: a
-    # TRAILING stop has no real target so its sub-1.0 RR is an artifact, and M1 is exempt
-    # because raising the stop to entry is expected to produce a sub-1.0 RR.
+    # the one-line verdict in the panel header can never disagree. Exits are driven by the
+    # stop and a RANGING regime; RR is informational only (shown in the PLAN panel).
     sl = getattr(pos, 'sl_price', None) or 0.0
     entry = pos.entry_price
     rr = getattr(pos, 'rr_ratio', 0.0)
@@ -297,33 +284,8 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
             f"\n  [bold]→ Sell ~{rec['shares']} sh ({int(rec['pct'] * 100)}%)[/]\n"
             f"  [dim]{rec['reason']}[/]\n"
         )
-    else:  # EXIT — RR efficiency floor
-        dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
-        dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
-        profitable_stop = sl > entry
-        if rec['restore_sl'] is None:  # RANGING — no structural support; tighten-and-hold not offered
-            stop_note = (
-                f"  [dim]The stop ({sl:,.2f}) is above entry, so a stop-out is still profitable — "
-                f"but with no trend there is nothing to justify holding for the thin upside.[/]\n"
-            ) if profitable_stop else ""
-            action = (
-                f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered (RANGING, no support).[/]\n"
-                f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
-                f"  Remaining upside is smaller than remaining downside.[/]\n"
-                f"{stop_note}"
-                f"  [bold red]→ Exit all shares.[/]\n"
-            )
-        else:
-            profit_note = (
-                f"  [dim]Note: stop ({sl:,.2f}) is above entry — a stop-out would still be profitable.[/]\n"
-            ) if profitable_stop else ""
-            action = (
-                f"\n  [bold red]⚠ RR {rr:.2f} — Efficiency floor triggered.[/]\n"
-                f"  [dim]From current price: +{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.\n"
-                f"  Remaining upside is smaller than remaining downside.[/]\n"
-                f"{profit_note}"
-                f"  [bold red]→ Exit all shares, or raise stop to [bold]{rec['restore_sl']:,.2f}[/] (restores RR ≥ 1.0).[/]\n"
-            )
+    else:  # No other verbs are produced — RR no longer forces an exit.
+        action = ""
 
     stage_desc = _stage_desc(stage, regime)
     return (
@@ -1369,9 +1331,19 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_nav_pct", f"{modeled_nav_pct:.1f}% ({m_e:.1f}%)")
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             
-            # For FIXED: f_atr is the stop price; get the real ATR from discovery for inception_atr
+            # For FIXED the user gives a stop *price*, not an ATR distance, so the milestone
+            # ladder needs an R unit. Snap the risk distance (entry − stop) to the nearest
+            # discovery-ATR timeframe, so the ladder runs on a real volatility horizon that
+            # matches how the stop was sized — instead of a hardcoded daily ATR, which made the
+            # ladder fire prematurely on deliberately deep (e.g. leveraged-ETF) stops. TRAILING
+            # already carries its own distance, so it is left unchanged.
             if s_type == 'FIXED':
-                save_incep_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), None) if (disc and disc.get('rows')) else pos.inception_atr
+                risk_dist = abs(hypo_entry - sl_p)
+                atr_choices = {r.label: r.atr_wilder for r in (disc.get('rows') or [])} if disc else {}
+                if atr_choices and risk_dist > 0:
+                    save_incep_atr = min(atr_choices.values(), key=lambda a: abs(a - risk_dist))
+                else:
+                    save_incep_atr = pos.inception_atr
             else:
                 save_incep_atr = f_atr
 

@@ -257,9 +257,9 @@ def test_trim_matrix_other_cells_unchanged(key, expected_pct):
     assert TRIM_MATRIX[key][0] == pytest.approx(expected_pct)
 
 
-# --- Efficiency floor scoping (FIXED only) ---------------------------------
+# --- RR is informational only — no longer a forced-exit trigger ------------
 
-def _floor_pos(stop_type, regime, rr):
+def _low_rr_pos(stop_type, regime, rr):
     p = _pos(entry_price=100.0, current_price=112.0)
     p.stop_type = stop_type
     p.trend_regime = regime
@@ -270,19 +270,20 @@ def _floor_pos(stop_type, regime, rr):
     return p
 
 
-def test_efficiency_floor_fires_for_fixed_stop():
+def test_low_rr_does_not_trigger_efficiency_floor_fixed():
+    """RR < 1.0 on a FIXED M2/TP no longer forces an exit: the floor is gone and the
+    directive follows the regime (M2/TREND → hold). RR is shown elsewhere as info only."""
     from ui.risk_workspace import _exit_guidance_str
-    out = _exit_guidance_str(_floor_pos("FIXED", "TREND", rr=0.75), 112.0)
-    assert "Efficiency floor" in out
-
-
-def test_efficiency_floor_suppressed_for_trailing_stop():
-    """A trailing stop's exit is the stop, not a fixed target — the floor must not fire
-    (the +3R level is only a checkpoint; a sub-1.0 RR there is an artifact)."""
-    from ui.risk_workspace import _exit_guidance_str
-    out = _exit_guidance_str(_floor_pos("TRAILING", "TREND", rr=0.75), 112.0)
+    out = _exit_guidance_str(_low_rr_pos("FIXED", "TREND", rr=0.75), 112.0)
     assert "Efficiency floor" not in out
-    # The regime trim guidance (checkpoints-for-trims) still stands.
+    assert "TREND" in out
+
+
+def test_low_rr_identical_for_fixed_and_trailing_stop():
+    """Stop type no longer changes the directive — neither fires an RR floor."""
+    from ui.risk_workspace import _exit_guidance_str
+    out = _exit_guidance_str(_low_rr_pos("TRAILING", "TREND", rr=0.75), 112.0)
+    assert "Efficiency floor" not in out
     assert "TREND" in out
 
 

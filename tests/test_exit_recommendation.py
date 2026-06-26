@@ -56,27 +56,29 @@ def test_tp_ranging_full_exit_via_matrix():
     assert rec['shares'] == 50
 
 
-def test_rr_floor_exit_fixed_tp_normal():
-    """FIXED M2/TP with RR < 1.0: efficiency floor forces an exit with a restore-stop offer."""
+def test_low_rr_does_not_force_exit_fixed_tp_normal():
+    """RR < 1.0 no longer forces an exit: the directive follows the TRIM_MATRIX. RR is
+    informational only (shown in the PLAN panel), never a trigger."""
     rec = _rec('TP', 'NORMAL', rr=0.5, cur_p=112.0, tp=115.0)
-    assert rec['verb'] == 'EXIT'
-    assert rec['urgent'] is True
-    assert rec['restore_sl'] == pytest.approx(2 * 112.0 - 115.0)  # SL = 2P − TP
-
-
-def test_rr_floor_exit_ranging_has_no_restore():
-    rec = _rec('TP', 'RANGING', rr=0.5)
-    assert rec['verb'] == 'EXIT'
-    assert rec['urgent'] is True
-    assert rec['restore_sl'] is None        # no tighten-and-hold offered without support
-
-
-def test_rr_floor_skipped_for_trailing_stop():
-    """A TRAILING stop has no real target, so its sub-1.0 RR is an artifact and must not
-    force an exit — the matrix directive stands instead."""
-    rec = _rec('TP', 'NORMAL', rr=0.5, stop_type='TRAILING')
-    assert rec['verb'] == 'TRIM'            # not EXIT
+    assert rec['verb'] == 'TRIM'
     assert rec['pct'] == pytest.approx(0.33)
+    assert rec['urgent'] is False
+
+
+def test_low_rr_ranging_tp_is_matrix_full_exit():
+    """TP in RANGING is a full exit via the matrix (verb TRIM, pct 1.0), independent of RR."""
+    rec = _rec('TP', 'RANGING', rr=0.5, qty=50.0)
+    assert rec['verb'] == 'TRIM'
+    assert rec['pct'] == 1.0
+    assert rec['shares'] == 50
+
+
+def test_low_rr_identical_for_fixed_and_trailing():
+    """Stop type no longer changes the directive — RR is not a trigger for either."""
+    fixed = _rec('TP', 'NORMAL', rr=0.5, stop_type='FIXED')
+    trailing = _rec('TP', 'NORMAL', rr=0.5, stop_type='TRAILING')
+    assert fixed['verb'] == trailing['verb'] == 'TRIM'
+    assert fixed['pct'] == trailing['pct'] == pytest.approx(0.33)
 
 
 def test_trim_shares_never_rounds_a_real_trim_to_zero():
