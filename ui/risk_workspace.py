@@ -58,7 +58,7 @@ def _stage_desc(stage: str, regime: str) -> str:
     if stage == 'TP':
         return {
             'TREND':   "Full 3R target reached in a confirmed trend. Take a modest slice and let the rest run on its stop.",
-            'NORMAL':  "Full 3R target reached. Take meaningful profits (about a third); keep a runner only while RR stays above 1.0.",
+            'NORMAL':  "Full 3R target reached. Take meaningful profits (about a third); keep a runner only while the trailing stop and thesis hold.",
             'RANGING': "Full 3R target reached with no structural support. Close the position in full.",
         }.get(regime, _STAGE_DESC['TP'])
     return _STAGE_DESC.get(stage, '')

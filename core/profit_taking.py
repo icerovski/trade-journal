@@ -30,9 +30,9 @@ TRIM_MATRIX = {
         "Do not close the core position."
     )),
     ('TP', 'NORMAL'):  (0.33, (
-        "Target reached but the trend is not confirmed. Take meaningful profits. "
-        "Keep a runner only if the RR ratio is still above 1.0 — if it has fallen below 1.0, "
-        "the efficiency floor overrides this and you should exit entirely."
+        "Target reached but the trend is not confirmed. Take meaningful profits (about a third). "
+        "Keep a runner only while the trailing stop and your thesis hold — the stop, not the RR "
+        "ratio, is the exit. (RR is shown for context only.)"
     )),
     ('TP', 'RANGING'): (1.00, (
         "Target reached with no structural support. The position has done its job. "

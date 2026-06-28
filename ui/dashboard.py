@@ -28,7 +28,6 @@ def _exit_milestones_panel(row) -> str:
     m2      = row.get('M2_Price', 0.0)
     tp      = row.get('TP_Price', 0.0) or 0.0
     qty     = row.get('Qty', 0.0)
-    rr      = row.get('RR_Ratio', 0.0) or 0.0
     entry   = row.get('Entry', 0.0) or 0.0
     if not stage:
         return ""
@@ -37,7 +36,6 @@ def _exit_milestones_panel(row) -> str:
     stage_desc = _STAGE_DESC.get(stage, '')
 
     sl = row.get('SL_Price') or 0.0
-    cur_p = row.get('Price') or row.get('Entry') or 0.0
     if stage == 'M1':
         if sl > entry:
             locked = sl - entry
@@ -62,22 +60,6 @@ def _exit_milestones_panel(row) -> str:
             )
         else:
             guidance = ""
-
-    # Efficiency floor applies only at M2/TP — not at M1 where a sub-1.0 RR is
-    # expected when the stop has been raised to lock in profits (the correct action).
-    if stage in ('M2', 'TP') and 0 < rr < 1.0:
-        dist_to_tp   = (tp - cur_p) if (tp > 0 and cur_p > 0) else 0.0
-        dist_to_stop = (cur_p - sl) if (cur_p > 0 and sl > 0) else 0.0
-        stop_note = (
-            f"[dim]Stop ({sl:,.2f}) above entry — stop-out still profitable.\n"
-            f"Consider raising stop to restore RR ≥ 1.0.[/]\n"
-        ) if sl > entry else ""
-        guidance = (
-            f"[bold red]⚠ RR {rr:.2f} — Efficiency floor.[/]\n"
-            f"[dim]+{dist_to_tp:,.2f} to TP vs −{dist_to_stop:,.2f} to stop.[/]\n"
-            f"{stop_note}"
-            f"[bold red]→ Exit all, or raise stop to restore RR ≥ 1.0.[/]\n"
-        )
 
     m1_str = f"{m1:,.2f}" if m1 > 0 else "---"
     m2_str = f"{m2:,.2f}" if m2 > 0 else "---"
@@ -217,9 +199,9 @@ class TradingCockpit(App):
             "• [bold]R (% NAV):[/] Total risk at stop as a % of portfolio NAV.\n\n"
             "• [bold]EXIT column:[/]\n"
             "  [cyan]M1[/]       Move stop to entry — no trimming. Position is now risk-free.\n"
-            "  [yellow]M2·T/N/R[/]  Partial trim due. T=Trend: sell 15%  N=Normal: sell 33%  R=Ranging: sell 50%\n"
+            "  [yellow]M2·T/N/R[/]  Partial trim due. T=Trend: hold (let it run)  N=Normal: sell 33%  R=Ranging: sell 50%\n"
             "  [green]TP·T/N/R[/]  Full target reached.  T=Trend: sell 20% + raise TP  N=Normal: sell 33%  R=Ranging: close all\n"
-            "  [red]⚠ RR<1[/]   Efficiency floor — reward < risk. Exit all shares immediately.\n"
+            "  [dim]RR is informational (shown in the sidebar) — exits are driven by the stop and a RANGING regime, not by RR.[/]\n"
             "  Share counts and full rationale are in the sidebar. [F1] Exit Strategy tab for the complete reference."
         )
 
