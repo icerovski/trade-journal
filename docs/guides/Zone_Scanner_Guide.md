@@ -4,6 +4,11 @@ A hands-on companion for *using* the Zone Scanner (menu option **8**) — how to
 what each row and label is telling you, and how to act on it. For the design
 rationale and formulas, see `docs/TECHNICAL_DOCS.md` §7.
 
+> **See also:** [`Indicator_Glossary.md`](Indicator_Glossary.md) is the canonical home for
+> every indicator/metric definition (VAL, AVWAP, HVN, the ATRs, R, confluence…). The
+> decode tables below are a quick reference; the glossary is the source of truth.
+> For *how to pick a stop* across scenarios, see [`Stop_Placement_Playbook.md`](Stop_Placement_Playbook.md).
+
 ---
 
 ## 1. The mental model

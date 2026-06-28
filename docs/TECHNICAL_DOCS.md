@@ -8,8 +8,15 @@ This document serves as the "Single Source of Truth" for the technical implement
 
 The Prospect Simulator allows for the analysis and simulation of potential stock purchases using existing institutional risk frameworks before capital is committed.
 
+> **Adding a name to watch — the dedicated path is the Watch List (menu 6).** Press **`a`**,
+> type a symbol, and the app resolves it to a real `conid`, caches ~10y of prices, computes a
+> default (Daily TRAILING / Base preset) risk profile, and saves it as a `WATCH` row — making
+> it immediately scannable (menu 8) and chartable. The Risk Workspace "Discover" field below
+> remains for **ATR / risk research and refinement** (and can still persist a `PROSPECT:TICKER`
+> prospect via `CTRL+ENTER`), but new names are normally started from menu 6.
+
 ### Operational Workflow
-1.  **Ticker Discovery**: Within the **Risk Workspace** (Option 2 -> 1 from main menu), use the **"Discover Ticker"** input field.
+1.  **Ticker Discovery**: Within the **Risk Workspace** (Option 2 -> 1 from main menu), use the **"Discover Ticker"** input field to research a symbol's ATR volatility and model stops/sizing (refinement, not the primary add path — see the note above).
 2.  **Instant Simulation**: Entering a ticker (e.g., `NVDA`, `TSLA`) triggers an automated background process:
     *   **Price Fetching**: Real-time pricing and historical OHLCV data are retrieved via `yfinance`.
     *   **Volatility Analysis**: ATR horizons are calculated across multiple timeframes: 14d (Daily), 12w (Weekly), 12m (Monthly), and 12q (Macro).
@@ -256,3 +263,30 @@ Names not extended above their 6-month VAL stay in the normal regime (`ZONE`) an
 - The stop is the nearest invalidating support below price (tightest of VAL / anchored-VWAP), or the momentum micro-structure in a momentum regime (tightest of micro VAL / high-volume node / swing-low AVWAP / breakout-gap floor); targets follow the existing reward framework (next naked POC, else the 3:1 reward floor).
 - Position size is computed under all three presets via the existing dual R%/exposure-constraint sizer; NAV comes from the broker snapshot.
 - Engine: `core/zone_scan.py` (orchestrator), `core/volume_profile.py`, `core/anchored_vwap.py`, `core/confluence.py`. UI: `ui/zone_scan_workspace.py`. The scan is read-only — it never writes to the database.
+
+---
+
+## 8. Price Chart & Interactive Hover (`G` key)
+
+Pressing **`G`** in any of the three workspaces (Risk, Watch List, Zone Scanner) launches a 5-year Price + 200-DMA chart for the highlighted position. The chart runs as a standalone subprocess (`ui/chart_worker.py`), so it has its own window and does not block the terminal UI.
+
+### Interactive Readout
+
+Move the cursor across the chart to read off exact values:
+
+- A dashed vertical **crosshair** snaps to the nearest trading day under the cursor, with a dot on the price line.
+- A **tooltip** shows that day's **date**, **Price**, and **200 DMA**. The 200 DMA reads `n/a` for the first 199 bars, where it is not yet defined.
+- The tooltip flips to the left of the cursor in the right ~40% of the chart, so it never spills off the right edge.
+
+The readout is sourced directly from the same series that are plotted, so the displayed values always match the lines. Implementation: `chart_worker._attach_hover` (pure matplotlib `motion_notify_event` — no extra dependency).
+
+---
+
+## 9. In-App Help & Guides (`F1`)
+
+The **`F1` Help Desk** (Risk Workspace and Dashboard) is a tabbed reference rendered directly from the project's Markdown guides — there is no separate, hand-maintained help copy. Editing a guide updates the in-app help automatically.
+
+- Tabs: **Glossary** (`docs/guides/Indicator_Glossary.md`), **Stop Playbook** (`Stop_Placement_Playbook.md`), **Strategy Lab** (`Strategy_Lab_Syntax.md`), **Exit Strategy** (`Exit_Strategy.md`), **Zone Scanner** (`Zone_Scanner_Guide.md`), and **Technical** (this document).
+- `docs/guides/Indicator_Glossary.md` is the **canonical home** for every indicator and metric definition (ATRs, volume profile, AVWAP, R / RR, confluence, regimes, the momentum micro-anchors, presets). Other surfaces reference it rather than restating definitions.
+- `docs/guides/Stop_Placement_Playbook.md` is the scenario-by-scenario walkthrough for arriving at a stop, including the momentum "price sitting on the low" case where the scanner cannot offer a tight stop.
+- Source/rendering: `services/ui_components.py` (`HelpScreen`, `HELP_FILES`).

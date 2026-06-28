@@ -98,13 +98,13 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 ### Risk Metrics
 
-**ATR Standards:** Institutional timeframes — Daily(14), Weekly(12), Monthly(12), Quarterly(8). Wilder ATR with SMA baseline.
+**ATR Standards:** Institutional timeframes — Daily(14), Weekly(12), Monthly(12), Quarterly(12). Wilder ATR (EWM `com=window-1`, SMA-seeded).
 
 **Volatility Buffer (Fixed Dollar):** Stop percentages are converted to a fixed dollar `atr_value` at entry. As price rises the percentage tightens — this is intentional. Never recompute from a percentage at current price.
 
 **R (% NAV):** `(entry − stop) × qty / NAV`. Normalized to NAV currency via live FX rates from the broker snapshot.
 
-**RR Efficiency:** `(TP − Price) / (Price − Stop)`. **Informational only — not an exit trigger.** Color bands: 🟢 ≥ 1.0, 🟡 ≥ 0.5. (The former sub-1.0 RR "efficiency floor" that forced a FIXED-stop exit was removed: a deep stop drags RR low on geometry alone. Exits come from the stop and a RANGING regime; see `docs/TECHNICAL_DOCS.md` §5.)
+**RR Efficiency:** `(TP − Price) / (Price − Stop)`. **Informational only — not an exit trigger.** Color bands (PLAN strip): 🟢 ≥ 2.0, 🟡 ≥ 1.0, 🔴 < 1.0. (The former sub-1.0 RR "efficiency floor" that forced a FIXED-stop exit was removed: a deep stop drags RR low on geometry alone. Exits come from the stop and a RANGING regime; see `docs/TECHNICAL_DOCS.md` §5.)
 
 **Exit Milestones & Regime:** Milestones computed in `profit_taking.compute_exit_milestones()`; regime in `profit_taking.enrich_regime()`/`classify_regime()` (step 4 of `get_dashboard_df`). TP and milestones are entry-anchored and use the inception ATR (R-multiple) for both stop types; the live trailing ATR sets only the stop. For a **FIXED** stop (where the user enters a stop *price*, not an ATR distance) the inception ATR is the discovery-timeframe ATR nearest `entry − stop` — snapped at commit in `risk_workspace.py`, so the ladder matches the stop's horizon instead of a hardcoded daily ATR; TRAILING carries its own distance unchanged. The TP top rung is overridable per position via `risk_profiles.tp_atr_mult` (a multiple of the *frozen inception* ATR; `NULL` = default `TP_ATR_MULTIPLE` = 3R) — set with the `TP:n` command (`resolve_tp_mult`); M1/M2 stay at 1R/2R. Full thresholds and trim guidance in `docs/TECHNICAL_DOCS.md` §5.
 
@@ -113,6 +113,8 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 ### Presentation Layer (Textual UIs)
 
 All UIs are Textual apps in `ui/`, launched from `main.py`. They are display-only and do not write to the database except `ui/risk_workspace.py`, which persists `risk_profiles` edits via command syntax (e.g., `15 T P:L` = 15% stop, Trailing, Large preset). Scale-In has been removed; entry type is always SINGLE.
+
+**F1 Help (single source of truth):** `services/ui_components.py` `HelpScreen` renders the `.md` files listed in `HELP_FILES` (the `docs/guides/*.md` set + `docs/TECHNICAL_DOCS.md`) via the Textual `Markdown` widget — no hardcoded help strings. `docs/guides/` is therefore canonical for all user-facing definitions and workflows; editing a guide updates F1 automatically. `Indicator_Glossary.md` is the canonical home for every indicator/metric definition.
 
 ### Session Protocol
 
