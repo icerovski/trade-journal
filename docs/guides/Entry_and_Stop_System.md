@@ -193,9 +193,11 @@ Design the exit to *keep* the tail, and decide its shape **at entry**, alongside
   on thesis (met or broken), not on a number you invented before the move existed.
 - **Don't let RR geometry sell your winners.** A deep-stopped winner reads low on paper RR
   (Glossary §6) — that's an artifact of geometry, not a reason to dump the tail.
-- **Time stop, not just price stop.** If a THESIS hasn't progressed in N weeks (tie N to the
-  catalyst window), the capital is dead — recycle it even with the price stop intact. On
-  long holds this governs returns more than the price stop does.
+- **No time stop — holding is time-agnostic.** A position is held for as long as its stop
+  and thesis both hold; a winner runs as long as the trailing structure lets it. What ends a
+  trade is the price stop, a broken thesis, or the runner's trailing stop being hit — never
+  elapsed time. (The discipline this relies on: the trailing stop must keep advancing to real
+  structure, so a position is always held *for a reason*, not by inertia.)
 
 **Rule of thumb:** entry, stop, and exit are *one* decision. If you can't state the exit
 shape (target / scale-out+runner / thesis-exit) when you set the stop, you're not ready to
@@ -289,7 +291,6 @@ MANAGE EXISTING?
  ├─ Re-run scanner. Tight structural source below → migrate stop UP to it (never down).
  ├─ Mid-air / Scenario C → tighten to nearest real structure (e.g. DMA − buffer) or exit.
  ├─ THESIS trade → check fundamental invalidation, not the technical wobble.
- ├─ Thesis-by-time check: no progress by N weeks → time-stop exit.
  ├─ At a structural objective → scale out, trail the runner (§5a).
  └─ Never widen a live stop. Move it only to new structure.
 ```
@@ -319,10 +320,10 @@ never an entry signal.
 
 ## 11. Pre-trade decision sheet
 
-Twelve things resolve before you commit — but only the **[decide]** rows are real judgment.
+Eleven things resolve before you commit — but only the **[decide]** rows are real judgment.
 **[auto]** rows compute themselves; **[gate]** rows are pass/fail and any failure kills the
-trade. So the actual thinking per trade is the six [decide] rows; the rest protects you from
-the decision you might rationalize.
+trade. So the actual thinking per trade is the six [decide] rows (2–7); the rest protects you
+from the decision you might rationalize.
 
 | # | What you settle | Type |
 |---|---|---|
@@ -332,12 +333,12 @@ the decision you might rationalize.
 | 4 | **Trigger + entry price** — the event that commits you (§2) | decide |
 | 5 | **Stop** — the invalidation line: structural, or *fundamental* for THESIS | decide |
 | 6 | **Target shape** — hard target / scale-out + runner / thesis-exit (§5a) | decide |
-| 7 | **Time stop** — weeks you'll give it before recycling the capital (§5a) | decide |
-| 8 | **Risk budget** — your 0.4 / 0.7 / 1%, tied to conviction, not feel | decide |
-| 9 | `R₁ = entry − stop`; `qty = (risk% × NAV) / R₁` — gap-size if held through earnings | auto |
-| 10 | **Gates G1–G8** — width, basis, chase, liquidity, **theme heat**, **currency** (§4) | gate |
-| 11 | **Expectancy** of this setup > threshold, from your log (§5) | gate |
-| 12 | **Commit** (`P F` / `@P T`) and **log it — including picks you skipped** | commit |
+| 7 | **Risk budget** — your 0.4 / 0.7 / 1%, tied to conviction, not feel | decide |
+| 8 | `R₁ = entry − stop`; `qty = (risk% × NAV) / R₁` — gap-size if held through earnings | auto |
+| 9 | **Gates G1–G8** — width, basis, chase, liquidity, **theme heat**, **currency** (§4) | gate |
+| 10 | **Expectancy** of this setup > threshold, from your log (§5) | gate |
+| 11 | **Commit** (`P F` / `@P T`) and **log it — including picks you skipped** | commit |
 
 > Rows **5 and 6 are two separate decisions**: the stop (where you're wrong) and the target
-> (how you bank being right) are set independently — never let one imply the other.
+> (how you bank being right) are set independently — never let one imply the other. There is
+> **no time stop** — the trade is held for as long as the stop and thesis hold (§5a).

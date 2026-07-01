@@ -9,6 +9,22 @@ wrong tool at this horizon.
 
 > Use this as your personal config. Where it conflicts with the base files, **this wins**.
 
+### The two roles of time (don't confuse them)
+
+Time enters this system in two unrelated ways, and only one is a "stop":
+
+- **Time as a smoother / lens — used heavily.** Zooming out to a horizon where short-term
+  price and other fluctuations wash out: weekly (or higher) bars, decisions on weekly closes,
+  a long 12–24-month ATR, moving-average anchors like the 30-week MA. A moving average *is*
+  time-smoothed price; a long ATR *is* time-smoothed volatility. This is the whole point of
+  the calibration below — it's how a non-short-term trader filters noise.
+- **Time as an exit trigger — not used.** A clock that flattens the position after N periods
+  regardless of price/thesis (a "time stop"). Removed by design; a trade is held for as long
+  as the stop and thesis hold (System §5a).
+
+The smoother decides *what you look at*; a time stop would decide *when you're forced out*.
+Keeping the first and dropping the second is fully consistent — they act on different things.
+
 ---
 
 ## 1. The timeframe shift — daily → weekly everywhere
@@ -107,7 +123,6 @@ roughly **10–18%** off entry — that is *normal* at this horizon, not a red f
 | G2 basis | ≥2 confluent within 0.25 ATRd | ≥2 confluent within **0.5 × ATR-weekly**, on the **weekly** |
 | G4 event | no entry within 5d of earnings | timing rule unchanged, **but gap risk is now a sizing input, not avoidable** (§6) |
 | G5 extension | not > 2 ATRd above trail anchor | not > **2 × ATR-weekly** above the **30-week MA** |
-| time stop | N bars | **N weeks**, tied to your catalyst window (§7) |
 
 G6 (liquidity) and G7 (portfolio heat) are unchanged in form but **bind harder**: longer
 holds overlap in time and across market cycles, so correlated drawdown risk is larger. Keep
@@ -155,9 +170,11 @@ post-earnings entry where the gap is behind you (an earnings-gap AVWAP is a stro
   trail beneath the **rising 30-week MA or weekly swing lows** — never daily structure.
 - **Never react to daily noise.** A 5–8% intraweek dip in an intact weekly uptrend is signal
   of nothing. Decisions are made on **weekly closes**.
-- **Time stop in weeks.** If the catalyst window passes and price has made no structural
-  progress in N weeks (e.g. 8–12), the capital is dead — exit on opportunity cost even if the
-  price stop is untouched. This matters more than the price stop on long holds.
+- **No time stop — hold while the stop and thesis hold.** A position is not exited for
+  elapsed time; a winner runs as long as the weekly structure carries it. What ends the trade
+  is the price stop being hit or the thesis breaking — nothing on a clock. The safeguard is
+  that the trailing stop keeps advancing to new weekly structure, so a held position is always
+  held for a live reason.
 - **Migrate stops up only to new weekly structure;** never widen a live stop.
 
 ---
@@ -182,4 +199,4 @@ Same cache (price 365.02, daily ATR 19.64, +25.5% over VAL_6mo, sitting on the l
 3. Stop = weekly anchor (swing low / 30-wk MA / VAL) + 0.25–0.5 weekly-ATR buffer (~10–18%).
 4. Size = `f×NAV / R₁`, and re-check against `R_gap` for earnings. Expect smaller positions.
 5. Fewer, higher-conviction names; portfolio heat cap binds hard.
-6. Manage on weekly closes; trail late off the 30-week MA; time-stop in weeks.
+6. Manage on weekly closes; trail late off the 30-week MA. No time stop — hold while the stop and thesis hold.
