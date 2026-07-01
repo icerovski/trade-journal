@@ -9,7 +9,7 @@
 ---
 
 You are extending an existing, **working** trading application. Two design documents in this
-repo — `Entry_and_Stop_System.md` and `Horizon_Calibration_3to6mo.md` — describe the
+repo (..\docs\guides) — `Entry_and_Stop_System.md` and `Horizon_Calibration_3to6mo.md` — describe the
 additions I want. **Your #1 priority is to not break any behavior that currently works.**
 Read both documents fully before doing anything else.
 

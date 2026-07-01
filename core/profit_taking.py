@@ -1,7 +1,13 @@
 import traceback
 from models import Position
 from logger import logger
-from constants import REGIME_REVERSAL_CONFIRM_DAYS
+from constants import (
+    REGIME_REVERSAL_CONFIRM_DAYS,
+    REGIME_TREND_MIN_DAYS,
+    REGIME_NORMAL_MIN_DAYS,
+    MILESTONE_M1_MULT,
+    MILESTONE_M2_MULT,
+)
 
 # Trim guidance matrix: (exit_stage, trend_regime) → (trim_fraction, rationale).
 # Rationale explains WHY; the UI renders the share count and % separately.
@@ -52,9 +58,9 @@ def classify_regime(direction: str, dma_days: int, price_above_dma: bool) -> str
     The day count resets to ~1 on any reversal, so the hysteresis branch is what keeps a
     single counter-trend day from crashing a long TREND straight to RANGING.
     """
-    if direction == 'UP' and dma_days >= 21 and price_above_dma:
+    if direction == 'UP' and dma_days >= REGIME_TREND_MIN_DAYS and price_above_dma:
         return "TREND"
-    if direction == 'UP' and dma_days >= 10:
+    if direction == 'UP' and dma_days >= REGIME_NORMAL_MIN_DAYS:
         return "NORMAL"
     if direction == 'DOWN' and dma_days < REGIME_REVERSAL_CONFIRM_DAYS:
         return "NORMAL"  # unconfirmed reversal — hysteresis hold
@@ -65,8 +71,8 @@ def compute_exit_milestones(position: Position, atr_dist: float) -> None:
     """Sets m1_price, m2_price, and exit_stage on position based on ATR distance from entry."""
     if atr_dist <= 0 or not position.entry_price:
         return
-    position.m1_price = position.entry_price + atr_dist
-    position.m2_price = position.entry_price + 2.0 * atr_dist
+    position.m1_price = position.entry_price + MILESTONE_M1_MULT * atr_dist
+    position.m2_price = position.entry_price + MILESTONE_M2_MULT * atr_dist
     cur = position.current_price if position.current_price > 0 else position.mark_price
     # Monotonicity guard: a TP override below the M2 milestone (< 2R) inverts the ladder.
     # The stage logic still resolves (reaching the target reads TP), but flag the unusual setup.

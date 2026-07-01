@@ -15,7 +15,11 @@ from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
-from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting
+from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry
+from core.trade_log import TradeLogEntry, STATUS_TAKEN
+from core.gates import ProposedTrade, evaluate_gates, gates_summary
+from core.sizing import gap_effective_stop
+from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
 
@@ -74,6 +78,23 @@ def solve_breakeven_add(qty: float, entry: float, stop: float, price: float) -> 
         return None
     add = qty * (entry - stop) / denom
     return round(add) if add > 0 else None
+
+
+def parse_classification(raw: str):
+    """Extract a `C:` classification token from an (upper-cased) command string.
+
+    Returns (classification, stripped_raw):
+      • C:TH → "THESIS",  C:TE → "TECHNICAL",  C:- → "" (explicit clear/unset);
+      • classification is None when no C: token is present (leave the stored tag untouched);
+      • stripped_raw is `raw` with the token removed.
+    Pure so it can be unit-tested without the Textual app.
+    """
+    m = re.search(r"C:(THESIS|TECHNICAL|TH|TE|-)", raw)
+    if not m:
+        return None, raw
+    tok = m.group(1)
+    classification = "" if tok == "-" else ("THESIS" if tok in ("TH", "THESIS") else "TECHNICAL")
+    return classification, raw.replace(m.group(0), "").strip()
 
 
 def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
@@ -140,7 +161,7 @@ def _trim_shares(qty: float, pct: float) -> float:
     return min(int(qty), max(1, round(raw))) if qty >= 1 else round(raw, 4)
 
 
-def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type) -> Optional[dict]:
+def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type, exit_shape="") -> Optional[dict]:
     """Single source of truth for the profit-taking directive at an exit stage.
 
     Returns a dict {verb, color, headline, shares, pct, restore_sl, urgent, reason} or
@@ -153,11 +174,26 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
     (0.0 == let it run). Exits are driven by the stop and a RANGING regime, not by RR — RR is
     shown as information in the PLAN panel but no longer forces an exit. (rr/cur_p/stop_type
     are retained in the signature for call-site stability.)
+
+    exit_shape (§5a) extends — never replaces — the ladder. The default ("" / LADDER /
+    RUNNER) is today's behaviour verbatim. HARD makes the TP-stage action a full exit
+    (a defined objective, no runner). THESIS trades carry no target, so they never reach a
+    TP stage here (their tp_price is dropped upstream) — the stop governs the exit.
     """
     if not stage:
         return None
     sl = sl or 0.0
     tp = tp or 0.0
+
+    # HARD target (§5a): a TECHNICAL setup with a defined objective — bank it in full at
+    # the target, no runner. Only the TP action changes; M1/M2 keep the default ladder.
+    if stage == 'TP' and is_hard_target(exit_shape):
+        shares = _trim_shares(qty, 1.0)
+        return {'verb': 'TRIM', 'color': 'green', 'shares': shares, 'pct': 1.0,
+                'restore_sl': None, 'urgent': False,
+                'headline': f'EXIT — hard target hit (sell {shares})',
+                'reason': 'Hard-target trade: a defined objective was reached — bank the full '
+                          'position, no runner past the target.'}
 
     # M1: make the position risk-free — never sell here.
     if stage == 'M1':
@@ -259,7 +295,8 @@ def _exit_guidance_str(pos, cur_p: float) -> str:
     entry = pos.entry_price
     rr = getattr(pos, 'rr_ratio', 0.0)
     rec = _exit_recommendation(stage, regime, pos.qty, entry, sl, tp, cur_p, rr,
-                               getattr(pos, 'stop_type', 'FIXED'))
+                               getattr(pos, 'stop_type', 'FIXED'),
+                               exit_shape=getattr(pos, 'exit_shape', ''))
     if rec is None:
         action = ""
     elif rec['verb'] == 'STOP→ENTRY':
@@ -344,6 +381,9 @@ class PresetMatrixScreen(ModalScreen):
             with Horizontal(classes="matrix-row"):
                 yield Label("  [dim]Action threshold (% of position)[/]", classes="matrix-label-col")
                 yield Input(str(ACTION_THRESHOLD_PCT), id="action_threshold", classes="matrix-input")
+            with Horizontal(classes="matrix-row"):
+                yield Label("  [dim]Entry gates (off/advisory/blocking)[/]", classes="matrix-label-col")
+                yield Input(get_setting('gates_mode', 'off'), id="gates_mode", classes="matrix-input")
             with Horizontal(id="matrix-buttons"):
                 yield Button("COMMIT", id="btn-commit", variant="success")
                 yield Button("Cancel", id="btn-cancel", variant="default")
@@ -375,6 +415,11 @@ class PresetMatrixScreen(ModalScreen):
             self.notify("Invalid action threshold", severity="error")
             return
 
+        new_gates_mode = (self.query_one("#gates_mode", Input).value or "off").strip().lower()
+        if new_gates_mode not in ("off", "advisory", "blocking"):
+            self.notify("gates_mode must be off / advisory / blocking", severity="error")
+            return
+
         changed = [
             key for key, (new_r, new_e) in new_vals.items()
             if new_r != PRESETS[key]["max_r_pct"] or new_e != PRESETS[key]["max_exp_pct"]
@@ -389,6 +434,7 @@ class PresetMatrixScreen(ModalScreen):
 
         ACTION_THRESHOLD_PCT = new_threshold
         save_setting('action_threshold_pct', str(new_threshold))
+        save_setting('gates_mode', new_gates_mode)
 
         self.dismiss(changed)
 
@@ -472,7 +518,7 @@ class RiskWorkspace(App):
     PresetMatrixScreen { align: center middle; }
     #matrix-container {
         width: 58;
-        height: 24;
+        height: 27;
         border: tall $accent;
         background: $surface-darken-1;
         padding: 1 2;
@@ -509,6 +555,7 @@ class RiskWorkspace(App):
         self.discovery_cache: Dict[str, dict] = {}
         self.total_nav = 0.0
         self.nav_ccy = "USD"
+        self.gates_mode = "off"  # off | advisory | blocking — loaded from settings on mount
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -524,7 +571,7 @@ class RiskWorkspace(App):
                             id="discover-input"
                         )
                         yield Input(
-                            placeholder="F: price  |  T: %/$  |  [P:S/B/L] [R:x] [E:x] [TP:n]",
+                            placeholder="F: price | T: %/$ | [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/R/T]",
                             id="atr-input"
                         )
                     yield Label(_preset_legend(), id="preset-legend")
@@ -543,6 +590,7 @@ class RiskWorkspace(App):
 
     def on_mount(self) -> None:
         _load_presets_from_db()
+        self.gates_mode = (get_setting('gates_mode', 'off') or 'off').lower()
         self.query_one("#preset-legend", Label).update(_preset_legend())
         table = self.query_one("#portfolio-table", DataTable)
         table.cursor_type = "row"
@@ -590,6 +638,7 @@ class RiskWorkspace(App):
             return
         table = self.query_one("#portfolio-table", DataTable)
         table.clear()
+        shape_by_conid = {str(p.conid): getattr(p, 'exit_shape', '') for p in self.positions}
         for _, row in self.enriched_data.sort_values("Ticker").iterrows():
             conid_str = str(row['conid'])
             has_risk = pd.notnull(row['ATR']) and row['ATR'] > 0
@@ -637,6 +686,7 @@ class RiskWorkspace(App):
                         row.get('ExitStage', ''), row.get('TrendRegime', 'NORMAL'), qty,
                         effective_entry, sl_p, tp_p, cur_p_val,
                         row.get('RR_Ratio', 0.0), row.get('StopType', 'FIXED'),
+                        exit_shape=shape_by_conid.get(conid_str, ''),
                     )
                     adj_pct = (adj / qty) * 100
                     add_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
@@ -833,9 +883,12 @@ class RiskWorkspace(App):
             #    sizes a new/early position; it is never licence to add to a winner that has
             #    reached a profit-taking stage. So at an exit stage the ladder governs and the
             #    headroom is reported but muted (mirrors the table ACTION column outward).
+            active_shape = self.drafts.get(self.current_conid, {}).get('exit_shape') if is_modeling else None
+            if active_shape is None:
+                active_shape = getattr(pos, 'exit_shape', '')
             exit_rec = _exit_recommendation(exit_stage, regime, active_qty, active_entry,
                                             effective_stop, pos.tp_price, cur_p, efficiency,
-                                            pos.stop_type)
+                                            pos.stop_type, exit_shape=active_shape)
             room = int(res['adjustment'])
             if res['is_breached']:
                 v_color, v_label = 'red', 'EXIT NOW — stop breached'
@@ -1049,7 +1102,22 @@ class RiskWorkspace(App):
 
         incep_str = pos.date_entry.strftime("%Y-%m-%d") if pd.notnull(pos.date_entry) else "Unknown"
         stage_tag = f"  ·  [{_STAGE_C.get(exit_stage, 'white')}]{exit_stage}[/] · [{_REGIME_C.get(regime, 'white')}]{regime}[/]" if exit_stage else ""
-        audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})  ·  INCEPTION [cyan]{incep_str}[/]{stage_tag}"
+        # THESIS/TECHNICAL chip (§0a) — shows the modeled tag while drafting, else the stored one.
+        if is_modeling and self.current_conid in self.drafts:
+            cls = (self.drafts[self.current_conid].get('classification') or '').strip()
+        else:
+            cls = (getattr(pos, 'classification', '') or '').strip()
+        class_tag = f"  ·  [bold magenta]{cls}[/]" if cls else ""
+        # Gap-aware sizing chip (§6) — only while a G: gap price is being modeled.
+        gap_price_d = self.drafts.get(self.current_conid, {}).get('gap_price') if is_modeling else None
+        gap_tag = f"  ·  [bold yellow]GAP-SIZED @ {gap_price_d:,.2f}[/]" if gap_price_d else ""
+        # Exit-shape chip (§5a) — shown only when a non-default shape is set/modeled.
+        if is_modeling and self.current_conid in self.drafts:
+            shp = self.drafts[self.current_conid].get('exit_shape')
+        else:
+            shp = getattr(pos, 'exit_shape', '')
+        shape_tag = f"  ·  [bold blue]{shape_label(shp)}[/]" if normalize_shape(shp) != "LADDER" else ""
+        audit_header = f"[bold yellow]{pos.ticker}[/] ({pos.name})  ·  INCEPTION [cyan]{incep_str}[/]{stage_tag}{class_tag}{gap_tag}{shape_tag}"
         if is_modeling:
             audit_header = "[bold reverse yellow] MODELING STRATEGY [/]\n" + audit_header
 
@@ -1202,6 +1270,29 @@ class RiskWorkspace(App):
                 m_e = float(e_m.group(1))
                 raw = raw.replace(e_m.group(0), "").strip()
 
+            # THESIS/TECHNICAL tag (§0a). None = not typed (preserve stored tag on commit);
+            # "" = explicit clear. Carried only — no exit logic branches on it.
+            active_class, raw = parse_classification(raw)
+
+            # Gap-aware sizing (§6): G:<price> = plausible post-event gap price. Opt-in —
+            # absent (default) leaves sizing on the standard fixed-fractional path. Parsed
+            # before the +N/-N and stop-value regexes so its digits aren't misread.
+            gap_price = None
+            g_m = re.search(r"G:([0-9]+(?:\.[0-9]+)?)", raw)
+            if g_m:
+                gap_price = float(g_m.group(1))
+                raw = raw.replace(g_m.group(0), "").strip()
+
+            # Exit shape (§5a): X:H hard target · X:R scale+runner · X:T thesis · X:- default.
+            # None = not typed (preserve stored shape); "" = explicit clear to default ladder.
+            # Parsed before the F/T stop-type check so "X:T" isn't read as a TRAILING flag.
+            active_shape = None
+            x_m = re.search(r"X:(HARD|RUNNER|THESIS|H|R|T|L|-)", raw)
+            if x_m:
+                tok = x_m.group(1)
+                active_shape = "" if tok == "-" else normalize_shape(tok)
+                raw = raw.replace(x_m.group(0), "").strip()
+
             # TP override: TP:4 / TP:4R / TP:+35% / TP:$60K / TP:- (clear). A multiple of the
             # frozen inception ATR — stays put when the stop ATR changes. Parsed BEFORE the
             # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity.
@@ -1287,10 +1378,13 @@ class RiskWorkspace(App):
                 else:
                     self.notify("TP ratio needs the price above the stop and an inception ATR.", severity="warning")
 
-            # Hypothetical Quantity (Sizing Discovery)
+            # Hypothetical Quantity (Sizing Discovery). Gap-aware (§6) when G: is supplied:
+            # risk against the LOWER of the stop and the plausible gap price. Default
+            # (gap_price None) risks against the stop exactly as before.
             calc_q = pos.qty
             if calc_q == 0 and self.total_nav > 0:
-                dist_sh = abs(base_p - sl_p) * pos.multiplier
+                size_stop = gap_effective_stop(sl_p, gap_price)
+                dist_sh = abs(base_p - size_stop) * pos.multiplier
                 risk_q = (self.total_nav * (m_r / 100.0)) / dist_sh if dist_sh > 0 else float('inf')
                 exp_q = (self.total_nav * (m_e / 100.0)) / (cur_p_d * pos.multiplier) if cur_p_d > 0 else 0
                 calc_q = int(min(risk_q, exp_q))
@@ -1347,7 +1441,10 @@ class RiskWorkspace(App):
             else:
                 save_incep_atr = f_atr
 
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek}
+            # Preserve the stored tag/shape when the user didn't type C:/X: this edit.
+            draft_class = active_class if active_class is not None else (getattr(pos, 'classification', '') or '')
+            draft_shape = active_shape if active_shape is not None else (getattr(pos, 'exit_shape', '') or '')
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek, 'classification': draft_class, 'gap_price': gap_price, 'exit_shape': draft_shape}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek, hypo_tp_mult=tp_final)
             
@@ -1358,7 +1455,11 @@ class RiskWorkspace(App):
         if event.key == "ctrl+j":
             if self.current_conid in self.drafts:
                 d = self.drafts[self.current_conid]
-                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'), tp_atr_mult=d.get('tp_atr_mult'))
+                if not self._gate_check(self.current_conid, d):
+                    self.notify(f"BLOCKED by gates: {d['ticker']} (set gates_mode to advisory/off to commit)", severity="error")
+                    return
+                set_position_risk(self.current_conid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(self.current_conid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'), tp_atr_mult=d.get('tp_atr_mult'), classification=d.get('classification', ''), exit_shape=d.get('exit_shape', ''))
+                self._log_classification(self.current_conid, d)
                 self.notify(f"COMMITTED: {d['ticker']}")
                 self.query_one("#atr-input", Input).value = ""
                 self.query_one("#discover-input", Input).value = ""
@@ -1374,13 +1475,79 @@ class RiskWorkspace(App):
         yf_ticker = self.pm.mapper.resolve_yf_ticker(pos.ticker, conid=pos.conid)
         launch_price_chart(pos.ticker, conid=self.current_conid, yf_ticker=yf_ticker)
 
+    def _gate_check(self, cid, d) -> bool:
+        """Run entry gates on a draft per `gates_mode`. Returns True if the commit may
+        proceed. `off` → always True, no evaluation (behaviour unchanged). `advisory` →
+        always True, but surface any FAILs. `blocking` → False iff a hard gate FAILed.
+        Only G1/G5/G8 have inputs in this flow; the rest return NA and never block."""
+        if self.gates_mode == "off":
+            return True
+        pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)
+        if not pos:
+            return True
+        cur_p = pos.current_price or pos.mark_price
+        entry = pos.entry_price if pos.entry_price > 0 else cur_p
+        trade = ProposedTrade(
+            ticker=d.get('ticker', ''),
+            entry=entry,
+            stop=d.get('hypo_stop') or 0.0,
+            atr=d.get('inception_atr') or 0.0,
+            qty=pos.qty,
+            nav=self.total_nav,
+            multiplier=pos.multiplier,
+            max_r_pct=d.get('max_r_pct', 1.0),
+            ccy=pos.ccy,
+            base_ccy=self.nav_ccy,
+            fx_rate=pos.fx_rate,
+        )
+        summary = gates_summary(evaluate_gates(trade))
+        if summary["n_fail"]:
+            detail = "; ".join(f"{r.gate} {r.name}: {r.reason}" for r in summary["failed"])
+            severity = "error" if self.gates_mode == "blocking" else "warning"
+            self.notify(f"GATES ({self.gates_mode}) — {d.get('ticker')}: {detail}", severity=severity, timeout=8)
+        if self.gates_mode == "blocking" and summary["blocking"]:
+            return False
+        return True
+
+    def _log_classification(self, cid, d) -> None:
+        """Phase 3: record a classified commit into the decision journal (§7). Only
+        fires when a THESIS/TECHNICAL tag is set, so untagged commits write nothing
+        and behave exactly as before. A later phase formalises the full logging loop."""
+        classification = (d.get('classification') or '').strip()
+        if not classification:
+            return
+        pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)
+        try:
+            add_trade_log_entry(TradeLogEntry(
+                date=pd.Timestamp.now().strftime("%Y-%m-%d"),
+                ticker=d.get('ticker', ''),
+                conid=str(cid),
+                status=STATUS_TAKEN,
+                classification=classification,
+                entry=(pos.entry_price if pos and pos.entry_price > 0 else None),
+                stop=d.get('hypo_stop'),
+                atr_value=d.get('inception_atr'),
+            ))
+        except Exception as e:
+            logger.error(f"Trade-log write failed for {d.get('ticker')}: {e}")
+
     def action_save_all(self) -> None:
         if not self.drafts:
             return
-        for cid, d in self.drafts.items():
-            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'), tp_atr_mult=d.get('tp_atr_mult'))
-        self.notify(f"SUCCESS: Saved {len(self.drafts)} strategies.")
-        self.drafts.clear()
+        committed = 0
+        blocked = []
+        for cid, d in list(self.drafts.items()):
+            if not self._gate_check(cid, d):
+                blocked.append(d['ticker'])
+                continue
+            set_position_risk(cid, d['ticker'], d['atr'], d['type'], entry_type='SINGLE', scale_step=0.5, status=('WATCH' if str(cid).startswith("PROSPECT:") else 'ACTIVE'), max_r_pct=d.get('max_r_pct', 1.0), max_exp_pct=d.get('max_exp_pct', 5.0), reset_sl=True, inception_stop=d.get('hypo_stop'), inception_atr=d.get('inception_atr'), profile=d.get('profile'), tp_atr_mult=d.get('tp_atr_mult'), classification=d.get('classification', ''), exit_shape=d.get('exit_shape', ''))
+            self._log_classification(cid, d)
+            self.drafts.pop(cid, None)
+            committed += 1
+        msg = f"SUCCESS: Saved {committed} strateg{'y' if committed == 1 else 'ies'}."
+        if blocked:
+            msg += f"  BLOCKED by gates: {', '.join(blocked)}."
+        self.notify(msg, severity=("warning" if blocked else "information"))
         self.load_portfolio()
         self.query_one("#atr-input", Input).value = ""
 
@@ -1390,6 +1557,7 @@ class RiskWorkspace(App):
 
     def action_open_matrix(self) -> None:
         def on_closed(changed_keys):
+            self.gates_mode = (get_setting('gates_mode', 'off') or 'off').lower()
             if changed_keys:
                 self.query_one("#preset-legend", Label).update(_preset_legend())
                 self.load_portfolio()

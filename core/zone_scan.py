@@ -16,12 +16,17 @@ import math
 import pandas as pd
 
 from constants import (
+    ATR_FALLBACK_MULT,
+    DMA_LONG_WINDOW,
+    DMA_SHORT_WINDOW,
     GAP_MIN_ATR,
     HVN_MIN_PROMINENCE,
     MICRO_LOOKBACK_DAYS,
     MICRO_STOP_BUFFER_ATR,
     MOMENTUM_VAL_PREMIUM_PCT,
     RR_SETUP_FLOOR,
+    SCANNER_ATR_WINDOW,
+    TRADING_DAYS_PER_MONTH,
     VP_LOOKBACKS_MONTHS,
     ZONE_CONFLUENCE_PCT,
     ZONE_MIN_CONFLUENCE,
@@ -36,7 +41,7 @@ from core.volume_profile import (
 )
 
 
-def _wilder_atr(ohlcv: pd.DataFrame, window: int = 14) -> float:
+def _wilder_atr(ohlcv: pd.DataFrame, window: int = SCANNER_ATR_WINDOW) -> float:
     """Wilder ATR via the same EWM method as core/stop_loss.py (com=window-1,
     adjust=False) so the scanner's volatility yardstick matches the rest of the app.
     """
@@ -58,7 +63,7 @@ def _slice_months(df: pd.DataFrame, months: int) -> pd.DataFrame:
         last = pd.to_datetime(df["date"].iloc[-1])
         start = last - pd.DateOffset(months=months)
         return df[pd.to_datetime(df["date"]) >= start]
-    return df.tail(int(months * 21))
+    return df.tail(int(months * TRADING_DAYS_PER_MONTH))
 
 
 def _build_levels(df: pd.DataFrame, lookbacks) -> tuple[dict, list]:
@@ -69,10 +74,10 @@ def _build_levels(df: pd.DataFrame, lookbacks) -> tuple[dict, list]:
     naked_all: list = []
 
     close = df["close"]
-    if len(close) >= 200:
-        levels["DMA200"] = float(close.tail(200).mean())
-    if len(close) >= 50:
-        levels["DMA50"] = float(close.tail(50).mean())
+    if len(close) >= DMA_LONG_WINDOW:
+        levels[f"DMA{DMA_LONG_WINDOW}"] = float(close.tail(DMA_LONG_WINDOW).mean())
+    if len(close) >= DMA_SHORT_WINDOW:
+        levels[f"DMA{DMA_SHORT_WINDOW}"] = float(close.tail(DMA_SHORT_WINDOW).mean())
 
     for months in lookbacks:
         sub = _slice_months(df, months)
@@ -191,18 +196,36 @@ def scan_ticker(
     multiplier: float = 1.0,
     current_price: float | None = None,
     lookbacks=VP_LOOKBACKS_MONTHS,
-    atr_window: int = 14,
+    atr_window: int = SCANNER_ATR_WINDOW,
     min_confluence: int = ZONE_MIN_CONFLUENCE,
     confluence_pct: float = ZONE_CONFLUENCE_PCT,
     reward_mult: float = RR_SETUP_FLOOR,
     momentum_premium: float = MOMENTUM_VAL_PREMIUM_PCT,
     micro_days: int = MICRO_LOOKBACK_DAYS,
     micro_buffer_atr: float = MICRO_STOP_BUFFER_ATR,
+    calibration=None,
 ) -> dict | None:
     """Scan one ticker for an entry zone. Returns a result dict (always, when
     there is enough data), with `flagged` indicating whether a zone fired and
     stop/target/sizes populated only when it did. Returns None if data is too thin.
+
+    `calibration` (core.calibration.CalibrationProfile) is the horizon lens. When
+    given, it OVERRIDES the horizon knobs (atr_window, lookbacks, momentum_premium,
+    micro window/buffer, confluence band) and the MOMENTUM behaviour. The default
+    (None, or the DEFAULT_CALIBRATION profile) reproduces today's short-swing scan
+    exactly. The 3–6mo profile disables the tight micro-stop, so a MOMENTUM flag falls
+    back to the weekly value anchors instead of the 14-bar micro structure.
     """
+    use_micro_momentum_stop = True
+    if calibration is not None:
+        atr_window = calibration.atr_window
+        lookbacks = calibration.lookbacks
+        momentum_premium = calibration.momentum_premium
+        micro_days = calibration.micro_days
+        micro_buffer_atr = calibration.micro_buffer_atr
+        confluence_pct = calibration.confluence_pct
+        use_micro_momentum_stop = calibration.use_micro_momentum_stop
+
     if ohlcv is None or len(ohlcv) < atr_window + 1:
         return None
 
@@ -226,7 +249,10 @@ def scan_ticker(
     )
 
     stop_price, stop_source = None, None
-    if regime == "MOMENTUM":
+    # MOMENTUM override (3–6mo lens): when the profile disables the micro-stop, a
+    # momentum flag means "extended — wait for a weekly pullback", so we skip the tight
+    # micro structure and fall through to the weekly value anchors (_nearest_support).
+    if regime == "MOMENTUM" and use_micro_momentum_stop:
         stop_price, stop_source = _micro_support(
             ohlcv, price, atr, micro_days, micro_buffer_atr
         )
@@ -235,7 +261,7 @@ def scan_ticker(
     if stop_price is None:
         # No structural support below price: fall back to a 1-ATR stop so the
         # zone can still be sized, and flag the weaker basis.
-        stop_price, stop_source = price - atr, "ATR(1)"
+        stop_price, stop_source = price - ATR_FALLBACK_MULT * atr, "ATR(1)"
 
     # Express the percent confluence band in ATR units for the engine.
     threshold = (confluence_pct * price) / atr

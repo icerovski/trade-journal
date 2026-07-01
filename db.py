@@ -3,6 +3,7 @@ import sqlite3
 from config import DB_PATH
 from logger import logger
 from models import RiskProfile
+from core.trade_log import TradeLogEntry, COLUMN_TYPES, PERSISTED_FIELDS
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -91,6 +92,16 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN tp_atr_mult REAL")
     except Exception: pass
+    # THESIS / TECHNICAL classification (Entry & Stop System §0a). NULL = unset.
+    # Carried only — no exit logic branches on it. See core/stop_loss.py.
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN classification TEXT")
+    except Exception: pass
+    # Exit shape (§5a): NULL/LADDER = today's default ladder; HARD / RUNNER / THESIS.
+    # See core/exit_shapes.py. Default reproduces current exit behaviour exactly.
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN exit_shape TEXT")
+    except Exception: pass
 
     # Migration: Tag existing positions that matched old preset definitions, and update
     # their limits to the new values. The WHERE profile IS NULL guard makes this a no-op
@@ -171,7 +182,32 @@ def init_db():
     # 5. App Settings (key-value)
     cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     cursor.execute("INSERT OR IGNORE INTO settings VALUES ('action_threshold_pct', '10.0')")
-    
+    # Entry-gate mode (Entry & Stop System §4): off | advisory | blocking. Default off
+    # reproduces today's behaviour exactly — no gate evaluation in the pre-trade flow.
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('gates_mode', 'off')")
+    # Horizon calibration lens (Horizon_Calibration_3to6mo.md): default | position_3to6mo.
+    # Default keeps today's short-swing scan; see core/calibration.py.
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('calibration_profile', 'default')")
+
+    # 6. Trade Journal Log (Entry & Stop System §7) — decision journal, separate
+    # from the `trades` execution ledger. Schema is driven by core.trade_log so it
+    # cannot drift from the dataclass. Every column is nullable/defaulted, and the
+    # per-column ALTER loop is the additive migration: old rows gain new columns as
+    # NULL and keep loading/saving. See core/trade_log.py.
+    _trade_log_cols = ",\n            ".join(f"{name} {typ}" for name, typ in COLUMN_TYPES.items())
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS trade_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            {_trade_log_cols}
+        )
+    """)
+    for name, typ in COLUMN_TYPES.items():
+        try:
+            cursor.execute(f"ALTER TABLE trade_log ADD COLUMN {name} {typ}")
+        except Exception:
+            pass
+
     conn.commit()
     conn.close()
 
@@ -187,12 +223,18 @@ def wipe_trades_only():
 # for callers that don't manage it) from an explicit None ("clear the override → default 3R").
 _KEEP = object()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP, classification=_KEEP, exit_shape=_KEEP):
     """Saves or updates a risk profile (ACTIVE or WATCH) for a conid.
 
     tp_atr_mult: take-profit override as a multiple of the inception ATR. Pass a number to
     set it, None to clear it (revert to the default 3R), or omit it (_KEEP sentinel) to leave
     the stored value untouched — unlike the write-once inception fields, this is write-many.
+
+    classification: THESIS / TECHNICAL tag (§0a). Pass a string to set it, "" or None to clear
+    it (unset), or omit it (_KEEP) to leave the stored value untouched. Write-many.
+
+    exit_shape: §5a exit shape (HARD / RUNNER / THESIS; "" or None → default ladder). Pass a
+    string to set it, "" / None to clear (default), or omit it (_KEEP) to leave untouched. Write-many.
     """
     conn = get_conn()
     conid = str(conid)
@@ -223,6 +265,16 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
             sql += ", tp_atr_mult = ?"
             params.append(float(tp_atr_mult) if tp_atr_mult is not None else None)
 
+        # Write-many: set/clear the classification only when explicitly passed.
+        if classification is not _KEEP:
+            sql += ", classification = ?"
+            params.append(classification or None)
+
+        # Write-many: set/clear the exit shape only when explicitly passed.
+        if exit_shape is not _KEEP:
+            sql += ", exit_shape = ?"
+            params.append(exit_shape or None)
+
         if reset_sl:
             sql += ", highest_sl = 0.0"
         sql += " WHERE id = ?"
@@ -233,11 +285,13 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
         i_stop = float(inception_stop) if inception_stop is not None else None
         i_atr = float(inception_atr) if inception_atr is not None else float(atr)
         i_tp = float(tp_atr_mult) if (tp_atr_mult is not _KEEP and tp_atr_mult is not None) else None
+        i_class = classification or None if classification is not _KEEP else None
+        i_shape = exit_shape or None if exit_shape is not _KEEP else None
 
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape))
 
     conn.commit()
     conn.close()
@@ -453,6 +507,70 @@ def update_preset_profiles(key: str, new_max_r_pct: float, new_max_exp_pct: floa
     conn.execute(
         "UPDATE risk_profiles SET max_r_pct = ?, max_exp_pct = ? WHERE profile = ? AND status IN ('ACTIVE', 'WATCH')",
         (float(new_max_r_pct), float(new_max_exp_pct), key)
+    )
+    conn.commit()
+    conn.close()
+
+# ---------------------------------------------------------------------------
+# Trade Journal Log (Entry & Stop System §7)
+# ---------------------------------------------------------------------------
+
+def add_trade_log_entry(entry) -> int:
+    """Insert a decision-journal row. Accepts a TradeLogEntry or a plain dict;
+    every field is optional (a row with only date/ticker is valid). Booleans are
+    passed through as-is (SQLite stores them as 0/1). Returns the new row id."""
+    # Normalise a plain dict through the dataclass so unspecified fields take the
+    # dataclass defaults ("" / None) rather than being stored as bare NULLs.
+    if not isinstance(entry, TradeLogEntry):
+        entry = TradeLogEntry.from_row(entry)
+    data = {k: getattr(entry, k) for k in PERSISTED_FIELDS}
+    if data.get("ticker"):
+        data["ticker"] = str(data["ticker"]).upper()
+
+    placeholders = ", ".join("?" for _ in PERSISTED_FIELDS)
+    columns = ", ".join(PERSISTED_FIELDS)
+    values = [data[k] for k in PERSISTED_FIELDS]
+
+    conn = get_conn()
+    cursor = conn.execute(
+        f"INSERT INTO trade_log ({columns}) VALUES ({placeholders})", values
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+def get_trade_log_entries(status=None, ticker=None):
+    """Load decision-journal rows as TradeLogEntry objects, oldest first.
+    Optionally filter by status (TAKEN/SKIPPED) and/or ticker."""
+    query = "SELECT * FROM trade_log"
+    conds, params = [], []
+    if status:
+        conds.append("status = ?")
+        params.append(status)
+    if ticker:
+        conds.append("ticker = ?")
+        params.append(str(ticker).upper())
+    if conds:
+        query += " WHERE " + " AND ".join(conds)
+    query += " ORDER BY date ASC, id ASC"
+
+    conn = get_conn()
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [TradeLogEntry.from_row(r) for r in rows]
+
+def update_trade_log_entry(entry_id, **fields):
+    """Backfill/patch a decision-journal row (e.g. realized R, MAE/MFE at exit).
+    Unknown keys are ignored so callers can pass a superset safely."""
+    updates = {k: v for k, v in fields.items() if k in PERSISTED_FIELDS}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    conn = get_conn()
+    conn.execute(
+        f"UPDATE trade_log SET {set_clause} WHERE id = ?",
+        (*updates.values(), entry_id),
     )
     conn.commit()
     conn.close()

@@ -98,3 +98,89 @@ MICRO_STOP_BUFFER_ATR = 0.25
 #    bucket. Tighter and more precise than the VAL edge when volume has stacked.
 GAP_MIN_ATR = 0.5
 HVN_MIN_PROMINENCE = 0.5
+
+# --- Scanner structural windows ---------------------------------------------
+# Phase 1 extraction: these were hardcoded literals inside core/zone_scan.py.
+# Values are unchanged from the originals — this only centralises them so the
+# Entry/Stop-system work can tune them later without editing code paths.
+
+# Moving-average lookbacks (in daily bars) the scanner adds to its level map.
+DMA_LONG_WINDOW = 200
+DMA_SHORT_WINDOW = 50
+
+# Trading-days-per-month approximation used by _slice_months ONLY when the
+# frame has no 'date' column (the date path is exact and preferred).
+TRADING_DAYS_PER_MONTH = 21
+
+# Default ATR lookback (daily bars) for the scanner's volatility yardstick.
+SCANNER_ATR_WINDOW = 14
+
+# When no structural support sits below price, the scanner falls back to a stop
+# this many ATRs beneath price (labelled "ATR(1)") so the zone can still size.
+ATR_FALLBACK_MULT = 1.0
+
+# --- Regime day-count thresholds (200-DMA) ----------------------------------
+# Phase 1 extraction from core/profit_taking.classify_regime. TREND needs the
+# DMA rising this many consecutive days (with price above it); NORMAL needs at
+# least the lower floor. Values unchanged.
+REGIME_TREND_MIN_DAYS = 21
+REGIME_NORMAL_MIN_DAYS = 10
+
+# --- Exit milestone R-multiples ---------------------------------------------
+# Phase 1 extraction from core/profit_taking.compute_exit_milestones. The ladder
+# is entry + Mn × R (R = inception ATR): M1 at 1R, M2 at 2R; TP uses
+# TP_ATR_MULTIPLE (default 3R) above. Values unchanged.
+MILESTONE_M1_MULT = 1.0
+MILESTONE_M2_MULT = 2.0
+
+# --- ATR discovery timeframes -----------------------------------------------
+# Phase 1 extraction from core/stop_loss._compute_atr_rows. Institutional ATR
+# standards: (label, window, resample-timeframe). Values unchanged.
+ATR_DISCOVERY_INTERVALS = (
+    ("14d", 14, "daily"),
+    ("12w", 12, "weekly"),
+    ("12m", 12, "monthly"),
+    ("12q", 12, "quarterly"),
+)
+
+# --- Entry gates (Entry & Stop System §4) -----------------------------------
+# Advisory-first hard-gate thresholds. Defaults are the doc's starting points,
+# meant to be tuned from the trade log (§7/§8) — not laws. Consumed by
+# core/gates.py; a gate with missing inputs returns NA (never blocks).
+
+# G1 Stop-width: R₁ ≤ MAX_STOP_ATR × ATR  AND  R₁/entry ≤ MAX_STOP_PCT.
+GATE_G1_MAX_STOP_ATR = 1.5
+GATE_G1_MAX_STOP_PCT = 0.08
+# G2 Basis quality: ≥ MIN_CONFLUENCE independent levels AND a non-thin stop_source.
+GATE_G2_MIN_CONFLUENCE = 2
+GATE_G2_THIN_SOURCES = ("ATR(1)",)             # too thin to count as basis (Scenario D)
+GATE_G2_TIGHT_PREFIXES = ("VAL", "HVN", "AVWAP", "GAP", "DMA", "POC")
+# G3 Fallback artifact: an unflagged MOMENTUM row with a double-digit VAL_* stop.
+GATE_G3_MOMO_VAL_STOP_PCT = 0.10
+# G4 Event: no new entry within this many days of earnings/known catalyst.
+GATE_G4_EVENT_DAYS = 5
+# G5 Extension: don't initiate if price is > this many ATRs above the trail anchor.
+GATE_G5_MAX_EXTENSION_ATR = 2.0
+# G6 Liquidity: size ≤ this fraction of ADV (placeholder default — tune per book).
+GATE_G6_ADV_FRACTION = 0.10
+# G7 Theme/portfolio heat cap = this multiple of the single-trade R% cap.
+GATE_G7_HEAT_MULT = 3.0
+
+# --- Expectancy (Entry & Stop System §5) ------------------------------------
+# Minimum E[R] (in R units, after costs) for an archetype to be considered
+# "proven" and worth trading at full size. Below this, trade starter size only.
+EXPECTANCY_THRESHOLD_R = 0.20
+
+# --- Horizon calibration (Horizon_Calibration_3to6mo.md) --------------------
+# The default (short-swing) lens uses the daily constants above. The 3–6mo
+# position lens retunes every horizon-sensitive knob (see core/calibration.py).
+# %-of-price bands are the doc's targets (§1a/§3); the scanner works on daily
+# bars, so its "long ATR" is approximated by a longer daily window (true weekly
+# resampling is deferred — flagged). The profile changes the LENS only; it adds
+# no time stop (the doc's "two roles of time").
+CAL_3TO6MO_ATR_WINDOW = 60          # ≈12 weeks of daily bars — a longer-horizon vol read
+CAL_3TO6MO_MICRO_BUFFER_ATR = 0.5   # 0.25–0.5 × (weekly) ATR beneath the anchor
+CAL_3TO6MO_CONFLUENCE_PCT = 0.05    # wider band (~0.5 × weekly ATR) than the daily 0.025
+CAL_3TO6MO_STOP_BUFFER_PCT_BAND = (0.03, 0.07)   # buffer beneath the anchor, % of price
+CAL_3TO6MO_STOP_WIDTH_PCT_BAND = (0.10, 0.18)    # total entry→stop width, % of price
+CAL_3TO6MO_EXTENSION_ATR_MAX = 2.0  # G5: not > 2 × (weekly) ATR above the 30-week MA

@@ -60,6 +60,8 @@ class RiskProfile:
     status: str = "ACTIVE"
     profile: Optional[str] = None
     tp_atr_mult: Optional[float] = None  # TP override as a multiple of inception ATR; None = default 3R
+    classification: Optional[str] = None  # THESIS / TECHNICAL / None (unset). Carried only — no exit branching.
+    exit_shape: Optional[str] = None      # §5a exit shape (None/LADDER = default ladder; HARD/RUNNER/THESIS)
 
     @classmethod
     def from_row(cls, row) -> "RiskProfile":
@@ -125,6 +127,8 @@ class Position:
     max_r_pct: float = 1.0
     max_exp_pct: float = 5.0
     profile: Optional[str] = None
+    classification: str = ""  # THESIS / TECHNICAL / "" (unset). Carried only — no exit branching yet.
+    exit_shape: str = "LADDER"  # §5a: LADDER (default) / HARD / RUNNER / THESIS
 
     # Exit Planning
     exit_stage: str = ""         # PRE-M1 / M1 / M2 / TP (empty = no stop assigned)

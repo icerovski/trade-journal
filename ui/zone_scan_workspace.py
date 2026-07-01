@@ -24,7 +24,8 @@ from config import PRICES_DB_PATH
 from core.portfolio_manager import PortfolioManager
 from core.ui_utils import UIUtils
 from core.zone_scan import build_zone_report
-from db import get_presets
+from core.calibration import get_calibration
+from db import get_presets, get_setting
 from logger import logger, suppress_console_logging
 from services.price_service import PriceService
 
@@ -185,8 +186,9 @@ class ZoneScanWorkspace(App):
                     })
 
                 presets = get_presets() or _DEFAULT_PRESETS
+                calibration = get_calibration(get_setting('calibration_profile', 'default'))
                 results = build_zone_report(universe, self._load_or_fetch_ohlcv,
-                                            total_nav, presets)
+                                            total_nav, presets, calibration=calibration)
             self.post_message(self.ScanLoaded(results, total_nav, nav_ccy))
         except Exception as e:
             logger.error(f"Zone scan error: {e}")

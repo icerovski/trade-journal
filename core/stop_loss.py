@@ -5,9 +5,10 @@ from models import Position, ATRDiscoveryRow
 from db import update_high_water_mark
 from services.price_service import PriceService
 from logger import logger
-from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, ATR_DISCOVERY_INTERVALS
 from .profit_taking import compute_exit_milestones
 from .sizing import compute_position_size
+from .exit_shapes import normalize_shape, suppresses_price_target
 
 
 def audit_position_risk(
@@ -124,6 +125,10 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.inception_stop = inception_stop
     position.inception_atr = inception_atr
     position.profile = getattr(profile, 'profile', None)
+    # Carry the THESIS/TECHNICAL tag through (§0a). No exit logic branches on it yet.
+    position.classification = getattr(profile, 'classification', '') or ''
+    # Carry the exit shape (§5a). Unset → LADDER, which reproduces today's behaviour.
+    position.exit_shape = normalize_shape(getattr(profile, 'exit_shape', None))
 
     # 2. Ratchet Rule (High-Water Mark)
     final_sl = max(calculated_sl, highest_sl)
@@ -155,6 +160,12 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.tp_is_override = bool(tp_mult_override and tp_mult_override > 0)
     position.tp_atr_mult = tp_mult
     position.tp_price = (position.entry_price + tp_mult * atr_for_tp) if atr_for_tp > 0 else None
+    # Exit shape (§5a): a THESIS trade carries no guessed-at-entry price target — it exits
+    # on thesis/stop only. Drop the target so the target-driven ladder/exit-stage stays quiet
+    # (up_pct, reward_val, rr and exit_stage all fall to their no-target branches below).
+    # Any other shape (incl. the default) keeps today's target untouched.
+    if suppresses_price_target(position.exit_shape):
+        position.tp_price = None
 
     # 4. Percentage Metrics
     if position.current_price > 0:
@@ -254,12 +265,7 @@ def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_pric
                       multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
                       price_service, df_prospect_daily=None):
     """Computes ATRDiscoveryRow objects for all timeframes and stop types."""
-    intervals = [
-        ("14d", 14, 'daily'),
-        ("12w", 12, 'weekly'),
-        ("12m", 12, 'monthly'),
-        ("12q", 12, 'quarterly'),
-    ]
+    intervals = ATR_DISCOVERY_INTERVALS
     results = []
     for label, window, tf in intervals:
         if conid:

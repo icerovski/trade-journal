@@ -15,6 +15,33 @@ def compute_position_size(
     return int(min(risk_q, exp_q))
 
 
+def gap_effective_stop(stop_price: float, gap_price):
+    """The stop the gap-aware sizer risks against: the LOWER of the structural stop
+    and the plausible post-event gap price (§6). Picking the lower price is exactly
+    'use the larger of R₁ and R_gap'. `gap_price` None (or not below the stop) → the
+    structural stop, so sizing is unchanged."""
+    if gap_price is None:
+        return stop_price
+    return min(stop_price, gap_price)
+
+
+def compute_position_size_gap(
+    total_nav: float, entry_price: float, stop_price: float, gap_price,
+    inst_multiplier: float, max_r_pct: float, max_exp_pct: float,
+) -> int:
+    """
+    Gap-aware sizing (Entry & Stop System §6). For a name held through an event, the
+    stop can slip to the gap, not the level — so size off `R_gap = entry − gap_price`
+    using the larger of R₁ and R_gap. Opt-in: with `gap_price=None` this is identical
+    to compute_position_size (the default fixed-fractional path). The exposure clamp is
+    unchanged; only the risk distance widens, which can only shrink the size.
+    """
+    effective_stop = gap_effective_stop(stop_price, gap_price)
+    return compute_position_size(
+        total_nav, entry_price, effective_stop, inst_multiplier, max_r_pct, max_exp_pct
+    )
+
+
 def compute_portfolio_risk(df: pd.DataFrame, total_nav: float, nav_ccy: str) -> dict:
     """
     Computes portfolio-level Phase 1 risk metrics from the enriched positions DataFrame.

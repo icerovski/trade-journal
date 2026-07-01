@@ -1,0 +1,340 @@
+{
+  "exit_ladder": {
+    "fixed_stage_M1": {
+      "down_pct": 18.181818,
+      "exit_stage": "M1",
+      "m1_price": 110.0,
+      "m2_price": 120.0,
+      "reward_val": 3000.0,
+      "risk_val": -1000.0,
+      "risk_val_live": -1000.0,
+      "rr_ratio": 1.0,
+      "sl_pct_base": 10.0,
+      "sl_price": 90.0,
+      "tp_atr_mult": 3.0,
+      "tp_is_override": false,
+      "tp_price": 130.0,
+      "up_pct": 18.181818
+    },
+    "fixed_tp_override_5R": {
+      "down_pct": 33.333333,
+      "exit_stage": "M2",
+      "m1_price": 110.0,
+      "m2_price": 120.0,
+      "reward_val": 5000.0,
+      "risk_val": -1000.0,
+      "risk_val_live": -1000.0,
+      "rr_ratio": 0.333333,
+      "sl_pct_base": 10.0,
+      "sl_price": 90.0,
+      "tp_atr_mult": 5.0,
+      "tp_is_override": true,
+      "tp_price": 150.0,
+      "up_pct": 11.111111
+    },
+    "milestone_stages": {
+      "cur_108.0": {
+        "exit_stage": "PRE-M1",
+        "m1_price": 110.0,
+        "m2_price": 120.0
+      },
+      "cur_118.0": {
+        "exit_stage": "M1",
+        "m1_price": 110.0,
+        "m2_price": 120.0
+      },
+      "cur_135.0": {
+        "exit_stage": "TP",
+        "m1_price": 110.0,
+        "m2_price": 120.0
+      },
+      "cur_95.0": {
+        "exit_stage": "PRE-M1",
+        "m1_price": 110.0,
+        "m2_price": 120.0
+      }
+    },
+    "trailing_stage_M1": {
+      "down_pct": 4.545455,
+      "exit_stage": "M1",
+      "m1_price": 110.0,
+      "m2_price": 120.0,
+      "reward_val": 3000.0,
+      "risk_val": 500.0,
+      "risk_val_live": 500.0,
+      "rr_ratio": 4.0,
+      "sl_pct_base": 8.695652,
+      "sl_price": 105.0,
+      "tp_atr_mult": 3.0,
+      "tp_is_override": false,
+      "tp_price": 130.0,
+      "up_pct": 18.181818
+    }
+  },
+  "regime": {
+    "DOWN_0d_above=False": "NORMAL",
+    "DOWN_0d_above=True": "NORMAL",
+    "DOWN_10d_above=False": "RANGING",
+    "DOWN_10d_above=True": "RANGING",
+    "DOWN_20d_above=False": "RANGING",
+    "DOWN_20d_above=True": "RANGING",
+    "DOWN_21d_above=False": "RANGING",
+    "DOWN_21d_above=True": "RANGING",
+    "DOWN_2d_above=False": "NORMAL",
+    "DOWN_2d_above=True": "NORMAL",
+    "DOWN_3d_above=False": "RANGING",
+    "DOWN_3d_above=True": "RANGING",
+    "DOWN_43d_above=False": "RANGING",
+    "DOWN_43d_above=True": "RANGING",
+    "DOWN_9d_above=False": "RANGING",
+    "DOWN_9d_above=True": "RANGING",
+    "UP_0d_above=False": "RANGING",
+    "UP_0d_above=True": "RANGING",
+    "UP_10d_above=False": "NORMAL",
+    "UP_10d_above=True": "NORMAL",
+    "UP_20d_above=False": "NORMAL",
+    "UP_20d_above=True": "NORMAL",
+    "UP_21d_above=False": "NORMAL",
+    "UP_21d_above=True": "TREND",
+    "UP_2d_above=False": "RANGING",
+    "UP_2d_above=True": "RANGING",
+    "UP_3d_above=False": "RANGING",
+    "UP_3d_above=True": "RANGING",
+    "UP_43d_above=False": "NORMAL",
+    "UP_43d_above=True": "TREND",
+    "UP_9d_above=False": "RANGING",
+    "UP_9d_above=True": "RANGING"
+  },
+  "scanner": {
+    "momentum_zone": {
+      "atr": 1.080382,
+      "dist_to_zone_pct": 0.63459,
+      "entry_signals": [
+        {
+          "atr_distance": 1.988488,
+          "is_fortress": false,
+          "name": "DMA50",
+          "pct_distance": 1.130698,
+          "type": "ENTRY",
+          "value": 187.851673
+        },
+        {
+          "atr_distance": 1.116014,
+          "is_fortress": false,
+          "name": "POC_6mo",
+          "pct_distance": 0.63459,
+          "type": "ENTRY",
+          "value": 188.794278
+        },
+        {
+          "atr_distance": 2.086993,
+          "is_fortress": false,
+          "name": "POC_12mo",
+          "pct_distance": 1.186711,
+          "type": "ENTRY",
+          "value": 187.74525
+        }
+      ],
+      "flagged": true,
+      "levels": {
+        "DMA200": 155.008922,
+        "DMA50": 187.851673,
+        "POC_12mo": 187.74525,
+        "POC_6mo": 188.794278,
+        "VAH_12mo": 194.83475,
+        "VAH_6mo": 195.158332,
+        "VAL_12mo": 98.15975,
+        "VAL_6mo": 141.859383
+      },
+      "price": 190.0,
+      "regime": "MOMENTUM",
+      "risk_per_share": 5.043156,
+      "sizes": {
+        "B": {
+          "label": "Base",
+          "max_exp_pct": 3.0,
+          "max_r_pct": 0.6,
+          "qty": 157.0
+        },
+        "L": {
+          "label": "Large",
+          "max_exp_pct": 5.0,
+          "max_r_pct": 1.0,
+          "qty": 263.0
+        },
+        "S": {
+          "label": "Small",
+          "max_exp_pct": 1.5,
+          "max_r_pct": 0.3,
+          "qty": 78.0
+        }
+      },
+      "stop": 184.956844,
+      "stop_pct": 2.654293,
+      "stop_source": "HVN_14d",
+      "tag": "ZONE-MOMO",
+      "target": 191.180798,
+      "target_from_naked_poc": true,
+      "ticker": "MOMO"
+    },
+    "no_confluence": {
+      "atr": 1.0,
+      "dist_to_zone_pct": 21.728919,
+      "entry_signals": [],
+      "flagged": false,
+      "levels": {
+        "AVWAP_high": 99.863228,
+        "AVWAP_low": 99.646014,
+        "DMA200": 100.07517,
+        "DMA50": 99.375992,
+        "POC_12mo": 101.752405,
+        "POC_6mo": 98.249671,
+        "VAH_12mo": 101.752405,
+        "VAH_6mo": 101.248277,
+        "VAL_12mo": 98.750721,
+        "VAL_6mo": 98.249671
+      },
+      "price": 130.0,
+      "regime": "MOMENTUM",
+      "tag": null,
+      "ticker": "FAR"
+    },
+    "normal_zone": {
+      "atr": 1.0,
+      "dist_to_zone_pct": 0.07517,
+      "entry_signals": [
+        {
+          "atr_distance": 0.07517,
+          "is_fortress": true,
+          "name": "DMA200",
+          "pct_distance": 0.07517,
+          "type": "ENTRY",
+          "value": 100.07517
+        },
+        {
+          "atr_distance": 0.624008,
+          "is_fortress": false,
+          "name": "DMA50",
+          "pct_distance": 0.624008,
+          "type": "ENTRY",
+          "value": 99.375992
+        },
+        {
+          "atr_distance": 1.750329,
+          "is_fortress": false,
+          "name": "VAL_6mo",
+          "pct_distance": 1.750329,
+          "type": "ENTRY",
+          "value": 98.249671
+        },
+        {
+          "atr_distance": 1.248277,
+          "is_fortress": false,
+          "name": "VAH_6mo",
+          "pct_distance": 1.248277,
+          "type": "ENTRY",
+          "value": 101.248277
+        },
+        {
+          "atr_distance": 1.750329,
+          "is_fortress": false,
+          "name": "POC_6mo",
+          "pct_distance": 1.750329,
+          "type": "ENTRY",
+          "value": 98.249671
+        },
+        {
+          "atr_distance": 1.249279,
+          "is_fortress": false,
+          "name": "VAL_12mo",
+          "pct_distance": 1.249279,
+          "type": "ENTRY",
+          "value": 98.750721
+        },
+        {
+          "atr_distance": 1.752405,
+          "is_fortress": false,
+          "name": "VAH_12mo",
+          "pct_distance": 1.752405,
+          "type": "ENTRY",
+          "value": 101.752405
+        },
+        {
+          "atr_distance": 1.752405,
+          "is_fortress": false,
+          "name": "POC_12mo",
+          "pct_distance": 1.752405,
+          "type": "ENTRY",
+          "value": 101.752405
+        },
+        {
+          "atr_distance": 0.353986,
+          "is_fortress": false,
+          "name": "AVWAP_low",
+          "pct_distance": 0.353986,
+          "type": "ENTRY",
+          "value": 99.646014
+        },
+        {
+          "atr_distance": 0.136772,
+          "is_fortress": false,
+          "name": "AVWAP_high",
+          "pct_distance": 0.136772,
+          "type": "ENTRY",
+          "value": 99.863228
+        }
+      ],
+      "flagged": true,
+      "levels": {
+        "AVWAP_high": 99.863228,
+        "AVWAP_low": 99.646014,
+        "DMA200": 100.07517,
+        "DMA50": 99.375992,
+        "POC_12mo": 101.752405,
+        "POC_6mo": 98.249671,
+        "VAH_12mo": 101.752405,
+        "VAH_6mo": 101.248277,
+        "VAL_12mo": 98.750721,
+        "VAL_6mo": 98.249671
+      },
+      "price": 100.0,
+      "regime": "NORMAL",
+      "risk_per_share": 0.353986,
+      "sizes": {
+        "B": {
+          "label": "Base",
+          "max_exp_pct": 3.0,
+          "max_r_pct": 0.6,
+          "qty": 300.0
+        },
+        "L": {
+          "label": "Large",
+          "max_exp_pct": 5.0,
+          "max_r_pct": 1.0,
+          "qty": 500.0
+        },
+        "S": {
+          "label": "Small",
+          "max_exp_pct": 1.5,
+          "max_r_pct": 0.3,
+          "qty": 150.0
+        }
+      },
+      "stop": 99.646014,
+      "stop_pct": 0.353986,
+      "stop_source": "AVWAP_low",
+      "tag": "ZONE",
+      "target": 101.061959,
+      "target_from_naked_poc": false,
+      "ticker": "NORM"
+    }
+  },
+  "sizing": {
+    "n1000000_e100.0_s50.0_m1.0_r1.0_x5.0": 200.0,
+    "n1000000_e100.0_s90.0_m1.0_r1.0_x5.0": 500.0,
+    "n1000000_e100.0_s95.0_m100.0_r1.0_x5.0": 5.0,
+    "n1000000_e100.0_s98.0_m1.0_r0.3_x1.5": 150.0,
+    "n1000000_e1000.0_s900.0_m0.001_r1.0_x5.0": 50000.0,
+    "n500000_e250.0_s240.0_m1.0_r0.6_x3.0": 60.0
+  }
+}
