@@ -290,3 +290,54 @@ The **`F1` Help Desk** (Risk Workspace and Dashboard) is a tabbed reference rend
 - `docs/guides/Indicator_Glossary.md` is the **canonical home** for every indicator and metric definition (ATRs, volume profile, AVWAP, R / RR, confluence, regimes, the momentum micro-anchors, presets). Other surfaces reference it rather than restating definitions.
 - `docs/guides/Stop_Placement_Playbook.md` is the scenario-by-scenario walkthrough for arriving at a stop, including the momentum "price sitting on the low" case where the scanner cannot offer a tight stop.
 - Source/rendering: `services/ui_components.py` (`HelpScreen`, `HELP_FILES`).
+
+---
+
+## 10. Entry & Stop System — Pre-Trade Controls (Risk Workspace)
+
+The Risk Workspace Strategy Lab command line carries optional per-trade controls from the **Entry & Stop Selection System**. All are **additive and default-off** — a command that uses none of them behaves exactly as before.
+
+Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/R/T]`
+
+- **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes a row to the decision journal (`trade_log`).
+- **`X:` — Exit shape (§5a).** How the trade is *banked*, decided at entry alongside the stop:
+    - `X:H` **Hard target** — a defined objective (TECHNICAL): bank the full position at the target, no runner.
+    - `X:R` **Scale + runner** — take partial at the objective, let a runner ride behind the trailing stop. This is the default ladder behaviour.
+    - `X:T` **Thesis exit** — **no price target**: the position carries no TP and is exited on the stop or a broken thesis only.
+    - `X:-` reverts to the default ladder. The chosen shape shows as a chip in the panel header. **There is no time stop** — no shape forces an exit on elapsed time.
+- **`G:` — Gap-aware sizing (§6).** `G:340` supplies a plausible post-event gap price. For a prospect, sizing then risks against the **larger** of R₁ and `R_gap = entry − gap_price` (i.e. the lower of the stop and the gap price), which shrinks the size for names held through an event. Omitting `G:` keeps the standard fixed-fractional size. A `GAP-SIZED @ …` chip shows while modelling.
+
+### Entry Gates (advisory-first)
+
+On commit, the workspace can run the **eight entry gates** (G1 stop-width, G2 basis quality, G3 fallback-artifact, G4 event, G5 extension, G6 liquidity, G7 theme/portfolio heat, G8 base-currency). Each returns **PASS / FAIL / NA** with a reason; a gate whose inputs are unavailable returns NA and never blocks.
+
+Controlled by the **`gates_mode`** setting, edited in the preset/settings modal (`M`):
+
+- **`off`** (default) — no gate evaluation; commit behaviour unchanged.
+- **`advisory`** — failing gates are surfaced as a warning, but the commit proceeds.
+- **`blocking`** — a commit with any failing gate is blocked.
+
+Thresholds live in `constants.py` (`GATE_*`) and are meant to be tuned from the log. Engine: `core/gates.py`.
+
+---
+
+## 11. Expectancy Report (Menu Option 9) & Horizon Calibration
+
+### Expectancy Report
+
+Menu option **9** is a **read-only** report over the decision journal (`trade_log`). It never writes and does not touch the trade flow.
+
+- **By archetype** — win rate, average win / average loss (in R), and **E[R] = w·W̄ − (1 − w)·L̄**. Each archetype is flagged *proven* / *unproven* against the `EXPECTANCY_THRESHOLD_R` (+0.20R); an `ALL` row aggregates.
+- **Source vs benchmark** — for each source: trades taken vs **skipped picks**, average realized R, average result-vs-benchmark, and average base-currency return. This answers the funnel question: does the source add edge, net of cost?
+- **Base-currency return** — total and average realized return in the book's base currency over closed trades.
+
+Empty and short logs are handled gracefully. Engine: `core/expectancy.py`; view: `ui/expectancy_report.py`.
+
+### Horizon Calibration Lens
+
+The Zone Scanner reads a **`calibration_profile`** setting that selects the horizon lens:
+
+- **`default`** — today's short-swing calibration (daily structure). Unchanged.
+- **`position_3to6mo`** — the 3-to-6-month position lens: a longer-horizon ATR, wider buffers (~3–7% of price) and stop-width band (~10–18%), a 30-week-MA anchor, and the **MOMENTUM override** — a momentum flag is read as *"extended, wait for a weekly pullback"*, so the scanner uses the weekly value anchors instead of a tight micro-stop.
+
+The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).
