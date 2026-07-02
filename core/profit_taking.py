@@ -5,6 +5,7 @@ from constants import (
     REGIME_REVERSAL_CONFIRM_DAYS,
     REGIME_TREND_MIN_DAYS,
     REGIME_NORMAL_MIN_DAYS,
+    REGIME_LENS_BANDS,
     MILESTONE_M1_MULT,
     MILESTONE_M2_MULT,
 )
@@ -47,24 +48,54 @@ TRIM_MATRIX = {
 }
 
 
-def classify_regime(direction: str, dma_days: int, price_above_dma: bool) -> str:
-    """Pure 200-DMA regime decision. See TECHNICAL_DOCS §5.
+def classify_regime(
+    direction: str,
+    dma_days: int,
+    price_above_dma: bool,
+    trend_min_days: int = REGIME_TREND_MIN_DAYS,
+    normal_min_days: int = REGIME_NORMAL_MIN_DAYS,
+) -> str:
+    """Pure DMA regime decision. See TECHNICAL_DOCS §5.
 
-    - TREND:   DMA rising ≥ 21d AND price above the 200-DMA.
-    - NORMAL:  DMA rising 10–20d; a ≥21d rise while price is below the DMA (pullback);
-               or an unconfirmed reversal (< REGIME_REVERSAL_CONFIRM_DAYS down) held by hysteresis.
-    - RANGING: a confirmed decline, or a rise shorter than 10d.
+    Defaults are the 200-DMA thresholds (21d/10d) — unchanged behaviour. The horizon
+    lens passes shorter confirmation windows for faster DMAs (constants.REGIME_LENS_BANDS).
+
+    - TREND:   DMA rising ≥ trend_min_days AND price above the lens DMA.
+    - NORMAL:  DMA rising normal_min_days..trend_min_days−1; a confirmed rise while price
+               is below the DMA (pullback); or an unconfirmed reversal
+               (< REGIME_REVERSAL_CONFIRM_DAYS down) held by hysteresis.
+    - RANGING: a confirmed decline, or a rise shorter than normal_min_days.
 
     The day count resets to ~1 on any reversal, so the hysteresis branch is what keeps a
     single counter-trend day from crashing a long TREND straight to RANGING.
     """
-    if direction == 'UP' and dma_days >= REGIME_TREND_MIN_DAYS and price_above_dma:
+    if direction == 'UP' and dma_days >= trend_min_days and price_above_dma:
         return "TREND"
-    if direction == 'UP' and dma_days >= REGIME_NORMAL_MIN_DAYS:
+    if direction == 'UP' and dma_days >= normal_min_days:
         return "NORMAL"
     if direction == 'DOWN' and dma_days < REGIME_REVERSAL_CONFIRM_DAYS:
         return "NORMAL"  # unconfirmed reversal — hysteresis hold
     return "RANGING"
+
+
+def select_regime_lens(risk_unit: float, atr_daily: float) -> tuple[int, int, int]:
+    """Pick the regime DMA window + confirmation thresholds for a trade's horizon.
+
+    Time is a function of risk: the stop *declares* the horizon. `risk_unit` is the
+    frozen inception ATR (≈ entry − stop scale, already snapped to a discovery
+    timeframe for FIXED stops), measured here in daily-ATR multiples. A tight
+    daily-ATR stop (e.g. a leveraged-ETF trade) is judged on the fast lens its
+    lifetime actually spans; a wide monthly-ATR conviction hold keeps the
+    structural 200-DMA read. Missing/zero inputs → structural lens (today's path).
+
+    Returns (dma_window, trend_min_days, normal_min_days).
+    """
+    if risk_unit and atr_daily and risk_unit > 0 and atr_daily > 0:
+        ratio = risk_unit / atr_daily
+        for max_ratio, window, trend_min, normal_min in REGIME_LENS_BANDS:
+            if ratio <= max_ratio:
+                return window, trend_min, normal_min
+    return 200, REGIME_TREND_MIN_DAYS, REGIME_NORMAL_MIN_DAYS
 
 
 def compute_exit_milestones(position: Position, atr_dist: float) -> None:
@@ -97,12 +128,20 @@ def compute_exit_milestones(position: Position, atr_dist: float) -> None:
         position.exit_stage = "PRE-M1"
 
 
-def enrich_regime(positions: list[Position], mapper) -> None:
-    """Sets trend_regime per position based on 200-DMA consecutive rising days.
-    TREND >= 21d, NORMAL 10-20d, RANGING < 10d or declining.
+def enrich_regime(positions: list[Position], mapper, lens_mode: str = "default") -> None:
+    """Sets trend_regime per position based on DMA consecutive rising days.
+
+    lens_mode `default` (the `regime_lens` setting's default): the 200-DMA with
+    TREND >= 21d, NORMAL 10-20d, RANGING < 10d or declining — today's behaviour.
+
+    lens_mode `horizon`: the lens DMA and confirmation thresholds are picked per
+    position from the stop's volatility horizon via select_regime_lens() — the
+    inception ATR in daily-ATR14 multiples (tight daily-ATR stop → 50-DMA, weekly
+    → 100-DMA, wider or missing data → the structural 200-DMA, unchanged).
     """
     from services.price_service import PriceService
     ps = PriceService()
+    horizon = (lens_mode or "default").strip().lower() == "horizon"
     for p in positions:
         if not p.conid or p.qty <= 0:
             continue
@@ -113,22 +152,39 @@ def enrich_regime(positions: list[Position], mapper) -> None:
             if trend.get('status') != 'OK':
                 logger.warning(f"[enrich_regime] {p.ticker} (conid={p.conid}): status={trend.get('status')}")
                 continue
+            window, trend_min, normal_min = 200, REGIME_TREND_MIN_DAYS, REGIME_NORMAL_MIN_DAYS
             dma_trend = trend.get('dma200_trend', {})
+            if horizon:
+                risk_unit = float(p.inception_atr or 0.0)
+                window, trend_min, normal_min = select_regime_lens(
+                    risk_unit, float(trend.get('atr14_daily') or 0.0)
+                )
+                # Missing per-window trend (e.g. stale cache) → structural read.
+                dma_trend = (trend.get('dma_trends') or {}).get(window) or dma_trend
             dma_signal = dma_trend.get('signal', 'NEUTRAL')
             dma_days = dma_trend.get('consecutive_days', 0)
             direction = dma_trend.get('direction', 'DOWN')
             dmas = trend.get('dmas', {})
             p.regime_dma200 = round(float(dmas.get('DMA200', 0.0) or 0.0), 4)
-            p.regime_dma = f"{dma_signal} ({dma_days}d)"
+            # Name the lens in the display string only when it isn't the default 200.
+            p.regime_dma = (
+                f"{dma_signal} ({dma_days}d, DMA{window})" if window != 200
+                else f"{dma_signal} ({dma_days}d)"
+            )
             p.regime_dma_signal = dma_signal
             p.regime_dma_days = dma_days
             p.regime_dma_direction = direction
-            # Gate TREND on price being above the 200-DMA: a rising DMA with price
+            p.regime_lens = window
+            # Gate TREND on price being above the lens DMA: a rising DMA with price
             # already below it indicates a pullback — full trend trim is too aggressive.
+            lens_dma_level = float(dmas.get(f'DMA{window}', 0.0) or 0.0) if window != 200 else p.regime_dma200
             price_above_dma = (
-                (p.current_price or p.mark_price) > p.regime_dma200
-                if p.regime_dma200 > 0 else True
+                (p.current_price or p.mark_price) > lens_dma_level
+                if lens_dma_level > 0 else True
             )
-            p.trend_regime = classify_regime(direction, dma_days, price_above_dma)
+            p.trend_regime = classify_regime(
+                direction, dma_days, price_above_dma,
+                trend_min_days=trend_min, normal_min_days=normal_min,
+            )
         except Exception as e:
             logger.warning(f"[enrich_regime] {p.ticker} (conid={p.conid}): {e}\n{traceback.format_exc()}")

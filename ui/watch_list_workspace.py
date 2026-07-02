@@ -10,7 +10,8 @@ from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
 from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
-from db import get_all_monitored_profiles, delete_risk_profile, set_position_risk, get_presets
+from core.trade_log import TradeLogEntry, STATUS_SKIPPED
+from db import get_all_monitored_profiles, delete_risk_profile, set_position_risk, get_presets, add_trade_log_entry
 from logger import logger, suppress_console_logging
 from .chart_utils import launch_price_chart
 from core.confluence import evaluate_confluence
@@ -71,6 +72,74 @@ class AddProspectScreen(ModalScreen):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+class LogSkippedPickScreen(ModalScreen):
+    """Log a source pick you passed on (Entry & Stop System §0a) — a SKIPPED
+    decision-journal row with today's date and price, so the source's *whole*
+    funnel can be benchmarked, not just the picks you took.
+
+    Returns {'ticker', 'source', 'theme'} on submit, or None on cancel. The
+    parent resolves conid + current price and writes the row.
+    """
+
+    CSS = """
+    LogSkippedPickScreen { align: center middle; }
+    #skip-container {
+        width: 56;
+        height: auto;
+        padding: 1 2;
+        border: thick $accent;
+        background: $surface;
+    }
+    #skip-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #skip-buttons { height: auto; margin-top: 1; align-horizontal: right; }
+    #skip-buttons Button { margin-left: 2; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, ticker: str = "") -> None:
+        super().__init__()
+        self._prefill = ticker
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="skip-container"):
+            yield Label("LOG SKIPPED SOURCE PICK", id="skip-title")
+            yield Input(value=self._prefill, placeholder="Ticker (e.g. AAPL)", id="skip-ticker")
+            yield Input(placeholder="Source (e.g. ZACKS) — required", id="skip-source")
+            yield Input(placeholder="Theme (e.g. SEMIS) — optional", id="skip-theme")
+            with Horizontal(id="skip-buttons"):
+                yield Button("Log", id="btn-skip-log", variant="success")
+                yield Button("Cancel", id="btn-skip-cancel", variant="default")
+
+    def on_mount(self) -> None:
+        # Ticker usually prefilled from the selected row — jump to the source field.
+        (self.query_one("#skip-source" if self._prefill else "#skip-ticker", Input)).focus()
+
+    @on(Input.Submitted)
+    def _on_submit(self, event: Input.Submitted) -> None:
+        self._commit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-skip-log":
+            self._commit()
+        else:
+            self.dismiss(None)
+
+    def _commit(self) -> None:
+        ticker = self.query_one("#skip-ticker", Input).value.strip().upper()
+        source = self.query_one("#skip-source", Input).value.strip().upper()
+        theme = self.query_one("#skip-theme", Input).value.strip().upper()
+        if not ticker or not source:
+            self.notify("Ticker and source are required.", severity="warning")
+            return
+        self.dismiss({"ticker": ticker, "source": source, "theme": theme})
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class WatchListWorkspace(App):
     """
     Command Center for the Confluence Zone Discovery Method.
@@ -127,6 +196,7 @@ class WatchListWorkspace(App):
         Binding("r", "refresh_data", "Refresh"),
         Binding("d", "delete_prospect", "Delete Prospect"),
         Binding("g", "show_chart", "Chart"),
+        Binding("l", "log_skipped", "Log Skipped Pick"),
     ]
 
     class AnalysisLoaded(Message):
@@ -347,6 +417,42 @@ class WatchListWorkspace(App):
                 self.notify(f"Adding {symbol}…")
                 self.add_prospect_worker(symbol)
         self.push_screen(AddProspectScreen(), _on_closed)
+
+    def action_log_skipped(self) -> None:
+        """Log a source pick you passed on (§0a) — SKIPPED row in the decision
+        journal with today's date and the best available price (analysis cache →
+        prices.db latest close → None). The pick needn't be on the watch list."""
+        def _on_closed(result: Optional[dict]) -> None:
+            if not result:
+                return
+            ticker = result["ticker"]
+            # Best-effort price + conid: cached analysis first, then the price DB.
+            price = None
+            cached = self.analysis_cache.get(ticker)
+            if cached and cached.get("current_price"):
+                price = float(cached["current_price"])
+            profiles = get_all_monitored_profiles()
+            p_cfg = next((p for p in profiles if p.ticker == ticker), None)
+            conid = str(p_cfg.conid) if p_cfg else None
+            if price is None and conid:
+                from services.price_service import PriceService
+                price = PriceService().latest_close(conid)
+            try:
+                add_trade_log_entry(TradeLogEntry(
+                    date=pd.Timestamp.now().strftime("%Y-%m-%d"),
+                    ticker=ticker,
+                    conid=conid,
+                    status=STATUS_SKIPPED,
+                    source=result["source"],
+                    theme=result["theme"],
+                    entry=price,  # price at the pick date — the benchmark anchor
+                ))
+                px = f" @ {price:,.2f}" if price else " (no cached price)"
+                self.notify(f"Logged SKIPPED: {ticker} from {result['source']}{px}")
+            except Exception as e:
+                logger.error(f"Skipped-pick log failed for {ticker}: {e}")
+                self.notify(f"Log failed: {e}", severity="error")
+        self.push_screen(LogSkippedPickScreen(self.current_ticker or ""), _on_closed)
 
     @work(exclusive=False, thread=True)
     def add_prospect_worker(self, symbol: str) -> None:

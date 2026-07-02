@@ -126,6 +126,22 @@ ATR_FALLBACK_MULT = 1.0
 REGIME_TREND_MIN_DAYS = 21
 REGIME_NORMAL_MIN_DAYS = 10
 
+# --- Horizon-aware regime lens (default-off; `regime_lens` setting = `horizon`) ---
+# The trim-driving regime normally reads the 200-DMA with the 21d/10d thresholds
+# above, regardless of the trade's horizon. The horizon lens instead matches the
+# DMA speed to the horizon the stop itself declares: the risk unit (frozen
+# inception ATR ≈ entry − stop) measured in daily-ATR14 multiples. A stop snapped
+# to the daily ATR sits near 1×, weekly ≈ √5 ≈ 2.2×, monthly ≈ √21 ≈ 4.6× — band
+# edges are the midpoints. Confirmation thresholds scale ≈ window/10 (200 → 21d).
+# Tunables per Entry & Stop System §8 — hypotheses to validate from the log.
+# Rows: (max risk-unit/daily-ATR ratio, DMA window, TREND min days, NORMAL min days)
+REGIME_LENS_BANDS = [
+    (1.6, 50, 10, 5),    # tactical — daily-ATR stop (tight; e.g. leveraged ETF)
+    (3.4, 100, 15, 7),   # swing — weekly-ATR stop
+]
+# Ratios above the last band — or missing ATR/risk data — fall back to the
+# structural lens: 200-DMA with the constants above. Behaviour unchanged.
+
 # --- Exit milestone R-multiples ---------------------------------------------
 # Phase 1 extraction from core/profit_taking.compute_exit_milestones. The ladder
 # is entry + Mn × R (R = inception ATR): M1 at 1R, M2 at 2R; TP uses

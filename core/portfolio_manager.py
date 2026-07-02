@@ -6,7 +6,7 @@ from services.market_data_service import MarketDataService
 from .profit_taking import enrich_regime
 from .asset_registry import AssetRegistry
 from .reconciliation_service import ReconciliationService
-from db import get_all_risk_settings, reset_inception_on_reopen
+from db import get_all_risk_settings, reset_inception_on_reopen, get_setting
 from .stop_loss import calculate_position_risk
 from models import Position
 from logger import logger
@@ -82,8 +82,10 @@ class PortfolioManager:
         # 3. Financial and Risk Metric Calculation
         self._enrich_metrics(enriched_positions, risk_settings, total_nav)
 
-        # 4. Trend Regime (200-DMA consecutive rising days)
-        enrich_regime(enriched_positions, self.mapper)
+        # 4. Trend Regime (200-DMA consecutive rising days; opt-in horizon lens
+        # matches the DMA to each stop's volatility horizon — default unchanged)
+        lens_mode = (get_setting('regime_lens', 'default') or 'default').strip().lower()
+        enrich_regime(enriched_positions, self.mapper, lens_mode=lens_mode)
 
         # Convert list of objects back to DataFrame for the View layer
         return pd.DataFrame([p.to_dict() for p in enriched_positions]), enriched_positions

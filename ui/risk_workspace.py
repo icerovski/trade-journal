@@ -384,6 +384,9 @@ class PresetMatrixScreen(ModalScreen):
             with Horizontal(classes="matrix-row"):
                 yield Label("  [dim]Entry gates (off/advisory/blocking)[/]", classes="matrix-label-col")
                 yield Input(get_setting('gates_mode', 'off'), id="gates_mode", classes="matrix-input")
+            with Horizontal(classes="matrix-row"):
+                yield Label("  [dim]Regime lens (default/horizon)[/]", classes="matrix-label-col")
+                yield Input(get_setting('regime_lens', 'default'), id="regime_lens", classes="matrix-input")
             with Horizontal(id="matrix-buttons"):
                 yield Button("COMMIT", id="btn-commit", variant="success")
                 yield Button("Cancel", id="btn-cancel", variant="default")
@@ -420,6 +423,11 @@ class PresetMatrixScreen(ModalScreen):
             self.notify("gates_mode must be off / advisory / blocking", severity="error")
             return
 
+        new_regime_lens = (self.query_one("#regime_lens", Input).value or "default").strip().lower()
+        if new_regime_lens not in ("default", "horizon"):
+            self.notify("regime_lens must be default / horizon", severity="error")
+            return
+
         changed = [
             key for key, (new_r, new_e) in new_vals.items()
             if new_r != PRESETS[key]["max_r_pct"] or new_e != PRESETS[key]["max_exp_pct"]
@@ -435,6 +443,7 @@ class PresetMatrixScreen(ModalScreen):
         ACTION_THRESHOLD_PCT = new_threshold
         save_setting('action_threshold_pct', str(new_threshold))
         save_setting('gates_mode', new_gates_mode)
+        save_setting('regime_lens', new_regime_lens)
 
         self.dismiss(changed)
 
@@ -1274,6 +1283,21 @@ class RiskWorkspace(App):
             # "" = explicit clear. Carried only — no exit logic branches on it.
             active_class, raw = parse_classification(raw)
 
+            # Source / theme tags (§0a, §7): SRC:ZACKS THM:SEMIS. Journal-only — they ride
+            # the draft into the trade_log write at commit and are never persisted on the
+            # risk profile. Parsed before the F/T stop-type check ("THM" contains a T) and
+            # values are single uppercase tokens (the command line is upper-cased).
+            src_tag = None
+            s_m = re.search(r"SRC:([A-Z0-9_\-\.&]+)", raw)
+            if s_m:
+                src_tag = s_m.group(1)
+                raw = raw.replace(s_m.group(0), "").strip()
+            thm_tag = None
+            t_m = re.search(r"THM:([A-Z0-9_\-\.&]+)", raw)
+            if t_m:
+                thm_tag = t_m.group(1)
+                raw = raw.replace(t_m.group(0), "").strip()
+
             # Gap-aware sizing (§6): G:<price> = plausible post-event gap price. Opt-in —
             # absent (default) leaves sizing on the standard fixed-fractional path. Parsed
             # before the +N/-N and stop-value regexes so its digits aren't misread.
@@ -1444,7 +1468,7 @@ class RiskWorkspace(App):
             # Preserve the stored tag/shape when the user didn't type C:/X: this edit.
             draft_class = active_class if active_class is not None else (getattr(pos, 'classification', '') or '')
             draft_shape = active_shape if active_shape is not None else (getattr(pos, 'exit_shape', '') or '')
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek, 'classification': draft_class, 'gap_price': gap_price, 'exit_shape': draft_shape}
+            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek, 'classification': draft_class, 'gap_price': gap_price, 'exit_shape': draft_shape, 'source': src_tag or '', 'theme': thm_tag or ''}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek, hypo_tp_mult=tp_final)
             
@@ -1510,22 +1534,32 @@ class RiskWorkspace(App):
         return True
 
     def _log_classification(self, cid, d) -> None:
-        """Phase 3: record a classified commit into the decision journal (§7). Only
-        fires when a THESIS/TECHNICAL tag is set, so untagged commits write nothing
-        and behave exactly as before. A later phase formalises the full logging loop."""
+        """Record a classified or sourced commit into the decision journal (§7).
+        Fires when a THESIS/TECHNICAL tag (`C:`) OR a source (`SRC:`) is set, so
+        untagged commits write nothing and behave exactly as before. r1 is stored
+        when both entry and stop are known — the unit the backfill needs to
+        compute realized R at close."""
         classification = (d.get('classification') or '').strip()
-        if not classification:
+        source = (d.get('source') or '').strip()
+        theme = (d.get('theme') or '').strip()
+        if not classification and not source:
             return
         pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)
+        entry = pos.entry_price if pos and pos.entry_price > 0 else None
+        stop = d.get('hypo_stop')
+        r1 = (entry - stop) if (entry and stop and entry > stop) else None
         try:
             add_trade_log_entry(TradeLogEntry(
                 date=pd.Timestamp.now().strftime("%Y-%m-%d"),
                 ticker=d.get('ticker', ''),
                 conid=str(cid),
                 status=STATUS_TAKEN,
+                source=source,
+                theme=theme,
                 classification=classification,
-                entry=(pos.entry_price if pos and pos.entry_price > 0 else None),
-                stop=d.get('hypo_stop'),
+                entry=entry,
+                stop=stop,
+                r1=r1,
                 atr_value=d.get('inception_atr'),
             ))
         except Exception as e:

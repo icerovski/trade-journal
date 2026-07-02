@@ -188,6 +188,11 @@ def init_db():
     # Horizon calibration lens (Horizon_Calibration_3to6mo.md): default | position_3to6mo.
     # Default keeps today's short-swing scan; see core/calibration.py.
     cursor.execute("INSERT OR IGNORE INTO settings VALUES ('calibration_profile', 'default')")
+    # Regime lens (TECHNICAL_DOCS §5): default | horizon. Default = 200-DMA for all.
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('regime_lens', 'default')")
+    # Benchmark for the §0a funnel (source picks vs index). Cached in prices.db
+    # under the pseudo-conid BENCHMARK:<ticker> by the outcome backfill.
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('benchmark_ticker', 'SPY')")
 
     # 6. Trade Journal Log (Entry & Stop System §7) — decision journal, separate
     # from the `trades` execution ledger. Schema is driven by core.trade_log so it
@@ -559,6 +564,18 @@ def get_trade_log_entries(status=None, ticker=None):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [TradeLogEntry.from_row(r) for r in rows]
+
+def get_trades_for_conid(conid):
+    """Chronological raw trade rows for one instrument, as plain dicts — the
+    minimal feed for core/outcome_backfill's zero-crossing replay. Deliberately
+    NOT a Position source (that is LedgerEngine's job); this is read-only."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT date, side, quantity, price, source FROM trades WHERE conid = ? ORDER BY date ASC, id ASC",
+        (str(conid),),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 def update_trade_log_entry(entry_id, **fields):
     """Backfill/patch a decision-journal row (e.g. realized R, MAE/MFE at exit).

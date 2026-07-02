@@ -140,6 +140,7 @@ class Position:
     regime_dma_signal: str = ""   # "BUY", "SELL", or "NEUTRAL" (raw signal, no parsing needed)
     regime_dma_days: int = 0      # consecutive DMA direction days (raw count)
     regime_dma_direction: str = ""  # "UP" or "DOWN" — raw 200-DMA slope direction
+    regime_lens: int = 200        # DMA window the regime was judged on (horizon lens; 200 = default)
 
     @property
     def hcm_value(self) -> float:

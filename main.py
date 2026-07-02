@@ -237,7 +237,19 @@ def handle_zone_scanner():
     run_zone_scan_workspace()
 
 def handle_expectancy():
-    """Read-only expectancy report over the trade log."""
+    """Expectancy report over the trade log, preceded by the automated outcome
+    backfill (§7): realized R + MAE/MFE for closed TAKEN rows, vs-benchmark
+    refresh for SKIPPED picks. The report renders regardless of backfill errors."""
+    try:
+        from core.outcome_backfill import run_backfill
+        s = run_backfill()
+        console.print(
+            f"[dim]Outcome backfill: {s['closed']} closed trade(s) filled, "
+            f"{s['skipped']} skipped pick(s) refreshed, {s['open']} still open, "
+            f"{s['unresolved']} unresolved.[/dim]"
+        )
+    except Exception as e:
+        console.print(f"[yellow]Outcome backfill skipped: {e}[/yellow]")
     from ui.expectancy_report import run_expectancy_report
     run_expectancy_report()
 
