@@ -39,6 +39,23 @@ def fetch_fx_rate(from_ccy: str, to_ccy: str) -> float | None:
         return None
 
 
+def fetch_ticker_currency(yf_symbol: str) -> str | None:
+    """Pricing currency of a Yahoo symbol (e.g. 'USD', 'EUR', 'GBp' for LSE pence).
+    One metadata call; None when Yahoo can't say. Used to resolve the right
+    ccy->NAV fx rate for prospects that have no broker-snapshot row.
+
+    Case is preserved deliberately: 'GBp'/'GBX' (pence) and 'ZAc' (SA cents) are
+    minor-unit price currencies — upper-casing them to GBP/ZAR would silently
+    mis-scale every downstream FX conversion by 100x. resolve_prospect_fx owns
+    the minor-unit scaling."""
+    try:
+        with silence_yfinance():
+            cur = yf.Ticker(yf_symbol).fast_info['currency']
+        return str(cur).strip() if cur else None
+    except Exception:
+        return None
+
+
 class MarketDataService:
     """
     Handles batch fetching of market data from Yahoo Finance.

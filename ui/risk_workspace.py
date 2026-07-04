@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import re
 from typing import Dict, Optional
@@ -9,16 +11,17 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual import on, work
 
-from core.portfolio_manager import PortfolioManager
+from core.portfolio_manager import PortfolioManager, resolve_prospect_fx
 from core.profit_taking import TRIM_MATRIX
-from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
+from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data, snap_inception_atr
+from services.market_data_service import fetch_ticker_currency
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
 from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry
 from core.trade_log import TradeLogEntry, STATUS_TAKEN
 from core.gates import ProposedTrade, evaluate_gates, gates_summary
-from core.sizing import gap_effective_stop
+from core.sizing import compute_position_size_gap
 from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
@@ -97,17 +100,18 @@ def parse_classification(raw: str):
     return classification, raw.replace(m.group(0), "").strip()
 
 
-def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
+def resolve_tp_mult(token: str, entry: float, inception_atr: float):
     """Resolve a `TP:` token into a multiple of the inception ATR.
 
     Returns (mult, clear, ok):
       • clear=True  → user typed `TP:-` (revert to the default 3R), mult is None.
-      • ok=False    → token could not be resolved (missing inception ATR, or a $ target
-                      with no quantity); caller should warn and ignore.
+      • ok=False    → token could not be resolved (missing inception ATR or an
+                      unrecognised form); caller should warn and ignore.
     Accepted forms (token already upper-cased, `TP:` stripped):
       4 | 4R           → explicit multiple of inception ATR
       +35% | 35%       → gain as % of entry, divided by inception ATR
-      $60K | $60000 | 60K → absolute profit, per-share / inception ATR (needs qty)
+    The absolute-$ form ($60K) was cut — TP:nR and TP:N:1 carry the real use
+    cases; $/K tokens fall through to ok=False.
     """
     token = (token or "").strip()
     if token == '-':
@@ -120,13 +124,6 @@ def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
         if token.endswith('%'):
             pct = float(token.rstrip('%').lstrip('+'))
             return (entry * pct / 100.0) / inception_atr, False, True
-        if token.startswith('$') or token.endswith('K'):
-            amt = token.lstrip('$')
-            scale = 1000.0 if amt.endswith('K') else 1.0
-            amt = float(amt.rstrip('K')) * scale
-            if qty <= 0:
-                return None, False, False  # $ target needs a share count
-            return (amt / qty) / inception_atr, False, True
         return float(token), False, True  # plain number → multiple
     except ValueError:
         return None, False, False
@@ -164,7 +161,7 @@ def _trim_shares(qty: float, pct: float) -> float:
 def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type, exit_shape="") -> Optional[dict]:
     """Single source of truth for the profit-taking directive at an exit stage.
 
-    Returns a dict {verb, color, headline, shares, pct, restore_sl, urgent, reason} or
+    Returns a dict {verb, color, headline, shares, pct, restore_sl, reason} or
     None when the position carries no exit stage. Pure — drives BOTH the one-line verdict
     (panel header + table ACTION column) and the detailed exit-guidance prose, so the
     headline action and the justification below it can never diverge.
@@ -190,7 +187,7 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
     if stage == 'TP' and is_hard_target(exit_shape):
         shares = _trim_shares(qty, 1.0)
         return {'verb': 'TRIM', 'color': 'green', 'shares': shares, 'pct': 1.0,
-                'restore_sl': None, 'urgent': False,
+                'restore_sl': None,
                 'headline': f'EXIT — hard target hit (sell {shares})',
                 'reason': 'Hard-target trade: a defined objective was reached — bank the full '
                           'position, no runner past the target.'}
@@ -199,11 +196,11 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
     if stage == 'M1':
         if sl > entry:
             return {'verb': 'HOLD', 'color': 'cyan', 'shares': 0, 'pct': 0.0,
-                    'restore_sl': None, 'urgent': False,
+                    'restore_sl': None,
                     'headline': 'HOLD — stop already locks in profit',
                     'reason': f'Stop {sl:,.2f} locks +{sl - entry:.2f}/sh. Risk-free; monitor for M2.'}
         return {'verb': 'STOP→ENTRY', 'color': 'cyan', 'shares': 0, 'pct': 0.0,
-                'restore_sl': entry, 'urgent': False,
+                'restore_sl': entry,
                 'headline': f'RAISE STOP to entry ({entry:,.2f}) — do not sell',
                 'reason': 'Makes the position risk-free; hold the full position.'}
 
@@ -213,11 +210,11 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
         pct, desc = TRIM_MATRIX[key]
         if pct <= 0:
             return {'verb': 'HOLD', 'color': 'green', 'shares': 0, 'pct': 0.0,
-                    'restore_sl': None, 'urgent': False,
+                    'restore_sl': None,
                     'headline': 'HOLD — let it run', 'reason': desc}
         shares = _trim_shares(qty, pct)
         return {'verb': 'TRIM', 'color': 'yellow', 'shares': shares, 'pct': pct,
-                'restore_sl': None, 'urgent': False,
+                'restore_sl': None,
                 'headline': f'TRIM ~{shares} sh ({int(pct * 100)}%)', 'reason': desc}
     return None
 
@@ -556,6 +553,9 @@ class RiskWorkspace(App):
         self.total_nav = 0.0
         self.nav_ccy = "USD"
         self.gates_mode = "off"  # off | advisory | blocking — loaded from settings on mount
+        # Last thin-history snap notice per conid — on_strategy_change fires per
+        # keystroke, so repeat warnings must be deduped or they stack as toasts.
+        self._last_snap_note: Dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -632,7 +632,7 @@ class RiskWorkspace(App):
             self.total_nav = 0.0
             self.nav_ccy = "???"
 
-        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True)
+        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True, nav_ccy=self.nav_ccy)
         self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), "[F1] Help")
         if self.enriched_data.empty:
             return
@@ -692,7 +692,7 @@ class RiskWorkspace(App):
                     add_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
                     trim_threshold = add_threshold
 
-                    if res['is_breached'] or (exit_rec and exit_rec['urgent']):
+                    if res['is_breached']:
                         action_display = "[bold red]EXIT[/]"
                     elif exit_rec and exit_rec['verb'] == 'TRIM':
                         action_display = f"[bold yellow]TRIM {int(exit_rec['pct'] * 100)}%[/]"
@@ -878,7 +878,7 @@ class RiskWorkspace(App):
                 modeled_add = int(hypo_add)
 
             # 2. Reconciled verdict — ONE directive across the three axes, by precedence:
-            #    breach → urgent RR-exit → exit-stage ladder → sizing add/trim → hold.
+            #    breach → exit-stage ladder → sizing add/trim → hold.
             #    The fundamental that resolves the add-vs-trim conflict: exposure headroom
             #    sizes a new/early position; it is never licence to add to a winner that has
             #    reached a profit-taking stage. So at an exit stage the ladder governs and the
@@ -904,9 +904,6 @@ class RiskWorkspace(App):
                 target_qty = int(active_qty)
                 v_color, v_label = 'magenta', "GOAL-SEEK: P/L@Stop = 0 not reachable by buying"
                 v_sub = f"Would require trimming at {cur_p:,.2f}, which can't move average cost."
-            elif exit_rec and exit_rec['urgent']:
-                target_qty = 0
-                v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
             elif exit_rec:
                 target_qty = int(active_qty)   # never add at a profit-taking stage
                 v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
@@ -1133,14 +1130,28 @@ class RiskWorkspace(App):
             t_sym, entry_p, entry_d, m, q = pos.ticker, pos.entry_price, pos.date_entry.strftime("%Y-%m-%d"), pos.multiplier, pos.qty
             max_r, max_exp = pos.max_r_pct, pos.max_exp_pct
             hwm = pos.max_since_entry
+            fx = pos.fx_rate or 1.0
         else:
             t_sym = ticker or str(conid).split(":")[-1]
             entry_p, entry_d, m, q = 0.0, pd.Timestamp.now().strftime("%Y-%m-%d"), 1.0, 0.0
             max_r, max_exp = 1.0, 5.0
             hwm = 0.0
+            phantom = next((p for p in self.positions if str(p.conid) == f"PROSPECT:{t_sym}"), None)
+            fx = phantom.fx_rate if (phantom and phantom.fx_rate and phantom.fx_rate != 1.0) else None
+            if fx is None:
+                # Resolve the prospect's ccy->NAV rate. A ccy already on the phantom
+                # (WATCH rows carry the stored/legacy one) is trusted — only an ad-hoc
+                # discover placeholder ('') pays the one yfinance metadata call, so a
+                # same-ccy-as-NAV watch row never re-fetches or overwrites its ccy.
+                real_ccy = ((phantom.ccy if phantom else '') or
+                            fetch_ticker_currency(self.pm.mapper.resolve_yf_ticker(t_sym)) or 'USD')
+                fx = resolve_prospect_fx(real_ccy, self.positions, self.nav_ccy)
+                if phantom:
+                    phantom.ccy = real_ccy
+                    phantom.fx_rate = fx
 
         with suppress_console_logging():
-            data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp, mapper=self.pm.mapper, max_since_entry=hwm)
+            data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp, mapper=self.pm.mapper, max_since_entry=hwm, fx_rate=fx)
         if data:
             cache_id = conid or f"PROSPECT:{t_sym}"
             self.discovery_cache[cache_id] = data
@@ -1175,13 +1186,16 @@ class RiskWorkspace(App):
             r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
             # Calculate SMA SL% relative to Entry
             sma_sl_pct = (r.atr_sma / data['entry_price'] * 100) if data['entry_price'] > 0 else 0
-            
+            # ⚠ = window shrunken by thin history: the value keeps its timeframe label
+            # only nominally and is excluded from the inception-ATR snap at commit.
+            label_txt = f"{r.label} [bold red]⚠[/]" if r.window_shrunk else r.label
+
             row_vals = (
-                r.label, 
-                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%", 
+                label_txt,
+                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%",
                 f"{r.atr_sma:.2f}", f"{sma_sl_pct:.1f}%",
-                f"{r.stop_price:,.2f}", f"{int(r.qty)}", 
-                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", 
+                f"{r.stop_price:,.2f}", f"{int(r.qty)}",
+                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]",
                 f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%"
             )
             table_f.add_row(*row_vals)
@@ -1191,13 +1205,14 @@ class RiskWorkspace(App):
             r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
             # Calculate SMA SL% relative to Max High
             sma_sl_pct = (r.atr_sma / data['max_price'] * 100) if data['max_price'] > 0 else 0
-            
+            label_txt = f"{r.label} [bold red]⚠[/]" if r.window_shrunk else r.label
+
             row_vals = (
-                r.label, 
-                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%", 
+                label_txt,
+                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%",
                 f"{r.atr_sma:.2f}", f"{sma_sl_pct:.1f}%",
-                f"{r.stop_price:,.2f}", f"{int(r.qty)}", 
-                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", 
+                f"{r.stop_price:,.2f}", f"{int(r.qty)}",
+                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]",
                 f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%"
             )
             table_t.add_row(*row_vals)
@@ -1216,7 +1231,10 @@ class RiskWorkspace(App):
         self.notify(f"DISCOVERING: {ticker}...")
         self.current_conid = f"PROSPECT:{ticker}"
         from models import Position
-        phantom = Position(name=f"PROSPECT: {ticker}", ticker=ticker, conid=self.current_conid, asset_class='STK', ccy='USD', date_entry=pd.Timestamp.now(), qty=0.0, entry_price=0.0, account_id='WATCHLIST')
+        # ccy is deliberately empty — fetch_atr_data resolves the real pricing
+        # currency and the ccy->NAV fx rate in its worker thread and stamps both.
+        # (A 'USD' placeholder here would be trusted as a real answer there.)
+        phantom = Position(name=f"PROSPECT: {ticker}", ticker=ticker, conid=self.current_conid, asset_class='STK', ccy='', date_entry=pd.Timestamp.now(), qty=0.0, entry_price=0.0, account_id='WATCHLIST')
         if not any(p.conid == self.current_conid for p in self.positions):
             self.positions.append(phantom)
         if self.current_conid not in [r.value for r in table.rows]:
@@ -1293,9 +1311,11 @@ class RiskWorkspace(App):
                 active_shape = "" if tok == "-" else normalize_shape(tok)
                 raw = raw.replace(x_m.group(0), "").strip()
 
-            # TP override: TP:4 / TP:4R / TP:+35% / TP:$60K / TP:- (clear). A multiple of the
+            # TP override: TP:4 / TP:4R / TP:+35% / TP:- (clear). A multiple of the
             # frozen inception ATR — stays put when the stop ATR changes. Parsed BEFORE the
-            # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity.
+            # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity. The regex
+            # still captures the cut $/K forms so they are stripped and rejected with a
+            # warning instead of leaking into the quantity parse.
             existing_tp = pos.tp_atr_mult if getattr(pos, 'tp_is_override', False) else None
             tp_final = existing_tp
             # TP:N:1 — set the target to an N:1 forward reward:risk vs the MODELED stop (e.g.
@@ -1313,9 +1333,9 @@ class RiskWorkspace(App):
                 if tp_m:
                     raw = raw.replace(tp_m.group(0), "").strip()
                     inc_atr = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
-                    mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr, pos.qty)
+                    mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr)
                     if not ok:
-                        self.notify("TP target needs an inception ATR (and a share count for $ targets).", severity="warning")
+                        self.notify("TP target not resolved — needs an inception ATR; accepted forms: TP:nR, TP:+35%, TP:N:1, TP:- ($ form removed).", severity="warning")
                     elif clear:
                         tp_final = None
                     else:
@@ -1381,22 +1401,25 @@ class RiskWorkspace(App):
             # Hypothetical Quantity (Sizing Discovery). Gap-aware (§6) when G: is supplied:
             # risk against the LOWER of the stop and the plausible gap price. Default
             # (gap_price None) risks against the stop exactly as before.
+            # A degenerate fx (bad snapshot row: 0 / None / NaN) must degrade to 1.0,
+            # not zero out or NaN-poison the R%/NAV% math below — either silently
+            # suppresses the over-limit warnings.
+            fx = pos.fx_rate if (pos.fx_rate and math.isfinite(pos.fx_rate) and pos.fx_rate > 0) else 1.0
             calc_q = pos.qty
             if calc_q == 0 and self.total_nav > 0:
-                size_stop = gap_effective_stop(sl_p, gap_price)
-                dist_sh = abs(base_p - size_stop) * pos.multiplier
-                risk_q = (self.total_nav * (m_r / 100.0)) / dist_sh if dist_sh > 0 else float('inf')
-                exp_q = (self.total_nav * (m_e / 100.0)) / (cur_p_d * pos.multiplier) if cur_p_d > 0 else 0
-                calc_q = int(min(risk_q, exp_q))
-            
+                calc_q = compute_position_size_gap(
+                    self.total_nav, base_p, sl_p, gap_price, pos.multiplier, m_r, m_e,
+                    fx_rate=fx, exposure_price=cur_p_d,
+                )
+
             hypo_entry = pos.entry_price if pos.entry_price > 0 else base_p
             risk_v = (sl_p - hypo_entry) * calc_q * pos.multiplier
-            hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
+            hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier * fx / self.total_nav * 100) if self.total_nav > 0 else 0
             
             # HCM Exposure for Modeling
             modeled_qty = pos.qty if pos.qty > 0 else calc_q
             modeled_hcm_val = max(hypo_entry, cur_p_d) * modeled_qty * pos.multiplier
-            modeled_nav_pct = (modeled_hcm_val / self.total_nav * 100) if self.total_nav > 0 else 0
+            modeled_nav_pct = (modeled_hcm_val * fx / self.total_nav * 100) if self.total_nav > 0 else 0
 
             table = self.query_one("#portfolio-table", DataTable)
             t_pfx = f"[{s_type[:1]}]"
@@ -1433,11 +1456,39 @@ class RiskWorkspace(App):
             # already carries its own distance, so it is left unchanged.
             if s_type == 'FIXED':
                 risk_dist = abs(hypo_entry - sl_p)
-                atr_choices = {r.label: r.atr_wilder for r in (disc.get('rows') or [])} if disc else {}
-                if atr_choices and risk_dist > 0:
-                    save_incep_atr = min(atr_choices.values(), key=lambda a: abs(a - risk_dist))
+                disc_rows = (disc.get('rows') or []) if disc else []
+                # Thin history shrinks a timeframe's ATR window while keeping its
+                # label — never freeze such a value as the position's R unit.
+                # snap_inception_atr (core/stop_loss) is the shared snap rule.
+                snapped, snap_label = snap_inception_atr(disc_rows, risk_dist)
+                if snapped is not None:
+                    save_incep_atr = snapped
+                    # If a shrunken (⚠) row was actually nearest, the snap moved to a
+                    # different timeframe than the one the user likely sized against —
+                    # say so instead of switching silently.
+                    naive = {r.label: r.atr_wilder for r in disc_rows}
+                    naive_label = min(naive, key=lambda k: abs(naive[k] - risk_dist))
+                    if naive_label != snap_label:
+                        self._notify_snap(f"{pos.ticker}: {naive_label} ATR has too little history (⚠) — R snapped to {snap_label} instead.")
+                elif disc_rows and risk_dist > 0:
+                    if pos.inception_atr and pos.inception_atr > 0:
+                        save_incep_atr = pos.inception_atr
+                        self._notify_snap(f"{pos.ticker}: price history too thin for a trustworthy ATR snap — keeping stored inception ATR.")
+                    else:
+                        # First commit with no trustworthy ATR anywhere: anchor the
+                        # ladder to the actual risk distance (its own documented
+                        # fallback). Never leave None — db.set_position_risk degrades
+                        # a NULL inception to atr_value, which for FIXED is the stop
+                        # PRICE, a catastrophic R unit.
+                        save_incep_atr = risk_dist
+                        self._notify_snap(f"{pos.ticker}: history too thin for any ATR — ladder anchored to entry−stop ({risk_dist:,.2f}).")
                 else:
                     save_incep_atr = pos.inception_atr
+                    if (not save_incep_atr or save_incep_atr <= 0) and risk_dist > 0:
+                        # No discovery data at all (worker still loading or yfinance
+                        # down): still never leave None — db degrades a NULL inception
+                        # to atr_value, the stop PRICE, as the frozen R unit.
+                        save_incep_atr = risk_dist
             else:
                 save_incep_atr = f_atr
 
@@ -1450,6 +1501,14 @@ class RiskWorkspace(App):
             
         except Exception as e:
             logger.error(f"Modeling Error: {e}")
+
+    def _notify_snap(self, msg: str) -> None:
+        """Warn about a thin-history snap once per distinct message per row —
+        on_strategy_change runs on every keystroke, so a raw notify would stack
+        an identical toast eight times while typing one command."""
+        if self._last_snap_note.get(str(self.current_conid)) != msg:
+            self._last_snap_note[str(self.current_conid)] = msg
+            self.notify(msg, severity="warning")
 
     def on_key(self, event) -> None:
         if event.key == "ctrl+j":
@@ -1479,7 +1538,7 @@ class RiskWorkspace(App):
         """Run entry gates on a draft per `gates_mode`. Returns True if the commit may
         proceed. `off` → always True, no evaluation (behaviour unchanged). `advisory` →
         always True, but surface any FAILs. `blocking` → False iff a hard gate FAILed.
-        Only G1/G5/G8 have inputs in this flow; the rest return NA and never block."""
+        Only G1/G8 have inputs in this flow; the rest return NA and never block."""
         if self.gates_mode == "off":
             return True
         pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)

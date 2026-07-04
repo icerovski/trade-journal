@@ -1,3 +1,6 @@
+import math
+import time
+
 import pandas as pd
 from data_loader import DataLoader
 from services.ticker_mapper import TickerMapper
@@ -11,6 +14,54 @@ from .stop_loss import calculate_position_risk
 from models import Position
 from logger import logger
 from constants import QTY_ZERO_THRESHOLD
+
+
+# Minor-unit price currencies (Yahoo quotes these in 1/100 of the major unit):
+# the ccy->NAV rate for a pence-priced instrument is 0.01 x the major-unit rate.
+_MINOR_UNIT_CCY = {"GBp": ("GBP", 0.01), "GBX": ("GBP", 0.01), "ZAc": ("ZAR", 0.01)}
+
+# Session cache for live FX lookups so a donor-less watch name doesn't re-hit
+# Yahoo on every dashboard refresh. Failures are not cached.
+_FX_CACHE: dict[tuple[str, str], tuple[float, float]] = {}
+_FX_CACHE_TTL_S = 900.0
+
+
+def resolve_prospect_fx(ccy: str, positions, nav_ccy: str | None = None) -> float:
+    """Asset-ccy -> NAV-ccy rate for a prospect that has no broker-snapshot row.
+
+    Prefer the snapshot rate carried by a held position in the same currency
+    (first match — deterministic, no network); else ask the FX service when the
+    NAV currency is known (cached ~15min); else fall back FX-blind, logged.
+    Minor-unit codes ('GBp' pence, 'ZAc' cents) resolve via their major unit
+    scaled by 0.01 — prices arrive in the minor unit, so the rate must too.
+    Single source of truth for prospect fx: the risk-workspace discover flow and
+    the watch-list stamping in get_dashboard_df both call this.
+    """
+    raw = (ccy or "").strip()
+    major, scale = _MINOR_UNIT_CCY.get(raw, (raw, 1.0))
+    ccy = major.upper()
+
+    for p in positions:
+        if p.ccy == ccy and p.fx_rate and math.isfinite(p.fx_rate) and p.fx_rate > 0 and p.fx_rate != 1.0:
+            return p.fx_rate * scale
+    # Only consult the FX service with a plausible ISO code — a failed NAV fetch
+    # hands callers "???", which must not turn into a bogus Yahoo symbol.
+    if nav_ccy and len(nav_ccy) == 3 and nav_ccy.isalpha() and ccy.isalpha() and len(ccy) == 3:
+        nav_ccy = nav_ccy.upper()
+        if ccy == nav_ccy:
+            return 1.0 * scale
+        cached = _FX_CACHE.get((ccy, nav_ccy))
+        if cached and (time.monotonic() - cached[1]) < _FX_CACHE_TTL_S:
+            return cached[0] * scale
+        from services.market_data_service import fetch_fx_rate
+        rate = fetch_fx_rate(ccy, nav_ccy)
+        if rate and math.isfinite(rate) and rate > 0:
+            _FX_CACHE[(ccy, nav_ccy)] = (float(rate), time.monotonic())
+            return float(rate) * scale
+        logger.warning(f"FX: no {ccy}->{nav_ccy} rate available; prospect sizing stays FX-blind for this name.")
+    # Blind fallback: at least honour the minor-unit scale (pence != pounds).
+    return 1.0 * scale
+
 
 class PortfolioManager:
     """
@@ -54,7 +105,7 @@ class PortfolioManager:
             self._recon = ReconciliationService()
         return self._recon
 
-    def get_dashboard_df(self, asset_class_filter: str | list[str] | None = None, total_nav: float | None = None, silent: bool = False, account_id: str | None = None, include_watch: bool = False):
+    def get_dashboard_df(self, asset_class_filter: str | list[str] | None = None, total_nav: float | None = None, silent: bool = False, account_id: str | None = None, include_watch: bool = False, nav_ccy: str | None = None):
         """
         Enriches open positions with market data and risk metrics.
         Uses Hybrid mode (Broker Snapshot + Manual Deltas).
@@ -65,7 +116,18 @@ class PortfolioManager:
         
         # Merge Watch List if requested
         if include_watch and not account_id:
-            positions.extend(self.get_watch_list_positions(asset_class_filter))
+            watch = self.get_watch_list_positions(asset_class_filter)
+            # Watch phantoms never appear in the broker snapshot, so their fx_rate
+            # is the dataclass default (1.0). Resolve each phantom's ccy -> NAV rate
+            # (held-book borrow first, live FX fallback when nav_ccy is known) so
+            # prospect sizing risks the real base-ccy budget.
+            fx_cache: dict[str, float] = {}
+            for p in watch:
+                if not p.fx_rate or p.fx_rate == 1.0:
+                    if p.ccy not in fx_cache:
+                        fx_cache[p.ccy] = resolve_prospect_fx(p.ccy, positions, nav_ccy)
+                    p.fx_rate = fx_cache[p.ccy]
+            positions.extend(watch)
             
         if not positions:
             return pd.DataFrame(), []
@@ -216,7 +278,9 @@ class PortfolioManager:
                 ticker=r.ticker,
                 conid=r.conid,
                 asset_class='STK',
-                ccy='USD',
+                # Real pricing ccy resolved at add time (risk_profiles.ccy); legacy
+                # rows predate the column and keep the historical USD assumption.
+                ccy=(r.ccy or 'USD'),
                 date_entry=pd.Timestamp.now(),
                 qty=0.0,
                 entry_price=0.0,

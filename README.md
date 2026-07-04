@@ -20,7 +20,7 @@ The application is built with a strictly modular "CEO Approach" to separation of
     *   Pure logic and documentation. No secrets or personal data.
 2.  **Configuration Vault (OneDrive Metadata)**: `...\Documents\Logos\.repos\trade-journal`
     *   **`.env`**: Private API keys and IBKR tokens.
-    *   **`GEMINI.md`**: Project-specific rules and persistent context.
+    *   Ticker-mapping overrides and other private config.
 3.  **Storage Hub (OneDrive Data)**: `...\Accounts\HTC_EOOD\TradeJournalData`
     *   **`trade_journal.db`**: SQLite database for manual trades and risk settings.
     *   **`trade_journal.log`**: Audit trail of all system operations.

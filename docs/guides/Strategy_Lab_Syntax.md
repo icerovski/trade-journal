@@ -4,7 +4,7 @@ How to enter a stop-loss / sizing command in the Risk Workspace. The input box a
 one command of the form:
 
 ```
-VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [TP:n]  [+N/-N]  [BE]
+VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [TP:n]  [C:TH/TE]  [G:gap]  [X:H/T]  [+N/-N]  [BE]
 ```
 
 Tokens can appear in any order. Only the parts you want to change are required —
@@ -81,9 +81,11 @@ tighten the stop. M1/M2 always stay at +1R / +2R.
 |---|---|
 | `TP:4` / `TP:4R` | entry + 4×inception ATR (the R is optional) |
 | `TP:+35%` | entry +35% → multiple = (entry×35%)/ATR |
-| `TP:$60K` | total open profit = $60,000 (needs share count) |
 | `TP:3:1` | auto N:1 forward reward:risk vs the stop you're setting |
 | `TP:-` | clears the override → back to default 3R |
+
+*(The absolute-$ form `TP:$60K` was removed — `TP:nR` and `TP:N:1` carry the real use
+cases. A `$`/`K` token is rejected with a warning.)*
 
 **`TP:N:1` — anchor the target to the stop.** Sets `target = price + N×(price − stop)`. It
 reads the stop from the *same* command, so `@655 T TP:3:1` locks a 655 floor and puts the
@@ -97,6 +99,47 @@ stop to lock the open profit, then `TP:3:1` hands the winner a fresh 3:1 runway 
 **3:1 guardrail.** With an override active the panel shows a **TARGET** line with the forward
 reward:risk `(target − price)/(price − stop)`, flagged **⚠ below 3:1** if it drops under 3.0
 (`RR_SETUP_FLOOR`). This is informational, not an exit.
+
+---
+
+## Entry & Stop System tokens (all optional, default-off)
+
+### `C:` — Trade classification (THESIS / TECHNICAL)
+
+Tags *why* the trade exists. Information only — no exit logic branches on it — but a
+classified commit also writes a row to the decision journal (`trade_log`) for the
+expectancy report (menu 9).
+
+```
+C:TH           → tag THESIS   (own the story; exit when the story breaks)
+C:TE           → tag TECHNICAL (own the level; exit at the objective)
+C:-            → clear the tag
+```
+
+### `X:` — Exit shape (how the trade is banked)
+
+Decided at entry alongside the stop. The default (no token) is the regime-aware
+M1/M2/TP ladder — scale out at the objective, runner behind the trailing stop.
+
+```
+X:H            → Hard target: bank the FULL position at TP, no runner
+X:T            → Thesis exit: no price target at all; stop/thesis only
+X:-            → back to the default ladder
+```
+
+*(`X:R` is still accepted as a legacy alias of the default ladder — it was never
+behaviourally distinct. There is no time stop: no shape exits on elapsed time.)*
+
+### `G:` — Gap-aware sizing (event risk)
+
+Supplies a plausible post-event gap price for a name entered through a catalyst.
+Sizing then risks against the **larger** of R₁ (entry − stop) and R_gap
+(entry − gap price), which can only shrink the size. Modeling shows a
+`GAP-SIZED @ …` chip.
+
+```
+480 F G:440 P:B   → stop 480, but sized as if the exit fills at 440
+```
 
 ---
 

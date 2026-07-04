@@ -124,9 +124,11 @@ roughly **10–18%** off entry — that is *normal* at this horizon, not a red f
 | G4 event | no entry within 5d of earnings | timing rule unchanged, **but gap risk is now a sizing input, not avoidable** (§6) |
 | G5 extension | not > 2 ATRd above trail anchor | not > **2 × ATR-weekly** above the **30-week MA** |
 
-G6 (liquidity) and G7 (portfolio heat) are unchanged in form but **bind harder**: longer
-holds overlap in time and across market cycles, so correlated drawdown risk is larger. Keep
-the heat cap strict.
+G7 (portfolio heat) is unchanged in form but **binds harder**: longer holds overlap in
+time and across market cycles, so correlated drawdown risk is larger. Keep the heat cap
+strict. (G6 liquidity was cut — it is a permanent NA stub in `core/gates.py` and never
+binds at any horizon; no liquidity data source feeds this book. G7's theme dimension was
+cut with it — only the portfolio-heat half evaluates. See Entry_and_Stop_System.md §4.)
 
 ---
 

@@ -11,12 +11,16 @@ The Prospect Simulator allows for the analysis and simulation of potential stock
 > **Adding a name to watch — the dedicated path is the Watch List (menu 6).** Press **`a`**,
 > type a symbol, and the app resolves it to a real `conid`, caches ~10y of prices, computes a
 > default (Daily TRAILING / Base preset) risk profile, and saves it as a `WATCH` row — making
-> it immediately scannable (menu 8) and chartable. The Risk Workspace "Discover" field below
-> remains for **ATR / risk research and refinement** (and can still persist a `PROSPECT:TICKER`
-> prospect via `CTRL+ENTER`), but new names are normally started from menu 6.
+> it immediately scannable (menu 8) and chartable. The add also records the symbol's real
+> pricing currency (so prospect sizing uses the right ccy→NAV fx rate), and **refuses to
+> auto-profile a name with under ~15 daily bars** — a shrunken-window "daily ATR" would be
+> frozen as the stop distance and inception R unit; set a manual stop in the Risk Workspace
+> instead. The Risk Workspace "Discover" field below remains for **ATR / risk research and
+> refinement** (and can still persist a `PROSPECT:TICKER` prospect via `CTRL+ENTER`), but new
+> names are normally started from menu 6.
 
 ### Operational Workflow
-1.  **Ticker Discovery**: Within the **Risk Workspace** (Option 2 -> 1 from main menu), use the **"Discover Ticker"** input field to research a symbol's ATR volatility and model stops/sizing (refinement, not the primary add path — see the note above).
+1.  **Ticker Discovery**: Within the **Risk Workspace** (Option 2 from the main menu), use the **"Discover Ticker"** input field to research a symbol's ATR volatility and model stops/sizing (refinement, not the primary add path — see the note above).
 2.  **Instant Simulation**: Entering a ticker (e.g., `NVDA`, `TSLA`) triggers an automated background process:
     *   **Price Fetching**: Real-time pricing and historical OHLCV data are retrieved via `yfinance`.
     *   **Volatility Analysis**: ATR horizons are calculated across multiple timeframes: 14d (Daily), 12w (Weekly), 12m (Monthly), and 12q (Macro).
@@ -27,6 +31,7 @@ The Prospect Simulator allows for the analysis and simulation of potential stock
     *   **Risk Limit**: Ensures potential loss at stop does not exceed the designated Risk Limit (Default: 1.0% of NAV).
     *   **Exposure Limit**: Ensures total market value does not exceed the designated Exposure Limit (Default: 5.0% of NAV).
     *   The most restrictive constraint automatically dictates the recommended share count.
+    *   **FX-normalized**: both limits are measured in the NAV currency via the asset's fx rate (broker snapshot for held names; for prospects, the real pricing currency is resolved at add/discover time — held-book rate first, live FX fallback — including pence-quoted listings). A USD stop distance is no longer treated as EUR at par.
 4.  **Watch List Persistence**: Pressing `CTRL+ENTER` saves the simulation as a **"Watch List"** profile in the database.
 5.  **The "Healing" Bridge**:
     *   Prospects are tracked using a `PROSPECT:TICKER` virtual ID.
@@ -144,13 +149,13 @@ In a confirmed TREND the M2 trim is **0% (hold)** by design: trimming a confirme
 
 Milestones are anchored to `entry_price + N × R`, where `R` is the **inception ATR** (the ATR/risk unit at first entry) for **both** stop types. The ladder is uniform — M1=+1R, M2=+2R, TP=+3R from entry — and measures profit in *R-multiples*. Falls back to `entry − final_sl` if inception_atr is unavailable.
 
-How `R` is sourced differs by stop type, because the two take different inputs. For **TRAILING** the user supplies an ATR *distance* directly, and that distance is `R`. For **FIXED** the user supplies a stop *price*, not a distance, so there is no ATR to read — the commit path snaps the **risk distance `entry − stop`** to the nearest of the four discovery-timeframe ATRs (daily/weekly/monthly/quarterly) and stores that as `R`. This makes the ladder run on the volatility horizon that matches how the stop was sized: a deliberately deep stop (e.g. a leveraged ETF) lands on quarterly, so its milestones sit far enough out that the ladder doesn't fire on noise. The earlier behaviour — hardcoding the *daily* ATR for every FIXED stop — mis-scaled the ladder on deep stops (UDOW: daily ATR 1.86 vs a 21.5-point stop tripped M1 at a +2.8% gain).
+How `R` is sourced differs by stop type, because the two take different inputs. For **TRAILING** the user supplies an ATR *distance* directly, and that distance is `R`. For **FIXED** the user supplies a stop *price*, not a distance, so there is no ATR to read — the commit path snaps the **risk distance `entry − stop`** to the nearest of the four discovery-timeframe ATRs (daily/weekly/monthly/quarterly) and stores that as `R`. **Thin-history guard:** a timeframe whose history can't fill its full ATR window is marked `⚠` in the discovery tables and excluded from the snap (its value keeps the label only nominally); if the exclusion moves the snap to a different timeframe than the nearest displayed one, the workspace says so. When *no* trustworthy ATR exists (young listing, or discovery unavailable), `R` anchors to the raw `entry − stop` distance instead — a shrunken-window ATR or the stop price itself is never frozen as the R unit. This makes the ladder run on the volatility horizon that matches how the stop was sized: a deliberately deep stop (e.g. a leveraged ETF) lands on quarterly, so its milestones sit far enough out that the ladder doesn't fire on noise. The earlier behaviour — hardcoding the *daily* ATR for every FIXED stop — mis-scaled the ladder on deep stops (UDOW: daily ATR 1.86 vs a 21.5-point stop tripped M1 at a +2.8% gain).
 
 For TRAILING stops the ladder deliberately uses the **inception ATR, not the live trailing distance**. The live ATR governs only where the *stop* sits; using it for the reward ladder made the milestones drift away as volatility expanded (e.g. AVGO: live ATR 88 vs inception 57 pushed M1 to entry+88 ≈ 449, mislabelling a +33% winner as an early stage). The TP is also **entry-anchored, not stop-anchored** — anchoring to the ratcheted stop made it collide with M2 at inception.
 
 **TP override (`risk_profiles.tp_atr_mult`).** Once a winner runs past the default +3R the ladder is maxed out. A per-position override extends the *top rung* to any multiple of the **same frozen inception ATR** (`TP = entry + tp_atr_mult × inception_ATR`); M1/M2 stay at +1R/+2R. Because it is anchored to the frozen ATR, the target stays put when the live stop ATR is later tightened — editing the stop never moves it. `NULL` = the default `TP_ATR_MULTIPLE` (3R). Set it from the risk workspace with `TP:n` (see below); the engine reads it in `calculate_position_risk`, and `compute_exit_milestones` warns if an override lands at/below M2 (< 2R, a non-monotonic ladder).
 
-**Setting the target — `TP:n` command.** Four input forms, all resolved to a multiple of the inception ATR by `resolve_tp_mult`: `TP:4`/`TP:4R` (R-multiple), `TP:+35%` (gain as % of entry ÷ ATR), `TP:$60K`/`TP:$60000` (absolute profit ÷ qty ÷ ATR; needs a share count), and `TP:-` (clear → default 3R). When an override is active the audit panel shows a **TARGET** line with the **forward** reward:risk `(target − price)/(price − stop)`, flagged `⚠ below 3:1` when it falls under `RR_SETUP_FLOOR` (3.0) — the honest "what am I paid to keep holding from here" check (it reads low for a run-up winner whose stop already sits above entry, which is expected once entry risk is gone).
+**Setting the target — `TP:n` command.** Three fixed input forms, all resolved to a multiple of the inception ATR by `resolve_tp_mult`: `TP:4`/`TP:4R` (R-multiple), `TP:+35%` (gain as % of entry ÷ ATR), and `TP:-` (clear → default 3R); plus the ratio form `TP:N:1` (forward reward:risk vs the modeled stop, resolved by `resolve_tp_ratio` once the stop is known). The absolute-$ form (`TP:$60K`) was removed (assessment review, 2026-07-04) — four ways to express one number was three too many, and `TP:nR`/`TP:N:1` carry the real use cases; `$`/`K` tokens are now rejected with a warning. When an override is active the audit panel shows a **TARGET** line with the **forward** reward:risk `(target − price)/(price − stop)`, flagged `⚠ below 3:1` when it falls under `RR_SETUP_FLOOR` (3.0) — the honest "what am I paid to keep holding from here" check (it reads low for a run-up winner whose stop already sits above entry, which is expected once entry risk is gone).
 
 | Stage  | Trigger                    | Action                         |
 |--------|---------------------------|-------------------------------|
@@ -203,11 +208,11 @@ These axes are orthogonal *inputs* but must collapse to one action. Left unrecon
 
 > Exposure headroom sizes a **new or early** position. It is never licence to add to a winner that has reached a profit-taking stage.
 
-Precedence, strict order: **breach → urgent RR-floor exit → exit-stage ladder → sizing add/trim → hold.** At an exit stage the ladder governs and any exposure headroom is reported but muted ("3.4% exposure room exists, but no adds at target"). This is enforced in both the panel verdict and the table **ACTION** column, so the row and the panel can never disagree.
+Precedence, strict order: **breach → exit-stage ladder → sizing add/trim → hold.** (The former "urgent RR-floor exit" tier was removed with the RR efficiency floor — RR is informational only; see §5.) At an exit stage the ladder governs and any exposure headroom is reported but muted ("3.4% exposure room exists, but no adds at target"). This is enforced in both the panel verdict and the table **ACTION** column, so the row and the panel can never disagree.
 
 ### Single source of truth
 
-`risk_workspace._exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type)` is a **pure function** returning the structured exit directive `{verb, color, headline, shares, pct, restore_sl, urgent, reason}` (or `None` when no stage). It encodes M1 (make risk-free, never sell), the FIXED-only RR efficiency floor (§5), and the `TRIM_MATRIX`. It drives **all three** consumers — the panel verdict line, the detailed exit-guidance prose, and the table ACTION cell — so the headline action and its justification cannot drift. `_trim_shares()` is the shared whole-share rounding (never rounds a genuine trim to zero, never exceeds holdings).
+`risk_workspace._exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type)` is a **pure function** returning the structured exit directive `{verb, color, headline, shares, pct, restore_sl, reason}` (or `None` when no stage). It encodes M1 (make risk-free, never sell), the exit-shape hooks (§10), and the `TRIM_MATRIX`; RR is not an input to any directive (§5). It drives **all three** consumers — the panel verdict line, the detailed exit-guidance prose, and the table ACTION cell — so the headline action and its justification cannot drift. `_trim_shares()` is the shared whole-share rounding (never rounds a genuine trim to zero, never exceeds holdings).
 
 ### Panel layout (verdict-led)
 
@@ -297,19 +302,18 @@ The **`F1` Help Desk** (Risk Workspace and Dashboard) is a tabbed reference rend
 
 The Risk Workspace Strategy Lab command line carries optional per-trade controls from the **Entry & Stop Selection System**. All are **additive and default-off** — a command that uses none of them behaves exactly as before.
 
-Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/R/T]`
+Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/T]`
 
 - **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes a row to the decision journal (`trade_log`).
-- **`X:` — Exit shape (§5a).** How the trade is *banked*, decided at entry alongside the stop:
+- **`X:` — Exit shape (§5a).** How the trade is *banked*, decided at entry alongside the stop. Two shapes beyond the default:
     - `X:H` **Hard target** — a defined objective (TECHNICAL): bank the full position at the target, no runner.
-    - `X:R` **Scale + runner** — take partial at the objective, let a runner ride behind the trailing stop. This is the default ladder behaviour.
     - `X:T` **Thesis exit** — **no price target**: the position carries no TP and is exited on the stop or a broken thesis only.
-    - `X:-` reverts to the default ladder. The chosen shape shows as a chip in the panel header. **There is no time stop** — no shape forces an exit on elapsed time.
+    - `X:-` reverts to the default ladder — which already *is* scale-out-plus-runner (partial at the objective, runner behind the trailing stop). `X:R` remains accepted as a legacy alias of that default (it was never behaviourally distinct and is no longer presented as a shape). The chosen shape shows as a chip in the panel header. **There is no time stop** — no shape forces an exit on elapsed time.
 - **`G:` — Gap-aware sizing (§6).** `G:340` supplies a plausible post-event gap price. For a prospect, sizing then risks against the **larger** of R₁ and `R_gap = entry − gap_price` (i.e. the lower of the stop and the gap price), which shrinks the size for names held through an event. Omitting `G:` keeps the standard fixed-fractional size. A `GAP-SIZED @ …` chip shows while modelling.
 
 ### Entry Gates (advisory-first)
 
-On commit, the workspace can run the **eight entry gates** (G1 stop-width, G2 basis quality, G3 fallback-artifact, G4 event, G5 extension, G6 liquidity, G7 theme/portfolio heat, G8 base-currency). Each returns **PASS / FAIL / NA** with a reason; a gate whose inputs are unavailable returns NA and never blocks.
+On commit, the workspace can run the **eight entry gates** (G1 stop-width, G2 basis quality, G3 fallback-artifact, G4 event, G5 extension, G6 liquidity, G7 portfolio heat, G8 base-currency). Each returns **PASS / FAIL / NA** with a reason; a gate whose inputs are unavailable returns NA and never blocks. Two spec deviations (assessment review, 2026-07-04): **G6 is a permanent NA stub** — no ADV/slippage source feeds this book and none is worth building; **G7 evaluates portfolio heat only** — the spec's theme dimension is cut until themes exist somewhere in the app.
 
 Controlled by the **`gates_mode`** setting, edited in the preset/settings modal (`M`):
 
@@ -338,6 +342,6 @@ Empty and short logs are handled gracefully. Engine: `core/expectancy.py`; view:
 The Zone Scanner reads a **`calibration_profile`** setting that selects the horizon lens:
 
 - **`default`** — today's short-swing calibration (daily structure). Unchanged.
-- **`position_3to6mo`** — the 3-to-6-month position lens: a longer-horizon ATR, wider buffers (~3–7% of price) and stop-width band (~10–18%), a 30-week-MA anchor, and the **MOMENTUM override** — a momentum flag is read as *"extended, wait for a weekly pullback"*, so the scanner uses the weekly value anchors instead of a tight micro-stop.
+- **`position_3to6mo`** — the 3-to-6-month position lens. What it changes in the scan today: a longer-horizon ATR (approximated as a longer *daily* window — true weekly resampling is deferred), longer volume-profile lookbacks, a wider confluence band, and the **MOMENTUM override** — a momentum flag is read as *"extended, wait for a weekly pullback"*, so the scanner uses the weekly value anchors instead of a tight micro-stop. The profile also *records* the spec's percent bands (buffer ~3–7% of price, stop width ~10–18%) and the 30-week-MA anchor, but these are **not yet enforced** anywhere — they are metadata awaiting wiring.
 
-The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).
+The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. There is currently **no UI to switch it** — the `calibration_profile` setting is changed directly in the `settings` table. Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).

@@ -1,17 +1,32 @@
+import math
+
 import pandas as pd
 
 
 def compute_position_size(
     total_nav: float, entry_price: float, stop_price: float,
     inst_multiplier: float, max_r_pct: float, max_exp_pct: float,
+    fx_rate: float = 1.0, exposure_price: float | None = None,
 ) -> int:
     """
     Returns maximum share quantity satisfying both the R% and exposure% constraints.
     The tighter of the two limits wins.
+
+    `fx_rate` converts asset-currency amounts to the NAV currency (e.g. USD -> EUR),
+    the same convention as audit_position_risk; 1.0 = same currency. Prices stay in
+    the asset currency — only the NAV-relative caps need the conversion. A degenerate
+    rate (None / 0 / negative / NaN — bad snapshot data) degrades to 1.0 rather than
+    dividing by zero: the caps then read the asset currency at par, matching the
+    pre-FX behaviour instead of crashing the caller.
+    `exposure_price` pins the exposure leg to a different reference than the risk
+    leg (e.g. current price while modeling off a trailing base); default entry_price.
     """
-    risk_dist = abs(entry_price - stop_price) * inst_multiplier
+    if not fx_rate or not math.isfinite(fx_rate) or fx_rate <= 0:
+        fx_rate = 1.0
+    exp_ref = exposure_price if exposure_price is not None else entry_price
+    risk_dist = abs(entry_price - stop_price) * inst_multiplier * fx_rate
     risk_q = (total_nav * (max_r_pct / 100.0)) / risk_dist if risk_dist > 0 else float('inf')
-    exp_q = (total_nav * (max_exp_pct / 100.0)) / (entry_price * inst_multiplier) if entry_price > 0 else 0
+    exp_q = (total_nav * (max_exp_pct / 100.0)) / (exp_ref * inst_multiplier * fx_rate) if exp_ref > 0 else 0
     return int(min(risk_q, exp_q))
 
 
@@ -28,6 +43,7 @@ def gap_effective_stop(stop_price: float, gap_price):
 def compute_position_size_gap(
     total_nav: float, entry_price: float, stop_price: float, gap_price,
     inst_multiplier: float, max_r_pct: float, max_exp_pct: float,
+    fx_rate: float = 1.0, exposure_price: float | None = None,
 ) -> int:
     """
     Gap-aware sizing (Entry & Stop System §6). For a name held through an event, the
@@ -35,10 +51,12 @@ def compute_position_size_gap(
     using the larger of R₁ and R_gap. Opt-in: with `gap_price=None` this is identical
     to compute_position_size (the default fixed-fractional path). The exposure clamp is
     unchanged; only the risk distance widens, which can only shrink the size.
+    `fx_rate` / `exposure_price` pass through to compute_position_size.
     """
     effective_stop = gap_effective_stop(stop_price, gap_price)
     return compute_position_size(
-        total_nav, entry_price, effective_stop, inst_multiplier, max_r_pct, max_exp_pct
+        total_nav, entry_price, effective_stop, inst_multiplier, max_r_pct, max_exp_pct,
+        fx_rate=fx_rate, exposure_price=exposure_price,
     )
 
 

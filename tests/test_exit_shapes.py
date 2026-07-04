@@ -30,7 +30,9 @@ from models import Position, RiskProfile
 @pytest.mark.parametrize("token,expected", [
     (None, SHAPE_LADDER), ("", SHAPE_LADDER), ("L", SHAPE_LADDER), ("ladder", SHAPE_LADDER),
     ("H", SHAPE_HARD_TARGET), ("hard", SHAPE_HARD_TARGET), ("TARGET", SHAPE_HARD_TARGET),
-    ("R", SHAPE_SCALE_RUNNER), ("runner", SHAPE_SCALE_RUNNER),
+    # RUNNER was cut as a distinct shape (it *is* the default ladder): the token and
+    # stored legacy values normalize straight to LADDER, so no chip/label survives.
+    ("R", SHAPE_LADDER), ("runner", SHAPE_LADDER), (SHAPE_SCALE_RUNNER, SHAPE_LADDER),
     ("T", SHAPE_THESIS), ("thesis", SHAPE_THESIS),
     ("bogus", SHAPE_LADDER),   # unknown → default
 ])

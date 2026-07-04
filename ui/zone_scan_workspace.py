@@ -173,7 +173,7 @@ class ZoneScanWorkspace(App):
                 total_nav, nav_ccy = (nav_res[0], nav_res[1]) if nav_res else (0.0, "???")
 
                 _, positions = self.pm.get_dashboard_df(
-                    include_watch=True, total_nav=total_nav, silent=True
+                    include_watch=True, total_nav=total_nav, silent=True, nav_ccy=nav_ccy
                 )
                 universe = []
                 for p in positions:
@@ -182,6 +182,7 @@ class ZoneScanWorkspace(App):
                         "ticker": p.ticker,
                         "conid": str(p.conid),
                         "multiplier": p.multiplier or 1.0,
+                        "fx_rate": p.fx_rate or 1.0,
                         "price": price if price and price > 0 else None,
                     })
 

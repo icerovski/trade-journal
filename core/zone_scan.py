@@ -194,6 +194,7 @@ def scan_ticker(
     *,
     ticker: str = "",
     multiplier: float = 1.0,
+    fx_rate: float = 1.0,
     current_price: float | None = None,
     lookbacks=VP_LOOKBACKS_MONTHS,
     atr_window: int = SCANNER_ATR_WINDOW,
@@ -293,7 +294,8 @@ def scan_ticker(
     sizes = {}
     for key, p in presets.items():
         qty = compute_position_size(
-            nav, price, stop_price, multiplier, p["max_r_pct"], p["max_exp_pct"]
+            nav, price, stop_price, multiplier, p["max_r_pct"], p["max_exp_pct"],
+            fx_rate=fx_rate,
         )
         sizes[key] = {
             "label": p.get("label", key),
@@ -316,8 +318,10 @@ def scan_ticker(
 
 def build_zone_report(universe, price_loader, nav: float, presets: dict, **kwargs) -> list[dict]:
     """Scan a universe of tickers. `universe` is an iterable of dicts with at
-    least 'ticker' (optionally 'conid', 'multiplier', 'price'); `price_loader` is
-    a callable receiving each item and returning its OHLCV DataFrame.
+    least 'ticker' (optionally 'conid', 'multiplier', 'fx_rate', 'price');
+    `price_loader` is a callable receiving each item and returning its OHLCV
+    DataFrame. `fx_rate` converts the asset currency to the NAV currency so
+    preset sizes are risked against the real base-currency budget.
 
     Results are sorted flagged-first, then by proximity to the nearest level.
     """
@@ -328,6 +332,7 @@ def build_zone_report(universe, price_loader, nav: float, presets: dict, **kwarg
             ohlcv, nav, presets,
             ticker=item.get("ticker", ""),
             multiplier=item.get("multiplier", 1.0),
+            fx_rate=item.get("fx_rate", 1.0),
             current_price=item.get("price"),
             **kwargs,
         )

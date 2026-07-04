@@ -161,9 +161,9 @@ GATE_G3_MOMO_VAL_STOP_PCT = 0.10
 GATE_G4_EVENT_DAYS = 5
 # G5 Extension: don't initiate if price is > this many ATRs above the trail anchor.
 GATE_G5_MAX_EXTENSION_ATR = 2.0
-# G6 Liquidity: size ≤ this fraction of ADV (placeholder default — tune per book).
-GATE_G6_ADV_FRACTION = 0.10
-# G7 Theme/portfolio heat cap = this multiple of the single-trade R% cap.
+# G6 Liquidity: cut — permanent NA stub in core/gates.py, no constants.
+# G7 Portfolio-heat cap = this multiple of the single-trade R% cap.
+# (The spec's theme dimension is cut until themes exist somewhere in the app.)
 GATE_G7_HEAT_MULT = 3.0
 
 # --- Expectancy (Entry & Stop System §5) ------------------------------------

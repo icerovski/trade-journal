@@ -97,10 +97,16 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN classification TEXT")
     except Exception: pass
-    # Exit shape (§5a): NULL/LADDER = today's default ladder; HARD / RUNNER / THESIS.
+    # Exit shape (§5a): NULL/LADDER = today's default ladder; HARD / THESIS (RUNNER = legacy alias).
     # See core/exit_shapes.py. Default reproduces current exit behaviour exactly.
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN exit_shape TEXT")
+    except Exception: pass
+    # Pricing currency of a WATCH prospect, resolved from yfinance at add time.
+    # NULL = unknown (legacy rows) — consumers fall back to USD, the pre-existing guess.
+    # Needed so prospect sizing borrows the RIGHT ccy->NAV fx rate (fix 2026-07-04).
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN ccy TEXT")
     except Exception: pass
 
     # Migration: Tag existing positions that matched old preset definitions, and update
@@ -223,7 +229,7 @@ def wipe_trades_only():
 # for callers that don't manage it) from an explicit None ("clear the override → default 3R").
 _KEEP = object()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP, classification=_KEEP, exit_shape=_KEEP):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP, classification=_KEEP, exit_shape=_KEEP, ccy=None):
     """Saves or updates a risk profile (ACTIVE or WATCH) for a conid.
 
     tp_atr_mult: take-profit override as a multiple of the inception ATR. Pass a number to
@@ -233,8 +239,12 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
     classification: THESIS / TECHNICAL tag (§0a). Pass a string to set it, "" or None to clear
     it (unset), or omit it (_KEEP) to leave the stored value untouched. Write-many.
 
-    exit_shape: §5a exit shape (HARD / RUNNER / THESIS; "" or None → default ladder). Pass a
-    string to set it, "" / None to clear (default), or omit it (_KEEP) to leave untouched. Write-many.
+    exit_shape: §5a exit shape (HARD / THESIS; RUNNER = legacy alias of the default; "" or None
+    → default ladder). Pass a string to set it, "" / None to clear (default), or omit it
+    (_KEEP) to leave untouched. Write-many.
+
+    ccy: pricing currency of a WATCH prospect (e.g. from yfinance at add time). Pass a string
+    to set it; None leaves the stored value untouched (legacy rows stay NULL → USD assumed).
     """
     conn = get_conn()
     conid = str(conid)
@@ -275,6 +285,12 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
             sql += ", exit_shape = ?"
             params.append(exit_shape or None)
 
+        # Pricing currency: set only when the caller resolved one (never clears).
+        # Case preserved — 'GBp' (pence) must not become 'GBP' (pounds).
+        if ccy is not None:
+            sql += ", ccy = ?"
+            params.append(str(ccy).strip())
+
         if reset_sl:
             sql += ", highest_sl = 0.0"
         sql += " WHERE id = ?"
@@ -287,11 +303,12 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
         i_tp = float(tp_atr_mult) if (tp_atr_mult is not _KEEP and tp_atr_mult is not None) else None
         i_class = classification or None if classification is not _KEEP else None
         i_shape = exit_shape or None if exit_shape is not _KEEP else None
+        i_ccy = str(ccy).strip() if ccy else None  # case preserved: 'GBp' != 'GBP'
 
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape, ccy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape, i_ccy))
 
     conn.commit()
     conn.close()
