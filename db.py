@@ -214,6 +214,23 @@ def init_db():
         except Exception:
             pass
 
+    # Structural context from the latest zone scan, per ticker (Entry & Stop §4).
+    # Written by the zone-scanner workspace after each scan; read by the risk
+    # workspace's gate check (freshness-guarded) so G2/G3/G5 get real inputs.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scan_context (
+            ticker TEXT PRIMARY KEY,
+            scan_date TEXT,
+            regime TEXT,
+            flagged INTEGER,
+            confluence_count INTEGER,
+            stop_source TEXT,
+            stop_price REAL,
+            trail_anchor REAL,
+            tag TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -576,6 +593,54 @@ def get_trade_log_entries(status=None, ticker=None):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [TradeLogEntry.from_row(r) for r in rows]
+
+def save_scan_context(rows):
+    """Persist per-ticker structural context from a zone scan (§4 gate inputs):
+    regime, flagged, independent confluence count, stop_source/price, DMA trail
+    anchor. REPLACE per ticker — the latest scan wins; consumers apply their own
+    freshness window via get_scan_context(max_age_days)."""
+    from datetime import date
+    today = date.today().isoformat()
+    conn = get_conn()
+    for r in rows:
+        ticker = (r.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        conn.execute(
+            "REPLACE INTO scan_context (ticker, scan_date, regime, flagged, confluence_count, "
+            "stop_source, stop_price, trail_anchor, tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, today, r.get("regime") or "",
+             (1 if r.get("flagged") else 0) if r.get("flagged") is not None else None,
+             r.get("confluence_count"), r.get("stop_source") or "",
+             r.get("stop_price"), r.get("trail_anchor"), r.get("tag") or ""),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_scan_context(ticker, max_age_days=None):
+    """Latest scan context for a ticker as a dict, or None when absent or older
+    than `max_age_days` (stale structure must degrade gates to NA, not misfire)."""
+    from datetime import date
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM scan_context WHERE ticker = ?", ((ticker or "").upper(),)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    ctx = dict(row)
+    if max_age_days is not None:
+        try:
+            age = (date.today() - date.fromisoformat(ctx.get("scan_date") or "")).days
+        except ValueError:
+            return None
+        if age > max_age_days:
+            return None
+    if ctx.get("flagged") is not None:
+        ctx["flagged"] = bool(ctx["flagged"])
+    return ctx
+
 
 def find_open_trade_log_id(conid):
     """Id of the most recent OPEN decision row for a conid — a TAKEN entry whose

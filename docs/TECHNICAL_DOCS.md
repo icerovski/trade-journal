@@ -240,6 +240,8 @@ A zone is flagged when **two or more independent** structural levels converge wi
 
 A ticker with too little price history for the scan window is shown as a dimmed **THIN** row (with its cached bar count in the detail panel) instead of being silently dropped from the report. The scanner header shows the active horizon lens (`lens: default`).
 
+Every scan also **persists each ticker's structural context** (regime, flagged, independent confluence count, stop source, 200-DMA anchor) so the Risk Workspace entry gates evaluate on real scan inputs at commit time — no re-typing, no manual threading. Pressing **`c`** on a flagged row hands the zone off: the next Risk Workspace launch jumps to that ticker and prefills the command box with the scanner's stop as a FIXED price (review it, add `P:/C:/X:` tokens, nothing is committed automatically; the handoff expires after an hour).
+
 ### The Signals
 
 For each ticker the scanner computes:
@@ -316,6 +318,15 @@ Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/T]
 ### Entry Gates (advisory-first)
 
 On commit, the workspace can run the **eight entry gates** (G1 stop-width, G2 basis quality, G3 fallback-artifact, G4 event, G5 extension, G6 liquidity, G7 portfolio heat, G8 base-currency). Each returns **PASS / FAIL / NA** with a reason; a gate whose inputs are unavailable returns NA and never blocks. Two spec deviations (assessment review, 2026-07-04): **G6 is a permanent NA stub** — no ADV/slippage source feeds this book and none is worth building; **G7 evaluates portfolio heat only** — the spec's theme dimension is cut until themes exist somewhere in the app.
+
+**Where the gate inputs come from (advisory build):**
+
+- **G1** tests the stop width against a fixed, *named* market ATR from the discovery cache — the daily **14d** ATR by default, the weekly **12w** ATR with a wider ~18% cap under the `position_3to6mo` lens (so the lens's own correct wide stops are never rejected). It never tests against the snapped inception ATR, which sits near the risk distance by construction.
+- **G2 / G3 / G5** read the ticker's **structural context from the latest zone scan** (stop source, flagged status, independent confluence count, regime, 200-DMA trail anchor), persisted automatically every time the Zone Scanner runs. Context older than ~a week is treated as absent — stale structure degrades the gates to NA, it never misfires.
+- **G7** reads the book's existing open R% across the other stopped positions.
+- **G4** stays NA (no earnings-calendar source); **G6** is the cut stub.
+
+Practical flow: run the Zone Scanner (menu 8) first, then commit in the Risk Workspace — with `gates_mode = advisory`, every commit gets a PASS/FAIL/NA read on real inputs, and a FAIL is a warning, never a block.
 
 Controlled by the **`gates_mode`** setting, edited in the preset/settings modal (`M`):
 

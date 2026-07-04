@@ -52,6 +52,23 @@ def test_g1_na_without_atr():
     assert g1_stop_width(ProposedTrade(entry=100.0, stop=97.0, atr=0.0)).status == NA
 
 
+def test_g1_lens_overrides_widen_caps():
+    """3–6mo lens (Horizon_Calibration §4): wider weekly-structure stops are
+    correct there — the overrides must widen exactly the arm they target."""
+    # 15% stop, 1.25×ATR: fails the daily 8% cap, passes the lens 18% cap.
+    t = ProposedTrade(entry=100.0, stop=85.0, atr=12.0)
+    assert g1_stop_width(t).status == FAIL
+    t2 = ProposedTrade(entry=100.0, stop=85.0, atr=12.0, g1_max_stop_pct=0.18)
+    assert g1_stop_width(t2).status == PASS
+    # The ×ATR arm still binds independently (1.875× > 1.5×)…
+    t3 = ProposedTrade(entry=100.0, stop=85.0, atr=8.0, g1_max_stop_pct=0.18)
+    assert g1_stop_width(t3).status == FAIL
+    # …unless its own override widens it too.
+    t4 = ProposedTrade(entry=100.0, stop=85.0, atr=8.0,
+                       g1_max_stop_pct=0.18, g1_max_stop_atr=2.0)
+    assert g1_stop_width(t4).status == PASS
+
+
 # --- G2 basis quality ------------------------------------------------------
 def test_g2_pass_tight_source_two_levels():
     t = ProposedTrade(stop_source="HVN_14d", confluence_count=2)

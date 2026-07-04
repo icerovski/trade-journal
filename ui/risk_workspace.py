@@ -1,4 +1,6 @@
+import json
 import math
+import time
 
 import pandas as pd
 import re
@@ -18,13 +20,13 @@ from services.market_data_service import fetch_ticker_currency
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
-from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry, find_open_trade_log_id, update_trade_log_entry
+from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry, find_open_trade_log_id, update_trade_log_entry, get_scan_context
 from core.trade_log import TradeLogEntry, STATUS_TAKEN
 from core.gates import ProposedTrade, evaluate_gates, gates_summary
 from core.sizing import compute_position_size_gap
 from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
-from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS, GATE_G1_MAX_STOP_PCT_3TO6MO, GATE_CONTEXT_MAX_AGE_DAYS
 
 PRESETS = {
     "S": {"label": "Small",       "max_exp_pct": 1.5, "max_r_pct": 0.30},
@@ -631,8 +633,38 @@ class RiskWorkspace(App):
         table_t.can_focus = False
         for col, key in [("WIN", "t_win"), ("ATR(W)", "t_atr_w"), ("SL%(W)", "t_sl_w"), ("ATR(S)", "t_atr_s"), ("SL%(S)", "t_sl_s"), ("STOP", "t_stop"), ("QTY", "t_qty"), ("P/L", "t_pl"), ("R", "t_r"), ("BUF%", "t_buf")]:
             table_t.add_column(col, key=key, width=(10 if col == "WIN" else None))
-        
+
         self.load_portfolio()
+        self._consume_pending_handoff()
+
+    def _consume_pending_handoff(self) -> None:
+        """One-shot pickup of a zone-scanner handoff: jump to the ticker's row and
+        prefill the command box with the scanner's stop (as a FIXED price) for
+        review. Consumed (cleared) on read; expires after an hour so a forgotten
+        handoff can't ambush a session days later. Nothing is committed."""
+        raw = get_setting('pending_handoff', '') or ''
+        if not raw:
+            return
+        save_setting('pending_handoff', '')
+        try:
+            h = json.loads(raw)
+            ticker = (h.get('ticker') or '').upper()
+            stop = float(h.get('stop') or 0.0)
+            fresh = (time.time() - float(h.get('ts') or 0.0)) <= 3600
+        except (ValueError, TypeError):
+            return
+        if not ticker or stop <= 0 or not fresh:
+            return
+        table = self.query_one("#portfolio-table", DataTable)
+        for r_key in table.rows:
+            row_data = self.enriched_data[self.enriched_data['conid'].astype(str) == r_key.value] if not self.enriched_data.empty else pd.DataFrame()
+            if not row_data.empty and row_data.iloc[0]['Ticker'] == ticker:
+                table.move_cursor(row=table.get_row_index(r_key))
+                self.query_one("#atr-input", Input).value = f"{stop:.2f} F"
+                self.notify(f"Zone-scan handoff: {ticker} — stop {stop:,.2f} prefilled as FIXED. "
+                            f"Review, add tokens (P:/C:/X:), ENTER to model.")
+                return
+        self.notify(f"Zone-scan handoff for {ticker}: not in the table — sync or re-add it first.", severity="warning")
 
     def load_portfolio(self) -> None:
         """Syncs Ledger and calculates metrics, including Stop-Breach signals."""
@@ -1554,7 +1586,15 @@ class RiskWorkspace(App):
         """Run entry gates on a draft per `gates_mode`. Returns True if the commit may
         proceed. `off` → always True, no evaluation (behaviour unchanged). `advisory` →
         always True, but surface any FAILs. `blocking` → False iff a hard gate FAILed.
-        Only G1/G8 have inputs in this flow; the rest return NA and never block."""
+
+        Inputs (advisory build): G1 tests against a fixed, NAMED market ATR from the
+        discovery cache — never the snapped inception ATR, which by construction sits
+        near the risk distance (a tautology). Daily 14d by default; the 3–6mo lens
+        uses the weekly 12w ATR and the wider pct cap (Horizon_Calibration §4).
+        G2/G3/G5 read the latest zone-scan context (fresh within
+        GATE_CONTEXT_MAX_AGE_DAYS; stale/missing → NA, never blocks). G7 reads the
+        book's existing open R% (other names). G4 stays NA (no earnings source);
+        G6 is the cut stub."""
         if self.gates_mode == "off":
             return True
         pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)
@@ -1562,18 +1602,43 @@ class RiskWorkspace(App):
             return True
         cur_p = pos.current_price or pos.mark_price
         entry = pos.entry_price if pos.entry_price > 0 else cur_p
+
+        disc = self.discovery_cache.get(str(cid)) or {}
+        atr_by_label = {r.label: r.atr_wilder for r in (disc.get('rows') or []) if not r.window_shrunk}
+        lens_3to6 = self.calibration_profile == 'position_3to6mo'
+        market_atr = atr_by_label.get('12w' if lens_3to6 else '14d', 0.0)
+
+        ctx = get_scan_context(pos.ticker, max_age_days=GATE_CONTEXT_MAX_AGE_DAYS) or {}
+
+        # Existing open R% across the OTHER stopped names — the honest correlated-
+        # heat proxy for a concentrated single-strategy book. For a fresh prospect
+        # (qty 0) the trade adds 0%, so G7 fails only when the book itself is
+        # already beyond the heat cap.
+        heat = sum(
+            (getattr(p, 'risk_pct_nav', 0.0) or 0.0)
+            for p in self.positions
+            if str(p.conid) != str(cid) and p.qty > 0
+        )
+
         trade = ProposedTrade(
             ticker=d.get('ticker', ''),
             entry=entry,
             stop=d.get('hypo_stop') or 0.0,
-            atr=d.get('inception_atr') or 0.0,
+            atr=market_atr,
             qty=pos.qty,
             nav=self.total_nav,
             multiplier=pos.multiplier,
             max_r_pct=d.get('max_r_pct', 1.0),
+            stop_source=ctx.get('stop_source') or '',
+            flagged=ctx.get('flagged'),
+            regime=ctx.get('regime') or '',
+            confluence_count=ctx.get('confluence_count'),
+            trail_anchor=ctx.get('trail_anchor'),
+            portfolio_heat_pct=heat,
             ccy=pos.ccy,
             base_ccy=self.nav_ccy,
             fx_rate=pos.fx_rate,
+            g1_max_stop_pct=(GATE_G1_MAX_STOP_PCT_3TO6MO if lens_3to6 else None),
         )
         summary = gates_summary(evaluate_gates(trade))
         if summary["n_fail"]:

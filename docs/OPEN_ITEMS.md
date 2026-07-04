@@ -13,12 +13,13 @@ Source: Fable_Application_Assessment_Review.md (Must-fixes and Cuts done 2026-07
 - [x] One-line mode banner (`gates: off · lens: default`) in risk-workspace and zone-scanner headers
 - [x] Make `calibration_profile` selectable in the `M` modal — the 3–6mo lens currently has no door
 
-## Fork-gated — decide first
+## Fork — DECIDED 2026-07-04: advisory gates + handoff (all built)
 
-- [ ] DECIDE the strategic fork: recommendation is advisory gates + scanner→workspace handoff (not binary wire-everything/leave-off); `blocking` waits until advisory output earns trust
-- [ ] (if wired) G1 must test against a fixed named market ATR (daily 14d from discovery) — testing the snapped inception ATR is a tautology
-- [ ] (if wired) Reconcile gates with the calibration profile (G1 → ~18% under the 3–6mo lens, or hard-warn when blocking gates meet it)
-- [ ] (if wired) Scanner→workspace handoff key: prefill the command box, thread stop_source/flagged/confluence into ProposedTrade (wakes G2/G3 for free)
+- [x] DECIDE the strategic fork: advisory gates + scanner→workspace handoff; `blocking` waits until advisory output earns trust
+- [x] G1 tests against a fixed named market ATR (daily 14d; weekly 12w under the 3–6mo lens) — inception-ATR tautology gone
+- [x] Gates reconciled with the calibration profile (G1 → 18% cap + weekly ATR under `position_3to6mo`)
+- [x] Scanner→workspace handoff: `scan_context` table feeds G2/G3/G5 on every commit; `c` key prefills the command box (one-shot, 1h expiry); G7 wired to open book R%
+- [ ] Flip `gates_mode` to `advisory` in the M modal (user action — the banner will show it)
 
 ## Decide separately — the expectancy loop
 

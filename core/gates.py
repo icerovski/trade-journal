@@ -62,6 +62,12 @@ class ProposedTrade:
     multiplier: float = 1.0
     max_r_pct: float = 1.0                 # single-trade R% cap (for the heat cap)
 
+    # G1 threshold overrides (calibration lens): the 3-6mo profile widens the
+    # width caps (weekly ATR arm, ~18% pct cap) so blocking-grade advice never
+    # rejects its own correct wide stops. None -> the constants.py defaults.
+    g1_max_stop_atr: Optional[float] = None
+    g1_max_stop_pct: Optional[float] = None
+
     # scanner / structural context
     stop_source: str = ""
     flagged: Optional[bool] = None
@@ -112,19 +118,21 @@ def g1_stop_width(trade: ProposedTrade) -> GateResult:
     name = "Stop-width"
     if trade.atr <= 0 or trade.entry <= 0 or r1(trade) <= 0:
         return GateResult("G1", name, NA, "Need entry, stop and ATR (with entry > stop).")
+    max_atr = trade.g1_max_stop_atr or GATE_G1_MAX_STOP_ATR
+    max_pct = trade.g1_max_stop_pct or GATE_G1_MAX_STOP_PCT
     width_atr = r1(trade) / trade.atr
     width_pct = r1(trade) / trade.entry
-    ok_atr = width_atr <= GATE_G1_MAX_STOP_ATR
-    ok_pct = width_pct <= GATE_G1_MAX_STOP_PCT
+    ok_atr = width_atr <= max_atr
+    ok_pct = width_pct <= max_pct
     if ok_atr and ok_pct:
         return GateResult("G1", name, PASS,
                           f"R₁ {width_atr:.2f}×ATR ({width_pct*100:.1f}% of price) within "
-                          f"{GATE_G1_MAX_STOP_ATR}×ATR / {GATE_G1_MAX_STOP_PCT*100:.0f}%.")
+                          f"{max_atr}×ATR / {max_pct*100:.0f}%.")
     parts = []
     if not ok_atr:
-        parts.append(f"{width_atr:.2f}×ATR > {GATE_G1_MAX_STOP_ATR}×")
+        parts.append(f"{width_atr:.2f}×ATR > {max_atr}×")
     if not ok_pct:
-        parts.append(f"{width_pct*100:.1f}% > {GATE_G1_MAX_STOP_PCT*100:.0f}%")
+        parts.append(f"{width_pct*100:.1f}% > {max_pct*100:.0f}%")
     return GateResult("G1", name, FAIL,
                       "Stop too wide (" + "; ".join(parts) + ") — wrong location or mid-air, not licence to risk more.")
 

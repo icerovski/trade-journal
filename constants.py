@@ -167,6 +167,12 @@ GATE_G3_MOMO_VAL_STOP_PCT = 0.10
 GATE_G4_EVENT_DAYS = 5
 # G5 Extension: don't initiate if price is > this many ATRs above the trail anchor.
 GATE_G5_MAX_EXTENSION_ATR = 2.0
+# G1 pct cap under the 3-6mo calibration lens (Horizon_Calibration §4: wider
+# weekly-structure stops are correct there — the daily 8% cap would reject them).
+GATE_G1_MAX_STOP_PCT_3TO6MO = 0.18
+# Zone-scan structural context (stop_source/flagged/confluence/regime) feeds the
+# gates only while fresh; older structure degrades to NA (never blocks).
+GATE_CONTEXT_MAX_AGE_DAYS = 7
 # G6 Liquidity: cut — permanent NA stub in core/gates.py, no constants.
 # G7 Portfolio-heat cap = this multiple of the single-trade R% cap.
 # (The spec's theme dimension is cut until themes exist somewhere in the app.)
