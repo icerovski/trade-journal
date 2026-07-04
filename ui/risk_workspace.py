@@ -26,7 +26,7 @@ from core.gates import ProposedTrade, evaluate_gates, gates_summary
 from core.sizing import compute_position_size_gap
 from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
-from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS, GATE_G1_MAX_STOP_PCT_3TO6MO, GATE_CONTEXT_MAX_AGE_DAYS
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS, GATE_G1_MAX_STOP_PCT_3TO6MO, GATE_CONTEXT_MAX_AGE_DAYS, CAL_ATR_STALENESS_RATIO
 
 PRESETS = {
     "S": {"label": "Small",       "max_exp_pct": 1.5, "max_r_pct": 0.30},
@@ -1219,7 +1219,16 @@ class RiskWorkspace(App):
         table_t.clear()
         
         m_r = data.get('max_r_pct', 1.0)
-        
+
+        # §1a staleness (3–6mo lens only): daily ATR normally runs ~0.45x the weekly
+        # ATR (1/sqrt(5) scaling). Far above that, short-term vol has left the weekly
+        # baseline behind — the structure the lens stops lean on needs a re-scan.
+        if self.calibration_profile == 'position_3to6mo':
+            atrs = {r.label: r.atr_wilder for r in data['rows'] if r.stop_type == 'FIXED' and not r.window_shrunk}
+            a14, a12w = atrs.get('14d'), atrs.get('12w')
+            if a14 and a12w and a14 > CAL_ATR_STALENESS_RATIO * a12w:
+                self._notify_snap(f"{data['ticker']}: §1a — 14d ATR {a14:.2f} is outsized vs 12w {a12w:.2f}; re-scan structure before trusting 3–6mo stops.")
+
         # Update dynamic labels with base prices
         self.query_one("#fixed-label").update(f"[bold cyan]FIXED STOP | BASE: ENTRY ({data['entry_price']:,.2f})[/]")
         self.query_one("#trailing-label").update(f"[bold magenta]TRAILING STOP | BASE: HIGH ({data['max_price']:,.2f})[/]")
@@ -1334,6 +1343,14 @@ class RiskWorkspace(App):
             # THESIS/TECHNICAL tag (§0a). None = not typed (preserve stored tag on commit);
             # "" = explicit clear. Carried only — no exit logic branches on it.
             active_class, raw = parse_classification(raw)
+
+            # §0a coupling: a THESIS tag implies the thesis-exit shape (one clock per
+            # trade — no guessed-at-entry price target) unless an explicit X: was
+            # typed this edit or a non-default shape is already stored. Overridable.
+            if active_class == "THESIS" and active_shape is None \
+                    and normalize_shape(getattr(pos, 'exit_shape', '')) == "LADDER":
+                active_shape = "THESIS"
+                self._notify_snap(f"{pos.ticker}: C:TH → thesis-exit shape applied (no price target; override with X:L or X:H).")
 
             # Gap-aware sizing (§6): G:<price> = plausible post-event gap price. Opt-in —
             # absent (default) leaves sizing on the standard fixed-fractional path. Parsed

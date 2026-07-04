@@ -19,14 +19,17 @@ Source: Fable_Application_Assessment_Review.md (Must-fixes and Cuts done 2026-07
 - [x] G1 tests against a fixed named market ATR (daily 14d; weekly 12w under the 3–6mo lens) — inception-ATR tautology gone
 - [x] Gates reconciled with the calibration profile (G1 → 18% cap + weekly ATR under `position_3to6mo`)
 - [x] Scanner→workspace handoff: `scan_context` table feeds G2/G3/G5 on every commit; `c` key prefills the command box (one-shot, 1h expiry); G7 wired to open book R%
-- [ ] Flip `gates_mode` to `advisory` in the M modal (user action — the banner will show it)
+- [x] Flip `gates_mode` to `advisory` (set directly in settings 2026-07-04; the banner shows it)
 
-## Decide separately — the expectancy loop
+## Decide separately — the expectancy loop (done 2026-07-04)
 
-- [ ] Minimal §7 capture (close-out realized-R backfill prompt + two-keystroke "log skipped pick") — independent of gates; without it menu 9 stays dark forever
+- [x] Minimal §7 capture: menu 9 now backfills realized R on closed lots (ledger-suggested, user-confirmed) and logs skipped picks via `K`
 
-## Low / whenever
+## Low / whenever (done 2026-07-04)
 
-- [ ] Couple C:TH to X:T as an overridable default (one clock per trade, spec §0a)
-- [ ] Cheap §1a staleness check — warn when the 14d ATR materially exceeds the profile's long ATR (pairs with the M-modal lens switch)
-- [ ] README.md rewrite — Gemini-era stale (GEMINI Skills section, old prompt notes; docs/GEMINI.md deleted 2026-07-04)
+- [x] Couple C:TH to X:T as an overridable default (one clock per trade, spec §0a)
+- [x] Cheap §1a staleness check — 14d vs 12w ATR ratio warning under the 3–6mo lens
+- [x] README.md rewritten to match the current app (Gemini-era content removed)
+
+Queue clear. Standing observation (not an action item): run gates in `advisory` for a
+few weeks and review the FAIL/NA pattern before considering `blocking`.

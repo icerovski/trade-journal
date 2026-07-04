@@ -196,3 +196,7 @@ CAL_3TO6MO_CONFLUENCE_PCT = 0.05    # wider band (~0.5 × weekly ATR) than the d
 CAL_3TO6MO_STOP_BUFFER_PCT_BAND = (0.03, 0.07)   # buffer beneath the anchor, % of price
 CAL_3TO6MO_STOP_WIDTH_PCT_BAND = (0.10, 0.18)    # total entry→stop width, % of price
 CAL_3TO6MO_EXTENSION_ATR_MAX = 2.0  # G5: not > 2 × (weekly) ATR above the 30-week MA
+# §1a staleness: daily ATR normally sits near 1/√5 ≈ 0.45 of the weekly ATR. When
+# the 14d ATR exceeds this fraction of the 12w ATR, short-term volatility is far
+# outside the weekly baseline — the structure the 3–6mo stops lean on is stale.
+CAL_ATR_STALENESS_RATIO = 0.7

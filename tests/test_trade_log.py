@@ -136,6 +136,33 @@ def test_skipped_rows_never_match_open_lookup(temp_db):
     assert db.find_open_trade_log_id(None) is None
 
 
+# --- §7 backfill exit basis (qty-weighted ledger sells) ---------------------
+def _insert_trade(conid, side, qty, price, date):
+    conn = db.get_conn()
+    conn.execute(
+        "INSERT INTO trades (date, conid, ticker, side, quantity, price) VALUES (?, ?, 'TST', ?, ?, ?)",
+        (date, str(conid), side, qty, price),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_avg_sell_price_since_weights_by_qty(temp_db):
+    _insert_trade("55", "SELL", 100, 110.0, "2025-06-10")
+    _insert_trade("55", "SELL", 300, 120.0, "2025-06-12")
+    # (100*110 + 300*120) / 400 = 117.5
+    assert db.avg_sell_price_since("55", "2025-06-01") == pytest.approx(117.5)
+
+
+def test_avg_sell_price_since_respects_date_and_side(temp_db):
+    _insert_trade("56", "SELL", 100, 90.0, "2025-01-01")   # before the lot opened
+    _insert_trade("56", "BUY", 100, 100.0, "2025-06-01")   # buys never count
+    _insert_trade("56", "SELL", 100, 130.0, "2025-06-15")
+    assert db.avg_sell_price_since("56", "2025-06-01") == pytest.approx(130.0)
+    assert db.avg_sell_price_since("56", "2026-01-01") is None   # no sells since
+    assert db.avg_sell_price_since("99", "2025-01-01") is None   # unknown conid
+
+
 def test_old_row_without_new_columns_still_loads_and_saves(temp_db, monkeypatch):
     """The core Phase-2 acceptance: a pre-existing table missing the new columns
     is migrated in place; its old rows load (new fields NULL) and remain saveable."""

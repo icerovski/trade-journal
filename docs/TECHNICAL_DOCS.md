@@ -308,7 +308,7 @@ The Risk Workspace Strategy Lab command line carries optional per-trade controls
 
 Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/T]`
 
-- **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes to the decision journal (`trade_log`) — **one row per open lot**: re-committing the same position updates its open row rather than appending a duplicate (duplicates would double-count the lot in the expectancy report); once the lot's outcome is backfilled, the next commit starts a fresh row.
+- **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes to the decision journal (`trade_log`) — **one row per open lot**: re-committing the same position updates its open row rather than appending a duplicate (duplicates would double-count the lot in the expectancy report); once the lot's outcome is backfilled, the next commit starts a fresh row. **§0a coupling:** `C:TH` with no explicit `X:` token (and no stored non-default shape) auto-applies the **thesis-exit** shape — one clock per trade, no guessed-at-entry price target. Override any time with `X:L` or `X:H`.
 - **`X:` — Exit shape (§5a).** How the trade is *banked*, decided at entry alongside the stop. Two shapes beyond the default:
     - `X:H` **Hard target** — a defined objective (TECHNICAL): bank the full position at the target, no runner.
     - `X:T` **Thesis exit** — **no price target**: the position carries no TP and is exited on the stop or a broken thesis only.
@@ -344,7 +344,10 @@ Thresholds live in `constants.py` (`GATE_*`) and are meant to be tuned from the 
 
 ### Expectancy Report
 
-Menu option **9** is a **read-only** report over the decision journal (`trade_log`). It never writes and does not touch the trade flow.
+Menu option **9** renders the decision journal (`trade_log`) and is also its **capture point** (§7). The report itself is a pure read; after it renders, a small action loop offers the only journal writes:
+
+- **`B` — backfill closed lots.** Open journal rows whose position has since closed are listed with a **ledger-suggested realized R** — `(qty-weighted average SELL price − entry) / R₁` from the `trades` table. Enter accepts the suggestion, a typed value overrides it, `s` skips. Nothing is written unconfirmed; rows without usable geometry fall back to manual input.
+- **`K` — log a skipped source pick** (§0a): ticker, source (defaults to Stansberry), optional note; the entry price is auto-resolved from Yahoo when possible so the funnel benchmark has an anchor. Works even when the journal is empty — this is how it stops being dark.
 
 - **By archetype** — win rate, average win / average loss (in R), and **E[R] = w·W̄ − (1 − w)·L̄**. Each archetype is flagged *proven* / *unproven* against the `EXPECTANCY_THRESHOLD_R` (+0.20R); an `ALL` row aggregates.
 - **Source vs benchmark** — for each source: trades taken vs **skipped picks**, average realized R, average result-vs-benchmark, and average base-currency return. This answers the funnel question: does the source add edge, net of cost?
@@ -360,3 +363,5 @@ The Zone Scanner reads a **`calibration_profile`** setting that selects the hori
 - **`position_3to6mo`** — the 3-to-6-month position lens. What it changes in the scan today: a longer-horizon ATR (approximated as a longer *daily* window — true weekly resampling is deferred), longer volume-profile lookbacks, a wider confluence band, and the **MOMENTUM override** — a momentum flag is read as *"extended, wait for a weekly pullback"*, so the scanner uses the weekly value anchors instead of a tight micro-stop. The profile also *records* the spec's percent bands (buffer ~3–7% of price, stop width ~10–18%) and the 30-week-MA anchor, but these are **not yet enforced** anywhere — they are metadata awaiting wiring.
 
 The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. Switch it in the Risk Workspace **preset/settings modal (`M`)** — the `calibration_profile` row next to the gates row (values: `default` / `position_3to6mo`). The active lens is always visible in the risk-workspace and zone-scanner headers (`gates: off · lens: default`). Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).
+
+**§1a staleness check (lens only):** when ATR discovery loads under `position_3to6mo` and the daily 14d ATR exceeds ~0.7× the weekly 12w ATR (the normal ratio is ~0.45 by √5 time-scaling), the workspace warns that short-term volatility has left the weekly baseline behind — re-scan the structure before trusting lens-scale stops.

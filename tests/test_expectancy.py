@@ -15,6 +15,7 @@ from core.expectancy import (
     compute_source_stats,
     compute_base_currency_stats,
     build_expectancy_report,
+    suggest_realized_r,
 )
 from constants import EXPECTANCY_THRESHOLD_R
 
@@ -22,6 +23,22 @@ from constants import EXPECTANCY_THRESHOLD_R
 def _taken(archetype="Value reclaim", realized_r=None, source="", **kw):
     return TradeLogEntry(status=STATUS_TAKEN, archetype=archetype, realized_r=realized_r,
                          source=source, **kw)
+
+
+# --- §7 backfill suggestion (realized R from the ledger) --------------------
+def test_suggest_realized_r_winner_and_loser():
+    # entry 100, stop 90 -> R1 = 10. Exit 120 = +2R; exit 95 = -0.5R.
+    assert suggest_realized_r(100.0, 90.0, 120.0) == pytest.approx(2.0)
+    assert suggest_realized_r(100.0, 90.0, 95.0) == pytest.approx(-0.5)
+
+
+def test_suggest_realized_r_never_fabricates():
+    # Missing geometry or a non-positive R1 -> None (manual input), never a guess.
+    assert suggest_realized_r(None, 90.0, 120.0) is None
+    assert suggest_realized_r(100.0, None, 120.0) is None
+    assert suggest_realized_r(100.0, 90.0, None) is None
+    assert suggest_realized_r(100.0, 110.0, 120.0) is None   # stop above entry
+    assert suggest_realized_r(100.0, 100.0, 120.0) is None   # zero risk
 
 
 # --- Empty / short logs ----------------------------------------------------

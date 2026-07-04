@@ -61,6 +61,20 @@ def _mean(values) -> Optional[float]:
     return (sum(vals) / len(vals)) if vals else None
 
 
+def suggest_realized_r(entry: Optional[float], stop: Optional[float],
+                       avg_exit: Optional[float]) -> Optional[float]:
+    """Suggested realized R for a closed lot's §7 backfill:
+    (avg_exit − entry) / R₁, with R₁ = entry − stop from the journal row.
+    None when the geometry can't support it (missing entry/stop/exit, or a
+    non-positive R₁) — the caller falls back to manual input, never fabricates."""
+    if not entry or not stop or not avg_exit:
+        return None
+    r1 = entry - stop
+    if r1 <= 0:
+        return None
+    return (avg_exit - entry) / r1
+
+
 def _closed_taken(entries):
     """TAKEN trades with a realized R (i.e. closed and measurable)."""
     return [e for e in entries

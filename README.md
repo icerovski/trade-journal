@@ -1,364 +1,76 @@
 # Trade Journal & Risk Management System
 
-A professional-grade portfolio management and risk analysis tool designed for Private Equity desks and family portfolios. This system uses a **ledger-based approach** to ensure mathematical integrity and provides a high-performance **Interactive Cockpit** for real-time monitoring.
+A terminal-based portfolio management and risk-analysis system for a family-office
+equity book. Ledger-based accounting for mathematical integrity, institutional risk
+limits enforced on every position, and a Textual/rich TUI cockpit for daily work.
 
-## 🚀 Key Features
+## Key Principles
 
-*   **Interactive Trading Cockpit**: A terminal-based dashboard with arrow-key navigation and dynamic position analysis.
-*   **Ledger-Based Accounting**: Positions are computed on-the-fly by replaying transaction history, ensuring accuracy and auditability.
-*   **Reset-on-Zero Logic**: Automatically wipes cost basis when a position quantity hits zero, allowing for clean re-entry tracking.
-*   **Parallel Market Data**: High-speed updates using multi-threaded fetching from Yahoo Finance.
-*   **Risk Engine**: Integrated ATR-based stop-loss (Fixed/Trailing) and take-profit targets.
-*   **IBKR Integration**: Direct synchronization with Interactive Brokers Flex Web Service.
-*   **Audit Trail**: Centralized logging system (`trade_journal.log`) for tracking all system actions and milestones.
+*   **Ledger replay** — positions are never stored; they are derived by replaying the
+    `trades` table chronologically. **Reset-on-zero**: cost basis clears when a
+    position closes, so re-entries start clean lots.
+*   **Dual-constraint risk** — every position is audited against a Risk limit
+    (`(entry − stop) × qty / NAV`) and an Exposure limit (HCM / NAV); the tighter
+    constraint wins. Sizing is FX-normalized to the NAV currency.
+*   **ATR-anchored exits** — Wilder ATR stops (Fixed / Trailing with ratchet), an
+    entry-anchored M1/M2/TP ladder in frozen inception-R units, and a regime-aware
+    trim matrix. RR is informational only — never an exit trigger.
+*   **Entry & Stop System** — advisory entry gates (G1–G8), THESIS/TECHNICAL
+    classification, exit shapes, gap-aware sizing, a decision journal with an
+    expectancy report, and a 3–6-month horizon calibration lens. All additive and
+    default-off; defaults are pinned by a golden-master characterization test.
+*   **IBKR integration** — Flex Web Service sync (trades, open positions, NAV,
+    confirmations) with snapshot + delta reconciliation and cost-basis healing.
 
-## 🏗 Project Architecture
+## Three-Tier Storage (never mixed)
 
-The application is built with a strictly modular "CEO Approach" to separation of concerns, utilizing a three-tier storage structure:
+| Layer | Location | Contents |
+|---|---|---|
+| Code repo | `C:\repos\trade-journal` | Pure logic + docs, no secrets |
+| Config vault | OneDrive `Documents\Logos\.repos\trade-journal` | `.env` (IBKR tokens, paths), private config |
+| Data hub | OneDrive `Accounts\HTC_EOOD\TradeJournalData` | `trade_journal.db`, `prices.db`, CSVs, logs |
 
-1.  **Code Repository (Local/GitHub)**: `C:\repos\trade-journal`
-    *   Pure logic and documentation. No secrets or personal data.
-2.  **Configuration Vault (OneDrive Metadata)**: `...\Documents\Logos\.repos\trade-journal`
-    *   **`.env`**: Private API keys and IBKR tokens.
-    *   Ticker-mapping overrides and other private config.
-3.  **Storage Hub (OneDrive Data)**: `...\Accounts\HTC_EOOD\TradeJournalData`
-    *   **`trade_journal.db`**: SQLite database for manual trades and risk settings.
-    *   **`trade_journal.log`**: Audit trail of all system operations.
+`sync_config.smart_sync()` pulls `.env` from the vault on startup; run
+`uv run python sync_config.py` to back it up on exit.
 
-```mermaid
-graph TD
-    IBKR[IBKR API] --> ibkr.py[Networking]
-    ibkr.py --> ibkr_parser.py[Parsing]
-    ibkr_parser.py --> DB[(OneDrive SQLite)]
-    DB --> data_loader.py[Standardization]
-    data_loader.py --> pm[PortfolioManager]
-    pm --> tm[TickerMapper]
-    tm --> YF[Yahoo Finance]
-    pm --> dashboard.py[Interactive UI]
-```
+## Setup & Usage
 
-## 🛠 Setup & Installation
+Prerequisites: Python 3.10+ and [uv](https://github.com/astral-sh/uv).
 
-### Prerequisites:
-*   Python 3.10+
-*   [uv](https://github.com/astral-sh/uv) (Recommended for dependency management)
-
-### Installation:
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd trade-journal
-
-# Install dependencies
-uv sync
+uv sync                     # install dependencies
+uv run python main.py      # run the application
+uv run python -m pytest tests/ -v   # run the test suite
 ```
 
-### Secure Configuration:
-Secrets are managed in the **Configuration Vault** on OneDrive to prevent leaks to GitHub.
-The system automatically loads credentials from:
-`C:\Users\User\OneDrive\Documents\Logos\.repos\trade-journal\.env`
-
-## 📈 Usage
-
-Run the application:
-```bash
-python main.py
-```
-
-### Dashboard Controls:
-*   **UP/DOWN ARROWS**: Navigate through active positions.
-*   **SIDE PANEL**: Displays deep-dive risk metrics (ATR, SL/TP Prices, Buffers) for the selected ticker.
-*   **ESC**: Exit the cockpit and return to the main menu.
-
-## 🧪 Testing
-The project includes an automated test suite. Run tests using:
-```bash
-python -m unittest discover tests
-```
-
-## 📜 License
-Private Equity proprietary tool. All rights reserved.
-
-
-# Scratchpad
-
-1. When pulling from Interactive Brokers, I will pull a few different files:
-   - trades.csv
-   - open_positions.csv
-   - nav.csv
-   - corporate_actions.csv
-2. Probably keep .env and gemini.md in the standard folder. However, everytime I run the application make a back up in the onedrive. Maybe that's the cleanest way. 
-3. Stock split capability of .db. Maybe add a new table in the DB which holds historical instrument information that should be pulled from other queries. Although I can't think of anything else, other than - date and ratio of stock split. 
-4. Naming convention of query. [name]_[period].csv
-   - year - 2024, 2025, etc.
-   - ytd - current year to date
-   - lbd - last business day
-5. Transfers. Search for files named transfers_[year/ytd].csv. Filter Type/INTERCOMPANY and populate the database. First, check if there is enough information to populate the database and let me know.
-6. Corporate_actions_ytd.csv - go over those and make sure that you get all the stock splits.
-7. How the script works. Pulls information for the .csv files transfers, trades, and corporate actions and file it into the database. Then use the open_positions_lbd to get the instruments that you need and use this list to calculate and populate the dashboard. Use nav_lbd to get the real NAV from the last business day. Please confirm if this is how the script works. Basically the data related to historical period is located in data_base and the last business day data is in folder last_business_day. Can you please check if this is what the script does and outline any point that it is not doing and needs to be addressed. Make a plan on how to fix it and ask me if I want to fix it.
-8. .env and gemini.md are backed up in onedrive everytime I exit the application. whenever the application starts, it should check if it works with the latest versions and if not, copy them from the onedrive location.
-
-## GEMINI Skills
-Think of Gemini Skills as "specialized apps" or "procedural memory" that you
-  install into my system. While I am generally smart about coding, a Skill gives
-  me specific instructions on how you want things done in this specific project.
-
-  Here is the breakdown of how they work:
-
-
-  1. The "Three-Layer" Logic (Context Efficiency)
-  The most important thing about Skills is that they don't clog up my "brain"
-  (context window) until they are needed.
-   * Layer 1 (Metadata): I always keep a tiny list of all installed Skills and
-     their descriptions. If you say "wrap up," I look at that list, see that the
-     session-logger matches that request, and I "activate" it.
-   * Layer 2 (The Instructions): Once activated, I read the SKILL.md file. This
-     tells me exactly what steps to take (e.g., "Check git diff," "Create a log
-     file," "Update GEMINI.md").
-   * Layer 3 (Bundled Resources): If the skill has complex scripts or templates
-     (like a specific Excel reporter or a PE dashboard template), I only grab
-     those when the instructions tell me to.
-
-
-  2. Scopes: Global vs. Workspace
-   * User Scope (Global): These are skills available in every project you open.
-     (e.g., a "Personal Fact Rememberer" or a "Standard PE Email Formatter").
-   * Workspace Scope (Project): These are specific to the current folder. The
-     session-logger we just made is a Workspace Skill. It lives inside your
-     trade-journal repo because the logic for updating GEMINI.md is specific to
-     this project.
-
-
-  3. The Lifecycle of a Skill
-   1. Trigger: You give a command or ask for a task that matches a skill's
-      description.
-   2. Activation: I "load" the skill's instructions.
-   3. Execution: I follow the "Core Mandate" of the skill. In our case, the
-      mandate is: Maintain PE-grade auditability through documentation.
-   4. Completion: Once the task is done, the skill goes back into the "app
-      drawer."
-
-
-  4. How YOU manage them
-  You have a few special slash-commands in the CLI to manage these:
-   * /skills list: Shows you everything currently installed.
-   * /skills reload: Essential when you (or I) modify a skill. It forces me to
-     re-read the definitions.
-   * /skills info <name>: Shows the detailed instructions for a specific skill.
-
-
-  Why this matters for your Trading Desk
-  For a Private Equity professional, this is about standardization. By using
-  Skills, you ensure that no matter when we work together—whether it's today or
-  six months from now—the documentation will always have the same structure, the
-  ledger will always be rebuilt using the same logic, and the "Single Source of
-  Truth" will never drift. 
-
-  ## Outstanding points
-  1. Create a Watch List. Put stocks there that you think are undervalued or battered. Then start monitoring for a good entry point. This is where the Confluence Zone Discovery Method should come in.
-  2. Confluence Zone Discovery:
-     1. Discover your ATR and this is where you should start searching for an entry price
-     2. Look for confluence of that price with EMAs, Bollinger Bands, Fibonacci, etc.
-  3. Analyze volumes to discover bear and bull markets. Bull market volumes rise with the price, bear markets volums move oposite direction. Only with other markers though.
-  4. ticker_info table in the db: bond multipliers should be x0.001; ISIN info should be taken from the trade tables, where you also take stock exchange, etc.
-  5. Risk Workspace: Assess the de-risking of the position. Start with initial risk for the position and the path of de-risking it through dividends, selling covered calls and moving the Stop Loss with the price. IMPORTANT!
-  6. Definitions is very important. I need to figure out where to hold them and update them. Maybe directly in the code, or from the UI. Need to assess.
-
-✦ When you arrive at the office, you should run these three commands to ensure your office machine is
-  perfectly in sync with the work we just finished:
-
-   1. Switch to the main branch (if you aren't already there):
-      git checkout main
-
-   2. Pull the latest updates:
-      git pull origin main
-
-   3. Verify the sync:
-      git log -n 1
-      (You should see the commit: "merge: incorporate thread-safe dashboard updates...")
-
-
-  Why this is important:
-  This will bring all the thread-safety fixes, the 60-second refresh logic, and the Asset Master
-  database migration to your office machine. From that point forward, you can do all your work directly
-  on `main` to avoid the branch confusion we encountered today.
-
-  If you have any uncommitted changes at the office that you want to keep, you can run git stash before 
-  pulling, and git stash pop after pulling. Otherwise, the steps above will get you up to speed!
-
-
-  ## Important pieces of chat
-  #### Target Quantity shares
-  I have implemented the full financial target tracking for both strategies.
-  The Asset Context panel now provides a detailed breakdown of your capital
-  requirements.
-
-
-  1. For Scale-In Strategies (S flag)
-  The system now calculates the Scale-In Target Outlay by summing the cost
-  of all three tranches at their respective roadmap prices:
-   * Tranche 1: Inception Price * 1/3 Target
-   * Tranche 2: Stage 2 Price * 1/3 Target
-   * Tranche 3: Stage 3 Price * 1/3 Target
-
-
-  2. For Single Purchase Strategies
-  The system calculates the Full Target Outlay based on the capital required
-  to reach a 1% NAV risk unit at the current market price.
-
-
-  3. Universal "Remaining Capital" Tracking
-  Regardless of the strategy, the panel now displays:
-   * Current Holding: Your actual shares and their average cost.
-   * Target Outlay: The total cash needed for a full institutional unit
-     (sized for 1% risk).
-   * Remaining Cap: The specific amount of cash still needed to "complete"
-     the position.
-
-  Example Roadmap:
-
-
-   1 POSITION ROADMAP: [STAGE 1/3 ACTIVE]
-   2   - Current:   150 sh (@ 293.60)
-   3   - Stage 2 @: 335.09 (Add +110 sh)
-   4   - Stage 3 @: 358.58 (Add +130 sh)
-   5   - Target Outlay: 135,402 USD
-   6   - Remaining Cap: 91,362 USD
-   7   - Pilot Stop: 264.64 (assigned ATR)
-
-
-  You can now see exactly how much capital is required to fulfill your risk
-  plan for every asset!
-
-  ---------------------------
-
-  I have updated the Target Quantity calculation to respect both of your
-  institutional hard limits.
-
-
-  The full_target_qty is now dynamically calculated as the minimum of:
-   1. Risk Limit (1.0%): Total shares allowed based on the distance from
-      entry to stop.
-   2. Exposure Limit (5.0%): Total shares allowed based on current market
-      price as a percentage of NAV.
-
-
-  What this means for the Roadmap:
-   * Safety First: If an asset is highly volatile (wide ATR), the Risk Limit
-     will restrict the quantity.
-   * Concentration Control: If an asset is low volatility (tight ATR), the
-     Exposure Limit will step in to prevent you from owning more than 5.0%
-     of your NAV in a single ticker.
-   * Outlay & Remaining Cap: These financial figures now reflect the
-     "Dual-Constraint" reality. They show the capital needed to reach the
-     smaller of the two targets, ensuring you don't over-allocate capital
-     beyond your exposure ceiling.
-
-
-  You can see this in action in the Asset Context & Risk Audit panel. If the
-  Exposure limit is the bottleneck, you will notice the "Full Target"
-  quantity is capped at exactly 5% of your total NAV.
-
-#### ATR, Stop, Scale-In, Increments
-
-    1. Manual Override (Absolute Control)
-  You can now add a 4th parameter to your Strategy Lab command to dictate the exact
-  scale step.
-   * 49.5 T S 0.5 -> Trailing Stop, Scale-In, 0.5x increments.
-   * 14.5 T S 1.0 -> Trailing Stop, Scale-In, 1.0x increments.
-   * 10% T S 0.75 -> Trailing Stop, Scale-In, 0.75x increments.
-
-
-  2. The "Smart Default" (If you forget to type the step)
-  If you simply type 49.5 T S (omitting the step size), the system automatically
-  analyzes the "width" of your ATR to deduce your timeframe:
-   * It calculates your assigned ATR as a percentage of the current stock price.
-   * Macro Trend ( > 15% of Price): If your ATR is massive (like a 12q window), the
-     system automatically sets the scale step to 0.5x.
-   * Micro Trend ( <= 15% of Price): If your ATR is small (like a 14d window), the
-     system automatically sets the scale step to 1.0x to prevent you from getting
-     whipsawed by daily noise.
-
-#### The Strategy Lab Logic:
-   1. Stop Loss: You now type your stop as a percentage by default (e.g., 15).
-   2. Scaling Unit: The "Step" (the 4th parameter) now explicitly uses the 14d ATR (Market Heartbeat) as its unit.
-
-  Examples:
-   * Legacy Play (BRK-B): 25 T S 0.5
-       * Stop is 25% below the high (Wide Moat).
-       * Add shares every 0.5x of the 14d ATR (Rapid building while it's trending).
-   * Tactical Play (META): 10 T S 1.0
-       * Stop is 10% below the high (Standard correction).
-       * Add shares every 1.0x of the 14d ATR (Slower, more confirmed entry).
-
-
-  1. Capital-First Audit
-  The "ASSET CONTEXT" section now leads with your available budget in your local currency:
-   * Risk Budget: Shows exactly how many Dollars/Euros you have left before you hit your 1.0% risk limit.
-   * Exp. Budget: Shows the remaining capital you can invest before hitting your 5.0% exposure cap.
-   * Action: Now says "Room for +X shares" based on the most restrictive of the two budgets.
-
-
-  2. Intelligent Roadmap (Catch-up Logic)
-  The 3-stage roadmap now analyzes your actual position relative to the current price:
-   * Price Awareness: If the price has reached the Stage 3 level, but you skipped Stage 2, the system will mark Stage 2 as "Skipped/Passed."
-   * Cumulative Sizing: It will then calculate exactly how many shares you need to add to reach the Stage 3 target from wherever you are now.
-   * Clear Visuals:
-       * ✓ (Filled): You have enough shares for this stage.
-       * ! (Action): Price hit the target, and you are missing shares. Shows exactly how many to buy to "catch up."
-
-#### Strategy Lab
- Here is the definitive list of how to update each metric standalone in
-  the Strategy Lab:
-
-
-  1. Stop Distance (The Number)
-  Type just the number. It defaults to % unless you prefix it with $.
-   * Command: 15 (for 15%) or $2.50 (for a 2.50 price distance).
-   * Result: Updates the stop width while keeping T/F, S, and limits.
-
-
-  2. Stop Type (T or F)
-  Type just the letter to switch logic.
-   * Command: T (Trailing) or F (Fixed).
-   * Result: Swaps the base (Entry vs. High-Water Mark) but keeps the
-     width and limits.
-
-
-  3. Risk Limit (R:)
-  Type R: followed by your target Risk-at-Stop as a % of NAV.
-   * Command: R:0.5
-   * Result: Updates your conviction cap. The sidebar will immediately
-     recalculate your "Room to add" or "Trim" shares.
-
-
-  4. Exposure Limit (E:)
-  Type E: followed by your target total Position Value as a % of NAV.
-   * Command: E:10.0
-   * Result: Sets a hard cap on capital outlay. Useful for
-     high-conviction trades with tight stops.
-
-
-  5. Scale-In Flag (S)
-  Type the letter S alone.
-   * Command: S
-   * Result: Activates the 3-Stage Pilot roadmap. This splits your
-     target quantity into 3 tiers based on ATR progress.
-
-
-  6. Scale-In Step size (Optional after S)
-  Type S followed by a number to set the distance between entry stages.
-   * Command: S 1.0
-   * Result: Activates Scale-In and sets milestones at 1.0x ATR
-     intervals instead of the default 0.5x.
-
-  ---
-
-
-  Testing AGQ:
-   1. Select AGQ.
-   2. Type R:0.5 and hit ENTER.
-   3. You will see the grid update to show Actual% (0.5%) and the
-      sidebar will update the share count recommendations without losing
-      your existing 40% stop distance.
-   4. Press CTRL+ENTER to commit.
+`.env` (in the config vault) must define `DATA_PATH` and the IBKR Flex credentials
+(`IBKR_TOKEN`, `IBKR_QUERY_ID_*`) — see `config.py` for the resolved keys.
+
+## Menu Map
+
+| # | Workspace | Purpose |
+|---|---|---|
+| 1 | SYNC ALL | IBKR fetch + ledger update + price sync |
+| 2 | RISK WORKSPACE | ATR discovery, risk audit, Strategy Lab commands, gates |
+| 3 | DASHBOARD | Performance & risk monitoring cockpit |
+| 4 | KIDS FUND | Private wealth glide-path audit |
+| 5 | MAINTENANCE | Surgical rebuilds & system tools |
+| 6 | WATCH LIST | Prospect monitoring; the dedicated add-a-name flow |
+| 7 | PORTFOLIO RISK | Aggregate R%, stop-out loss, HHI, FX exposure |
+| 8 | ZONE SCANNER | Volume profile + AVWAP + MA confluence entry zones |
+| 9 | EXPECTANCY | Decision-journal E[R] report + §7 capture (backfill, skipped picks) |
+
+Press `F1` inside any workspace for the full guides (rendered from `docs/guides/`).
+
+## Documentation
+
+*   `CLAUDE.md` — architecture, core invariants, module map, schema (start here).
+*   `docs/TECHNICAL_DOCS.md` — user-facing feature reference (also the F1 help).
+*   `docs/guides/` — canonical definitions and workflows (Entry & Stop System,
+    horizon calibration, indicator glossary, stop-placement playbook).
+*   `docs/sessions/` — per-session engineering logs (PE-grade audit trail).
+*   `docs/OPEN_ITEMS.md` — living work queue, surfaced at startup.
+
+## License
+
+Private proprietary tool. All rights reserved.

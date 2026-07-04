@@ -642,6 +642,19 @@ def get_scan_context(ticker, max_age_days=None):
     return ctx
 
 
+def avg_sell_price_since(conid, since_date):
+    """Qty-weighted average SELL price for a conid since a date — the realized
+    exit basis for §7 backfill suggestions. None when no sells exist yet."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT SUM(quantity * price) / SUM(quantity) AS avg_px FROM trades "
+        "WHERE conid = ? AND side = 'SELL' AND quantity > 0 AND date >= ?",
+        (str(conid), since_date or ""),
+    ).fetchone()
+    conn.close()
+    return float(row["avg_px"]) if row and row["avg_px"] is not None else None
+
+
 def find_open_trade_log_id(conid):
     """Id of the most recent OPEN decision row for a conid — a TAKEN entry whose
     outcome has not been backfilled (realized_r IS NULL). One decision, one row:
