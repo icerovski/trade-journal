@@ -75,6 +75,12 @@ ZONE_CONFLUENCE_PCT = 0.025
 # for the scanner to flag an entry zone (the brief's "2 or more align").
 ZONE_MIN_CONFLUENCE = 2
 
+# Independence check (Entry & Stop System §4a, minimum viable form): entry signals
+# whose level values sit within this many ATRs of EACH OTHER are one signal counted
+# twice (e.g. VAL and POC landing on the same volume-profile bucket), not two
+# independent walls. Only the flag decision dedups; the signal list stays complete.
+ZONE_DEDUP_EPS_ATR = 0.05
+
 # Momentum-regime stop tiering. When price runs more than MOMENTUM_VAL_PREMIUM_PCT
 # above the 6-month VAL, the 6mo support is too far for a momentum-flag entry
 # (a 20%+ stop). The scanner switches to a micro-structure stop built from the

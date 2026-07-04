@@ -5,13 +5,13 @@ Tick an item (`- [ ]` → `- [x]`) or delete it when done. Keep it short.
 
 Source: Fable_Application_Assessment_Review.md (Must-fixes and Cuts done 2026-07-04).
 
-## Do now — small, NOT gated on the fork
+## Do now — small, NOT gated on the fork (all done 2026-07-04)
 
-- [ ] De-dup `trade_log` writes per (conid, open lot) — `C:`-tagged commits write rows regardless of `gates_mode`, so duplicates poison E[R] the moment tagging starts
-- [ ] Zone scanner: de-duplicate identical-price levels in confluence counting (spec §4a minimum viable form — VAL==POC currently counts twice)
-- [ ] Zone scanner: surface "insufficient data" rows instead of silently dropping young tickers
-- [ ] One-line mode banner (`gates: off · lens: default`) in risk-workspace and zone-scanner headers
-- [ ] Make `calibration_profile` selectable in the `M` modal — the 3–6mo lens currently has no door
+- [x] De-dup `trade_log` writes per (conid, open lot) — `C:`-tagged commits write rows regardless of `gates_mode`, so duplicates poison E[R] the moment tagging starts
+- [x] Zone scanner: de-duplicate identical-price levels in confluence counting (spec §4a minimum viable form — VAL==POC currently counts twice)
+- [x] Zone scanner: surface "insufficient data" rows instead of silently dropping young tickers
+- [x] One-line mode banner (`gates: off · lens: default`) in risk-workspace and zone-scanner headers
+- [x] Make `calibration_profile` selectable in the `M` modal — the 3–6mo lens currently has no door
 
 ## Fork-gated — decide first
 

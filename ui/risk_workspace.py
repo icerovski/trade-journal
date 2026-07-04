@@ -18,7 +18,7 @@ from services.market_data_service import fetch_ticker_currency
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
-from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry
+from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry, find_open_trade_log_id, update_trade_log_entry
 from core.trade_log import TradeLogEntry, STATUS_TAKEN
 from core.gates import ProposedTrade, evaluate_gates, gates_summary
 from core.sizing import compute_position_size_gap
@@ -381,6 +381,9 @@ class PresetMatrixScreen(ModalScreen):
             with Horizontal(classes="matrix-row"):
                 yield Label("  [dim]Entry gates (off/advisory/blocking)[/]", classes="matrix-label-col")
                 yield Input(get_setting('gates_mode', 'off'), id="gates_mode", classes="matrix-input")
+            with Horizontal(classes="matrix-row"):
+                yield Label("  [dim]Calibration lens (default/position_3to6mo)[/]", classes="matrix-label-col")
+                yield Input(get_setting('calibration_profile', 'default'), id="calibration_profile", classes="matrix-input")
             with Horizontal(id="matrix-buttons"):
                 yield Button("COMMIT", id="btn-commit", variant="success")
                 yield Button("Cancel", id="btn-cancel", variant="default")
@@ -417,6 +420,11 @@ class PresetMatrixScreen(ModalScreen):
             self.notify("gates_mode must be off / advisory / blocking", severity="error")
             return
 
+        new_lens = (self.query_one("#calibration_profile", Input).value or "default").strip().lower()
+        if new_lens not in ("default", "position_3to6mo"):
+            self.notify("calibration_profile must be default / position_3to6mo", severity="error")
+            return
+
         changed = [
             key for key, (new_r, new_e) in new_vals.items()
             if new_r != PRESETS[key]["max_r_pct"] or new_e != PRESETS[key]["max_exp_pct"]
@@ -432,6 +440,7 @@ class PresetMatrixScreen(ModalScreen):
         ACTION_THRESHOLD_PCT = new_threshold
         save_setting('action_threshold_pct', str(new_threshold))
         save_setting('gates_mode', new_gates_mode)
+        save_setting('calibration_profile', new_lens)
 
         self.dismiss(changed)
 
@@ -553,6 +562,7 @@ class RiskWorkspace(App):
         self.total_nav = 0.0
         self.nav_ccy = "USD"
         self.gates_mode = "off"  # off | advisory | blocking — loaded from settings on mount
+        self.calibration_profile = "default"  # horizon lens — loaded from settings on mount
         # Last thin-history snap notice per conid — on_strategy_change fires per
         # keystroke, so repeat warnings must be deduped or they stack as toasts.
         self._last_snap_note: Dict[str, str] = {}
@@ -591,6 +601,7 @@ class RiskWorkspace(App):
     def on_mount(self) -> None:
         _load_presets_from_db()
         self.gates_mode = (get_setting('gates_mode', 'off') or 'off').lower()
+        self.calibration_profile = (get_setting('calibration_profile', 'default') or 'default').lower()
         self.query_one("#preset-legend", Label).update(_preset_legend())
         table = self.query_one("#portfolio-table", DataTable)
         table.cursor_type = "row"
@@ -633,7 +644,7 @@ class RiskWorkspace(App):
             self.nav_ccy = "???"
 
         self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True, nav_ccy=self.nav_ccy)
-        self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), "[F1] Help")
+        self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), self._banner_hint())
         if self.enriched_data.empty:
             return
         table = self.query_one("#portfolio-table", DataTable)
@@ -1502,6 +1513,11 @@ class RiskWorkspace(App):
         except Exception as e:
             logger.error(f"Modeling Error: {e}")
 
+    def _banner_hint(self) -> str:
+        """Header mode banner: the two default-off systems' current state, always
+        visible — weeks later, 'why didn't the gates fire?' answers itself."""
+        return f"gates: {self.gates_mode} · lens: {self.calibration_profile} | [F1] Help"
+
     def _notify_snap(self, msg: str) -> None:
         """Warn about a thin-history snap once per distinct message per row —
         on_strategy_change runs on every keystroke, so a raw notify would stack
@@ -1569,24 +1585,32 @@ class RiskWorkspace(App):
         return True
 
     def _log_classification(self, cid, d) -> None:
-        """Phase 3: record a classified commit into the decision journal (§7). Only
-        fires when a THESIS/TECHNICAL tag is set, so untagged commits write nothing
-        and behave exactly as before. A later phase formalises the full logging loop."""
+        """Record a classified commit into the decision journal (§7). Only fires
+        when a THESIS/TECHNICAL tag is set, so untagged commits write nothing.
+        One decision per open lot: re-committing the same conid UPDATES its open
+        row (realized_r still NULL) instead of appending — duplicates would
+        double-count the lot in the expectancy report. A closed-out lot (outcome
+        backfilled) starts a fresh row on the next classified commit."""
         classification = (d.get('classification') or '').strip()
         if not classification:
             return
         pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)
+        fields = dict(
+            date=pd.Timestamp.now().strftime("%Y-%m-%d"),
+            ticker=d.get('ticker', ''),
+            conid=str(cid),
+            status=STATUS_TAKEN,
+            classification=classification,
+            entry=(pos.entry_price if pos and pos.entry_price > 0 else None),
+            stop=d.get('hypo_stop'),
+            atr_value=d.get('inception_atr'),
+        )
         try:
-            add_trade_log_entry(TradeLogEntry(
-                date=pd.Timestamp.now().strftime("%Y-%m-%d"),
-                ticker=d.get('ticker', ''),
-                conid=str(cid),
-                status=STATUS_TAKEN,
-                classification=classification,
-                entry=(pos.entry_price if pos and pos.entry_price > 0 else None),
-                stop=d.get('hypo_stop'),
-                atr_value=d.get('inception_atr'),
-            ))
+            open_id = find_open_trade_log_id(str(cid))
+            if open_id is not None:
+                update_trade_log_entry(open_id, **fields)
+            else:
+                add_trade_log_entry(TradeLogEntry(**fields))
         except Exception as e:
             logger.error(f"Trade-log write failed for {d.get('ticker')}: {e}")
 
@@ -1617,6 +1641,8 @@ class RiskWorkspace(App):
     def action_open_matrix(self) -> None:
         def on_closed(changed_keys):
             self.gates_mode = (get_setting('gates_mode', 'off') or 'off').lower()
+            self.calibration_profile = (get_setting('calibration_profile', 'default') or 'default').lower()
+            self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), self._banner_hint())
             if changed_keys:
                 self.query_one("#preset-legend", Label).update(_preset_legend())
                 self.load_portfolio()

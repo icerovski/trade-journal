@@ -236,7 +236,9 @@ Launch with menu option **8**. The scan runs across the universe and lists each 
 - **TAG** — `ZONE` (a confluence zone), `ZONE-MOMO` (zone in a momentum regime), or `—` (no zone).
 - **Detail panel** — the converging signals (each with its ATR-distance and a `★` for fortress-tight levels), the chosen stop and its source, the target, and the share count under each risk preset (Small / Base / Large).
 
-A zone is flagged when **two or more** structural levels converge within the confluence band of the current price.
+A zone is flagged when **two or more independent** structural levels converge within the confluence band of the current price. Independence is the §4a minimum check: levels sitting within 0.05 ATR of *each other* (e.g. VAL and POC landing on the same volume-profile bucket) count as **one** signal, not two — the signal list still shows every level, but the flag can't be earned by the same wall counted twice.
+
+A ticker with too little price history for the scan window is shown as a dimmed **THIN** row (with its cached bar count in the detail panel) instead of being silently dropped from the report. The scanner header shows the active horizon lens (`lens: default`).
 
 ### The Signals
 
@@ -304,7 +306,7 @@ The Risk Workspace Strategy Lab command line carries optional per-trade controls
 
 Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/T]`
 
-- **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes a row to the decision journal (`trade_log`).
+- **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes to the decision journal (`trade_log`) — **one row per open lot**: re-committing the same position updates its open row rather than appending a duplicate (duplicates would double-count the lot in the expectancy report); once the lot's outcome is backfilled, the next commit starts a fresh row.
 - **`X:` — Exit shape (§5a).** How the trade is *banked*, decided at entry alongside the stop. Two shapes beyond the default:
     - `X:H` **Hard target** — a defined objective (TECHNICAL): bank the full position at the target, no runner.
     - `X:T` **Thesis exit** — **no price target**: the position carries no TP and is exited on the stop or a broken thesis only.
@@ -320,6 +322,8 @@ Controlled by the **`gates_mode`** setting, edited in the preset/settings modal 
 - **`off`** (default) — no gate evaluation; commit behaviour unchanged.
 - **`advisory`** — failing gates are surfaced as a warning, but the commit proceeds.
 - **`blocking`** — a commit with any failing gate is blocked.
+
+The active mode and calibration lens are always visible in the workspace header (`gates: off · lens: default`), so the current configuration never has to be remembered.
 
 Thresholds live in `constants.py` (`GATE_*`) and are meant to be tuned from the log. Engine: `core/gates.py`.
 
@@ -344,4 +348,4 @@ The Zone Scanner reads a **`calibration_profile`** setting that selects the hori
 - **`default`** — today's short-swing calibration (daily structure). Unchanged.
 - **`position_3to6mo`** — the 3-to-6-month position lens. What it changes in the scan today: a longer-horizon ATR (approximated as a longer *daily* window — true weekly resampling is deferred), longer volume-profile lookbacks, a wider confluence band, and the **MOMENTUM override** — a momentum flag is read as *"extended, wait for a weekly pullback"*, so the scanner uses the weekly value anchors instead of a tight micro-stop. The profile also *records* the spec's percent bands (buffer ~3–7% of price, stop width ~10–18%) and the 30-week-MA anchor, but these are **not yet enforced** anywhere — they are metadata awaiting wiring.
 
-The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. There is currently **no UI to switch it** — the `calibration_profile` setting is changed directly in the `settings` table. Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).
+The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. Switch it in the Risk Workspace **preset/settings modal (`M`)** — the `calibration_profile` row next to the gates row (values: `default` / `position_3to6mo`). The active lens is always visible in the risk-workspace and zone-scanner headers (`gates: off · lens: default`). Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).

@@ -577,6 +577,24 @@ def get_trade_log_entries(status=None, ticker=None):
     conn.close()
     return [TradeLogEntry.from_row(r) for r in rows]
 
+def find_open_trade_log_id(conid):
+    """Id of the most recent OPEN decision row for a conid — a TAKEN entry whose
+    outcome has not been backfilled (realized_r IS NULL). One decision, one row:
+    re-committing the same open lot must UPDATE this row, not append a duplicate
+    that would double-count the lot in the expectancy report. Returns None when
+    the last decision was closed out (a fresh lot starts a fresh row)."""
+    if conid is None:
+        return None
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id FROM trade_log WHERE conid = ? AND status = ? AND realized_r IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (str(conid), "TAKEN"),
+    ).fetchone()
+    conn.close()
+    return row["id"] if row else None
+
+
 def update_trade_log_entry(entry_id, **fields):
     """Backfill/patch a decision-journal row (e.g. realized R, MAE/MFE at exit).
     Unknown keys are ignored so callers can pass a superset safely."""

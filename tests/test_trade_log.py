@@ -105,6 +105,37 @@ def test_update_ignores_unknown_keys(temp_db):
     assert db.get_trade_log_entries(ticker="AMD")[0].realized_r == 1.1
 
 
+# --- One decision per open lot (de-dup) ------------------------------------
+def test_find_open_trade_log_id_targets_open_taken_row(temp_db):
+    row_id = db.add_trade_log_entry(TradeLogEntry(
+        date="2025-06-07", ticker="AVGO", conid="42", status=STATUS_TAKEN,
+        classification="THESIS", stop=340.0,
+    ))
+    assert db.find_open_trade_log_id("42") == row_id
+    # Upserting via update keeps ONE row per open lot — re-commits must not
+    # append duplicates that double-count the lot in E[R].
+    db.update_trade_log_entry(row_id, classification="TECHNICAL", stop=350.0)
+    rows = db.get_trade_log_entries(ticker="AVGO")
+    assert len(rows) == 1
+    assert rows[0].classification == "TECHNICAL" and rows[0].stop == 350.0
+
+
+def test_closed_lot_is_not_reused(temp_db):
+    row_id = db.add_trade_log_entry(TradeLogEntry(
+        date="2025-06-08", ticker="NVDA", conid="7", status=STATUS_TAKEN,
+    ))
+    db.update_trade_log_entry(row_id, realized_r=1.5)   # outcome backfilled → lot closed
+    assert db.find_open_trade_log_id("7") is None       # next commit starts a fresh row
+
+
+def test_skipped_rows_never_match_open_lookup(temp_db):
+    db.add_trade_log_entry(TradeLogEntry(
+        date="2025-06-09", ticker="TSLA", conid="9", status=STATUS_SKIPPED,
+    ))
+    assert db.find_open_trade_log_id("9") is None
+    assert db.find_open_trade_log_id(None) is None
+
+
 def test_old_row_without_new_columns_still_loads_and_saves(temp_db, monkeypatch):
     """The core Phase-2 acceptance: a pre-existing table missing the new columns
     is migrated in place; its old rows load (new fields NULL) and remain saveable."""

@@ -187,7 +187,8 @@ class ZoneScanWorkspace(App):
                     })
 
                 presets = get_presets() or _DEFAULT_PRESETS
-                calibration = get_calibration(get_setting('calibration_profile', 'default'))
+                self._lens = (get_setting('calibration_profile', 'default') or 'default').lower()
+                calibration = get_calibration(self._lens)
                 results = build_zone_report(universe, self._load_or_fetch_ohlcv,
                                             total_nav, presets, calibration=calibration)
             self.post_message(self.ScanLoaded(results, total_nav, nav_ccy))
@@ -200,7 +201,8 @@ class ZoneScanWorkspace(App):
         self.results = message.results
         self.by_ticker = {r["ticker"]: r for r in message.results}
         n_flagged = sum(1 for r in message.results if r["flagged"])
-        self.sub_title = UIUtils.nav_subtitle(message.nav, message.nav_ccy, len(message.results))
+        self.sub_title = UIUtils.nav_subtitle(message.nav, message.nav_ccy, len(message.results),
+                                              f"lens: {getattr(self, '_lens', 'default')}")
 
         t = self.query_one("#results-table", DataTable)
         t.clear()
@@ -209,18 +211,22 @@ class ZoneScanWorkspace(App):
             return
 
         for r in self.results:
-            tag = r["tag"] or "—"
+            thin = r.get("insufficient_data", False)
+            tag = "THIN" if thin else (r["tag"] or "—")
             tag_styled = (
-                f"[bold magenta]{tag}[/]" if tag == "ZONE-MOMO"
+                "[dim yellow]THIN[/]" if thin
+                else f"[bold magenta]{tag}[/]" if tag == "ZONE-MOMO"
                 else f"[bold green]{tag}[/]" if tag == "ZONE"
                 else f"[dim]{tag}[/]"
             )
             dist = f"{r['dist_to_zone_pct']:.2f}%" if r["dist_to_zone_pct"] is not None else "—"
             stop = f"{r['stop']:.2f}" if r["flagged"] else "—"
-            regime = ("[magenta]MOMO[/]" if r["regime"] == "MOMENTUM" else "[dim]base[/]")
+            regime = ("[dim]—[/]" if thin else
+                      "[magenta]MOMO[/]" if r["regime"] == "MOMENTUM" else "[dim]base[/]")
+            price = f"{r['price']:,.2f}" if r.get("price") else "—"
             t.add_row(
                 tag_styled, f"[cyan]{r['ticker']}[/]", regime,
-                f"{r['price']:,.2f}", dist, str(len(r["entry_signals"])), stop,
+                price, dist, str(len(r["entry_signals"])), stop,
                 key=r["ticker"],
             )
         self.query_one("#detail-header", Static).update(
@@ -232,6 +238,18 @@ class ZoneScanWorkspace(App):
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         r = self.by_ticker.get(event.row_key.value)
         if not r:
+            return
+
+        if r.get("insufficient_data"):
+            self.query_one("#detail-header", Static).update(
+                f"[yellow]{r['ticker']} — insufficient history ({r.get('n_bars', 0)} daily bars cached) "
+                f"for the scan's ATR window.[/]"
+            )
+            self.query_one("#detail-signals", Static).update(
+                "[dim]Not scanned. Sync prices (menu 1) or wait for more trading history.[/]"
+            )
+            self.query_one("#detail-plan", Static).update("[dim]—[/]")
+            self.query_one("#detail-sizes", Static).update("[dim]—[/]")
             return
 
         tag = r["tag"] or "no zone"
