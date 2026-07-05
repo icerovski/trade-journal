@@ -295,7 +295,8 @@ The readout is sourced directly from the same series that are plotted, so the di
 
 The **`F1` Help Desk** (Risk Workspace and Dashboard) is a tabbed reference rendered directly from the project's Markdown guides — there is no separate, hand-maintained help copy. Editing a guide updates the in-app help automatically.
 
-- Tabs: **Glossary** (`docs/guides/Indicator_Glossary.md`), **Stop Playbook** (`Stop_Placement_Playbook.md`), **Strategy Lab** (`Strategy_Lab_Syntax.md`), **Exit Strategy** (`Exit_Strategy.md`), **Zone Scanner** (`Zone_Scanner_Guide.md`), and **Technical** (this document).
+- Tabs (in order): **User Guide** (`docs/guides/User_Guide.md`), **Glossary** (`Indicator_Glossary.md`), **Stop Playbook** (`Stop_Placement_Playbook.md`), **Entry & Stops** (`Entry_and_Stop_System.md`), **Exit Strategy** (`Exit_Strategy.md`), **Zone Scanner** (`Zone_Scanner_Guide.md`), **Horizon 3-6mo** (`Horizon_Calibration_3to6mo.md`), **Strategy Lab** (`Strategy_Lab_Syntax.md`), and **Technical** (this document).
+- `docs/guides/User_Guide.md` is the **task-level operating manual** — the front-door tab: screen index, key bindings, and how-to walkthroughs for the full trade lifecycle (new entry, add-on-dip, profit-taking, stop-out, earnings gap what-if, portfolio heat reduction, raise-cash order, journal capture). It owns procedure only; strategy rationale stays in the strategy guides it cross-references.
 - `docs/guides/Indicator_Glossary.md` is the **canonical home** for every indicator and metric definition (ATRs, volume profile, AVWAP, R / RR, confluence, regimes, the momentum micro-anchors, presets). Other surfaces reference it rather than restating definitions.
 - `docs/guides/Stop_Placement_Playbook.md` is the scenario-by-scenario walkthrough for arriving at a stop, including the momentum "price sitting on the low" case where the scanner cannot offer a tight stop.
 - Source/rendering: `services/ui_components.py` (`HelpScreen`, `HELP_FILES`).

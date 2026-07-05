@@ -13,11 +13,14 @@ _ROOT = Path(__file__).resolve().parent.parent
 # files are the SINGLE SOURCE OF TRUTH, viewable both as files and here. Editing a guide
 # updates the F1 help automatically; there are no hardcoded help strings to drift.
 HELP_FILES = [
+    ("User Guide",    "docs/guides/User_Guide.md"),
     ("Glossary",      "docs/guides/Indicator_Glossary.md"),
     ("Stop Playbook", "docs/guides/Stop_Placement_Playbook.md"),
-    ("Strategy Lab",  "docs/guides/Strategy_Lab_Syntax.md"),
+    ("Entry & Stops", "docs/guides/Entry_and_Stop_System.md"),
     ("Exit Strategy", "docs/guides/Exit_Strategy.md"),
     ("Zone Scanner",  "docs/guides/Zone_Scanner_Guide.md"),
+    ("Horizon 3-6mo", "docs/guides/Horizon_Calibration_3to6mo.md"),
+    ("Strategy Lab",  "docs/guides/Strategy_Lab_Syntax.md"),
     ("Technical",     "docs/TECHNICAL_DOCS.md"),
 ]
 

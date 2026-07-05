@@ -125,7 +125,7 @@ Secondary database **`prices.db`** holds `prices_daily (conid, date PK)` for OHL
 
 All UIs are Textual apps in `ui/`, launched from `main.py`. They are display-only and do not write to the database except `ui/risk_workspace.py` (persists `risk_profiles` edits via command syntax, e.g. `15 T P:L` = 15% stop, Trailing, Large preset; upserts `trade_log` on classified commits) and `ui/zone_scan_workspace.py` (persists per-ticker `scan_context` after each scan and the one-shot `pending_handoff` setting via the `c` key). Scale-In has been removed; entry type is always SINGLE.
 
-**F1 Help (single source of truth):** `services/ui_components.py` `HelpScreen` renders the `.md` files listed in `HELP_FILES` (the `docs/guides/*.md` set + `docs/TECHNICAL_DOCS.md`) via the Textual `Markdown` widget — no hardcoded help strings. `docs/guides/` is therefore canonical for all user-facing definitions and workflows; editing a guide updates F1 automatically. `Indicator_Glossary.md` is the canonical home for every indicator/metric definition.
+**F1 Help (single source of truth):** `services/ui_components.py` `HelpScreen` renders the `.md` files listed in `HELP_FILES` (the `docs/guides/*.md` set + `docs/TECHNICAL_DOCS.md`) via the Textual `Markdown` widget — no hardcoded help strings. `docs/guides/` is therefore canonical for all user-facing definitions and workflows; editing a guide updates F1 automatically, but a new guide must be registered in `HELP_FILES` to appear. `Indicator_Glossary.md` is the canonical home for every indicator/metric definition; `User_Guide.md` (first tab) is the task-level operating manual — procedure only, strategy rationale stays in the strategy guides.
 
 ### Session Protocol
 
