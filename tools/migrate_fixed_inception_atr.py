@@ -31,14 +31,9 @@ from core.stop_loss import get_atr_discovery_data
 from logger import logger
 
 
-def _snap_atr(rows, risk_dist):
-    """Pick the discovery-ATR value nearest the risk distance, deduped by timeframe label.
-    Returns (new_atr, label) or (None, None) if no usable rows."""
-    choices = {r.label: r.atr_wilder for r in (rows or [])}
-    if not choices or risk_dist <= 0:
-        return None, None
-    label = min(choices, key=lambda k: abs(choices[k] - risk_dist))
-    return choices[label], label
+# The snap rule lives in core/stop_loss.snap_inception_atr — one implementation for
+# the live commit path and this retroactive tool, so they cannot silently diverge.
+from core.stop_loss import snap_inception_atr as _snap_atr
 
 
 def migrate(apply: bool):
@@ -93,9 +88,16 @@ def migrate(apply: bool):
             print(f"{ticker:10} discovery failed: {e}")
             continue
 
-        new_atr, tf = _snap_atr((data or {}).get("rows"), risk_dist)
+        rows = (data or {}).get("rows")
+        new_atr, tf = _snap_atr(rows, risk_dist)
         if new_atr is None:
-            print(f"{ticker:10} {'— no discovery ATR rows —':>50}")
+            # Distinguish "discovery returned nothing" from "rows exist but every
+            # window is shrunken" — the latter needs a manual re-anchor, and the old
+            # daily inception_atr this tool exists to fix stays in place.
+            if rows and risk_dist > 0:
+                print(f"{ticker:10} {'— history too thin for a trustworthy ATR; re-anchor manually —':>60}")
+            else:
+                print(f"{ticker:10} {'— no discovery ATR rows —':>50}")
             continue
 
         old_atr = prof["inception_atr"]

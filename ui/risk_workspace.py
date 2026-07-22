@@ -1,3 +1,7 @@
+import json
+import math
+import time
+
 import pandas as pd
 import re
 from typing import Dict, Optional
@@ -9,19 +13,20 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual import on, work
 
-from core.portfolio_manager import PortfolioManager
+from core.portfolio_manager import PortfolioManager, resolve_prospect_fx
 from core.profit_taking import TRIM_MATRIX
-from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
+from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data, snap_inception_atr
+from services.market_data_service import fetch_ticker_currency
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart
 from services.ui_components import HelpScreen
-from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry
+from db import set_position_risk, get_presets, save_preset, update_preset_profiles, get_setting, save_setting, add_trade_log_entry, find_open_trade_log_id, update_trade_log_entry, get_scan_context
 from core.trade_log import TradeLogEntry, STATUS_TAKEN
 from core.gates import ProposedTrade, evaluate_gates, gates_summary
-from core.sizing import gap_effective_stop
+from core.sizing import compute_position_size_gap
 from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
-from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS
+from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS, GATE_G1_MAX_STOP_PCT_3TO6MO, GATE_CONTEXT_MAX_AGE_DAYS, CAL_ATR_STALENESS_RATIO
 
 PRESETS = {
     "S": {"label": "Small",       "max_exp_pct": 1.5, "max_r_pct": 0.30},
@@ -97,17 +102,18 @@ def parse_classification(raw: str):
     return classification, raw.replace(m.group(0), "").strip()
 
 
-def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
+def resolve_tp_mult(token: str, entry: float, inception_atr: float):
     """Resolve a `TP:` token into a multiple of the inception ATR.
 
     Returns (mult, clear, ok):
       • clear=True  → user typed `TP:-` (revert to the default 3R), mult is None.
-      • ok=False    → token could not be resolved (missing inception ATR, or a $ target
-                      with no quantity); caller should warn and ignore.
+      • ok=False    → token could not be resolved (missing inception ATR or an
+                      unrecognised form); caller should warn and ignore.
     Accepted forms (token already upper-cased, `TP:` stripped):
       4 | 4R           → explicit multiple of inception ATR
       +35% | 35%       → gain as % of entry, divided by inception ATR
-      $60K | $60000 | 60K → absolute profit, per-share / inception ATR (needs qty)
+    The absolute-$ form ($60K) was cut — TP:nR and TP:N:1 carry the real use
+    cases; $/K tokens fall through to ok=False.
     """
     token = (token or "").strip()
     if token == '-':
@@ -120,13 +126,6 @@ def resolve_tp_mult(token: str, entry: float, inception_atr: float, qty: float):
         if token.endswith('%'):
             pct = float(token.rstrip('%').lstrip('+'))
             return (entry * pct / 100.0) / inception_atr, False, True
-        if token.startswith('$') or token.endswith('K'):
-            amt = token.lstrip('$')
-            scale = 1000.0 if amt.endswith('K') else 1.0
-            amt = float(amt.rstrip('K')) * scale
-            if qty <= 0:
-                return None, False, False  # $ target needs a share count
-            return (amt / qty) / inception_atr, False, True
         return float(token), False, True  # plain number → multiple
     except ValueError:
         return None, False, False
@@ -164,7 +163,7 @@ def _trim_shares(qty: float, pct: float) -> float:
 def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type, exit_shape="") -> Optional[dict]:
     """Single source of truth for the profit-taking directive at an exit stage.
 
-    Returns a dict {verb, color, headline, shares, pct, restore_sl, urgent, reason} or
+    Returns a dict {verb, color, headline, shares, pct, restore_sl, reason} or
     None when the position carries no exit stage. Pure — drives BOTH the one-line verdict
     (panel header + table ACTION column) and the detailed exit-guidance prose, so the
     headline action and the justification below it can never diverge.
@@ -190,7 +189,7 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
     if stage == 'TP' and is_hard_target(exit_shape):
         shares = _trim_shares(qty, 1.0)
         return {'verb': 'TRIM', 'color': 'green', 'shares': shares, 'pct': 1.0,
-                'restore_sl': None, 'urgent': False,
+                'restore_sl': None,
                 'headline': f'EXIT — hard target hit (sell {shares})',
                 'reason': 'Hard-target trade: a defined objective was reached — bank the full '
                           'position, no runner past the target.'}
@@ -199,11 +198,11 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
     if stage == 'M1':
         if sl > entry:
             return {'verb': 'HOLD', 'color': 'cyan', 'shares': 0, 'pct': 0.0,
-                    'restore_sl': None, 'urgent': False,
+                    'restore_sl': None,
                     'headline': 'HOLD — stop already locks in profit',
                     'reason': f'Stop {sl:,.2f} locks +{sl - entry:.2f}/sh. Risk-free; monitor for M2.'}
         return {'verb': 'STOP→ENTRY', 'color': 'cyan', 'shares': 0, 'pct': 0.0,
-                'restore_sl': entry, 'urgent': False,
+                'restore_sl': entry,
                 'headline': f'RAISE STOP to entry ({entry:,.2f}) — do not sell',
                 'reason': 'Makes the position risk-free; hold the full position.'}
 
@@ -213,11 +212,11 @@ def _exit_recommendation(stage, regime, qty, entry, sl, tp, cur_p, rr, stop_type
         pct, desc = TRIM_MATRIX[key]
         if pct <= 0:
             return {'verb': 'HOLD', 'color': 'green', 'shares': 0, 'pct': 0.0,
-                    'restore_sl': None, 'urgent': False,
+                    'restore_sl': None,
                     'headline': 'HOLD — let it run', 'reason': desc}
         shares = _trim_shares(qty, pct)
         return {'verb': 'TRIM', 'color': 'yellow', 'shares': shares, 'pct': pct,
-                'restore_sl': None, 'urgent': False,
+                'restore_sl': None,
                 'headline': f'TRIM ~{shares} sh ({int(pct * 100)}%)', 'reason': desc}
     return None
 
@@ -387,6 +386,9 @@ class PresetMatrixScreen(ModalScreen):
             with Horizontal(classes="matrix-row"):
                 yield Label("  [dim]Regime lens (default/horizon)[/]", classes="matrix-label-col")
                 yield Input(get_setting('regime_lens', 'default'), id="regime_lens", classes="matrix-input")
+            with Horizontal(classes="matrix-row"):
+                yield Label("  [dim]Calibration lens (default/position_3to6mo)[/]", classes="matrix-label-col")
+                yield Input(get_setting('calibration_profile', 'default'), id="calibration_profile", classes="matrix-input")
             with Horizontal(id="matrix-buttons"):
                 yield Button("COMMIT", id="btn-commit", variant="success")
                 yield Button("Cancel", id="btn-cancel", variant="default")
@@ -428,6 +430,11 @@ class PresetMatrixScreen(ModalScreen):
             self.notify("regime_lens must be default / horizon", severity="error")
             return
 
+        new_lens = (self.query_one("#calibration_profile", Input).value or "default").strip().lower()
+        if new_lens not in ("default", "position_3to6mo"):
+            self.notify("calibration_profile must be default / position_3to6mo", severity="error")
+            return
+
         changed = [
             key for key, (new_r, new_e) in new_vals.items()
             if new_r != PRESETS[key]["max_r_pct"] or new_e != PRESETS[key]["max_exp_pct"]
@@ -444,6 +451,7 @@ class PresetMatrixScreen(ModalScreen):
         save_setting('action_threshold_pct', str(new_threshold))
         save_setting('gates_mode', new_gates_mode)
         save_setting('regime_lens', new_regime_lens)
+        save_setting('calibration_profile', new_lens)
 
         self.dismiss(changed)
 
@@ -565,6 +573,10 @@ class RiskWorkspace(App):
         self.total_nav = 0.0
         self.nav_ccy = "USD"
         self.gates_mode = "off"  # off | advisory | blocking — loaded from settings on mount
+        self.calibration_profile = "default"  # horizon lens — loaded from settings on mount
+        # Last thin-history snap notice per conid — on_strategy_change fires per
+        # keystroke, so repeat warnings must be deduped or they stack as toasts.
+        self._last_snap_note: Dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -600,6 +612,7 @@ class RiskWorkspace(App):
     def on_mount(self) -> None:
         _load_presets_from_db()
         self.gates_mode = (get_setting('gates_mode', 'off') or 'off').lower()
+        self.calibration_profile = (get_setting('calibration_profile', 'default') or 'default').lower()
         self.query_one("#preset-legend", Label).update(_preset_legend())
         table = self.query_one("#portfolio-table", DataTable)
         table.cursor_type = "row"
@@ -629,8 +642,38 @@ class RiskWorkspace(App):
         table_t.can_focus = False
         for col, key in [("WIN", "t_win"), ("ATR(W)", "t_atr_w"), ("SL%(W)", "t_sl_w"), ("ATR(S)", "t_atr_s"), ("SL%(S)", "t_sl_s"), ("STOP", "t_stop"), ("QTY", "t_qty"), ("P/L", "t_pl"), ("R", "t_r"), ("BUF%", "t_buf")]:
             table_t.add_column(col, key=key, width=(10 if col == "WIN" else None))
-        
+
         self.load_portfolio()
+        self._consume_pending_handoff()
+
+    def _consume_pending_handoff(self) -> None:
+        """One-shot pickup of a zone-scanner handoff: jump to the ticker's row and
+        prefill the command box with the scanner's stop (as a FIXED price) for
+        review. Consumed (cleared) on read; expires after an hour so a forgotten
+        handoff can't ambush a session days later. Nothing is committed."""
+        raw = get_setting('pending_handoff', '') or ''
+        if not raw:
+            return
+        save_setting('pending_handoff', '')
+        try:
+            h = json.loads(raw)
+            ticker = (h.get('ticker') or '').upper()
+            stop = float(h.get('stop') or 0.0)
+            fresh = (time.time() - float(h.get('ts') or 0.0)) <= 3600
+        except (ValueError, TypeError):
+            return
+        if not ticker or stop <= 0 or not fresh:
+            return
+        table = self.query_one("#portfolio-table", DataTable)
+        for r_key in table.rows:
+            row_data = self.enriched_data[self.enriched_data['conid'].astype(str) == r_key.value] if not self.enriched_data.empty else pd.DataFrame()
+            if not row_data.empty and row_data.iloc[0]['Ticker'] == ticker:
+                table.move_cursor(row=table.get_row_index(r_key))
+                self.query_one("#atr-input", Input).value = f"{stop:.2f} F"
+                self.notify(f"Zone-scan handoff: {ticker} — stop {stop:,.2f} prefilled as FIXED. "
+                            f"Review, add tokens (P:/C:/X:), ENTER to model.")
+                return
+        self.notify(f"Zone-scan handoff for {ticker}: not in the table — sync or re-add it first.", severity="warning")
 
     def load_portfolio(self) -> None:
         """Syncs Ledger and calculates metrics, including Stop-Breach signals."""
@@ -641,8 +684,8 @@ class RiskWorkspace(App):
             self.total_nav = 0.0
             self.nav_ccy = "???"
 
-        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True)
-        self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), "[F1] Help")
+        self.enriched_data, self.positions = self.pm.get_dashboard_df(asset_class_filter=['STK'], total_nav=self.total_nav, silent=True, include_watch=True, nav_ccy=self.nav_ccy)
+        self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), self._banner_hint())
         if self.enriched_data.empty:
             return
         table = self.query_one("#portfolio-table", DataTable)
@@ -701,7 +744,7 @@ class RiskWorkspace(App):
                     add_threshold = max(1, int(qty * ACTION_THRESHOLD_PCT / 100.0))
                     trim_threshold = add_threshold
 
-                    if res['is_breached'] or (exit_rec and exit_rec['urgent']):
+                    if res['is_breached']:
                         action_display = "[bold red]EXIT[/]"
                     elif exit_rec and exit_rec['verb'] == 'TRIM':
                         action_display = f"[bold yellow]TRIM {int(exit_rec['pct'] * 100)}%[/]"
@@ -887,7 +930,7 @@ class RiskWorkspace(App):
                 modeled_add = int(hypo_add)
 
             # 2. Reconciled verdict — ONE directive across the three axes, by precedence:
-            #    breach → urgent RR-exit → exit-stage ladder → sizing add/trim → hold.
+            #    breach → exit-stage ladder → sizing add/trim → hold.
             #    The fundamental that resolves the add-vs-trim conflict: exposure headroom
             #    sizes a new/early position; it is never licence to add to a winner that has
             #    reached a profit-taking stage. So at an exit stage the ladder governs and the
@@ -913,9 +956,6 @@ class RiskWorkspace(App):
                 target_qty = int(active_qty)
                 v_color, v_label = 'magenta', "GOAL-SEEK: P/L@Stop = 0 not reachable by buying"
                 v_sub = f"Would require trimming at {cur_p:,.2f}, which can't move average cost."
-            elif exit_rec and exit_rec['urgent']:
-                target_qty = 0
-                v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
             elif exit_rec:
                 target_qty = int(active_qty)   # never add at a profit-taking stage
                 v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
@@ -1142,14 +1182,28 @@ class RiskWorkspace(App):
             t_sym, entry_p, entry_d, m, q = pos.ticker, pos.entry_price, pos.date_entry.strftime("%Y-%m-%d"), pos.multiplier, pos.qty
             max_r, max_exp = pos.max_r_pct, pos.max_exp_pct
             hwm = pos.max_since_entry
+            fx = pos.fx_rate or 1.0
         else:
             t_sym = ticker or str(conid).split(":")[-1]
             entry_p, entry_d, m, q = 0.0, pd.Timestamp.now().strftime("%Y-%m-%d"), 1.0, 0.0
             max_r, max_exp = 1.0, 5.0
             hwm = 0.0
+            phantom = next((p for p in self.positions if str(p.conid) == f"PROSPECT:{t_sym}"), None)
+            fx = phantom.fx_rate if (phantom and phantom.fx_rate and phantom.fx_rate != 1.0) else None
+            if fx is None:
+                # Resolve the prospect's ccy->NAV rate. A ccy already on the phantom
+                # (WATCH rows carry the stored/legacy one) is trusted — only an ad-hoc
+                # discover placeholder ('') pays the one yfinance metadata call, so a
+                # same-ccy-as-NAV watch row never re-fetches or overwrites its ccy.
+                real_ccy = ((phantom.ccy if phantom else '') or
+                            fetch_ticker_currency(self.pm.mapper.resolve_yf_ticker(t_sym)) or 'USD')
+                fx = resolve_prospect_fx(real_ccy, self.positions, self.nav_ccy)
+                if phantom:
+                    phantom.ccy = real_ccy
+                    phantom.fx_rate = fx
 
         with suppress_console_logging():
-            data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp, mapper=self.pm.mapper, max_since_entry=hwm)
+            data = get_atr_discovery_data(t_sym, entry_d, entry_p, conid=(conid if conid and not str(conid).startswith("PROSPECT:") else None), qty=q, inst_multiplier=m, total_nav=self.total_nav, max_r_pct=max_r, max_exp_pct=max_exp, mapper=self.pm.mapper, max_since_entry=hwm, fx_rate=fx)
         if data:
             cache_id = conid or f"PROSPECT:{t_sym}"
             self.discovery_cache[cache_id] = data
@@ -1174,7 +1228,16 @@ class RiskWorkspace(App):
         table_t.clear()
         
         m_r = data.get('max_r_pct', 1.0)
-        
+
+        # §1a staleness (3–6mo lens only): daily ATR normally runs ~0.45x the weekly
+        # ATR (1/sqrt(5) scaling). Far above that, short-term vol has left the weekly
+        # baseline behind — the structure the lens stops lean on needs a re-scan.
+        if self.calibration_profile == 'position_3to6mo':
+            atrs = {r.label: r.atr_wilder for r in data['rows'] if r.stop_type == 'FIXED' and not r.window_shrunk}
+            a14, a12w = atrs.get('14d'), atrs.get('12w')
+            if a14 and a12w and a14 > CAL_ATR_STALENESS_RATIO * a12w:
+                self._notify_snap(f"{data['ticker']}: §1a — 14d ATR {a14:.2f} is outsized vs 12w {a12w:.2f}; re-scan structure before trusting 3–6mo stops.")
+
         # Update dynamic labels with base prices
         self.query_one("#fixed-label").update(f"[bold cyan]FIXED STOP | BASE: ENTRY ({data['entry_price']:,.2f})[/]")
         self.query_one("#trailing-label").update(f"[bold magenta]TRAILING STOP | BASE: HIGH ({data['max_price']:,.2f})[/]")
@@ -1184,13 +1247,16 @@ class RiskWorkspace(App):
             r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
             # Calculate SMA SL% relative to Entry
             sma_sl_pct = (r.atr_sma / data['entry_price'] * 100) if data['entry_price'] > 0 else 0
-            
+            # ⚠ = window shrunken by thin history: the value keeps its timeframe label
+            # only nominally and is excluded from the inception-ATR snap at commit.
+            label_txt = f"{r.label} [bold red]⚠[/]" if r.window_shrunk else r.label
+
             row_vals = (
-                r.label, 
-                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%", 
+                label_txt,
+                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%",
                 f"{r.atr_sma:.2f}", f"{sma_sl_pct:.1f}%",
-                f"{r.stop_price:,.2f}", f"{int(r.qty)}", 
-                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", 
+                f"{r.stop_price:,.2f}", f"{int(r.qty)}",
+                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]",
                 f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%"
             )
             table_f.add_row(*row_vals)
@@ -1200,13 +1266,14 @@ class RiskWorkspace(App):
             r_c = "red" if r.pl_pct_nav > (m_r * 1.5) else ("yellow" if r.pl_pct_nav > m_r else "white")
             # Calculate SMA SL% relative to Max High
             sma_sl_pct = (r.atr_sma / data['max_price'] * 100) if data['max_price'] > 0 else 0
-            
+            label_txt = f"{r.label} [bold red]⚠[/]" if r.window_shrunk else r.label
+
             row_vals = (
-                r.label, 
-                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%", 
+                label_txt,
+                f"{r.atr_wilder:.2f}", f"{r.atr_base_pct:.1f}%",
                 f"{r.atr_sma:.2f}", f"{sma_sl_pct:.1f}%",
-                f"{r.stop_price:,.2f}", f"{int(r.qty)}", 
-                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]", 
+                f"{r.stop_price:,.2f}", f"{int(r.qty)}",
+                f"[{'green' if r.pl_at_stop>=0 else 'red'}]{r.pl_at_stop:,.0f}[/]",
                 f"[{r_c}]{r.pl_pct_nav:.1f}%[/]", f"{r.buffer_pct:.1f}%"
             )
             table_t.add_row(*row_vals)
@@ -1225,7 +1292,10 @@ class RiskWorkspace(App):
         self.notify(f"DISCOVERING: {ticker}...")
         self.current_conid = f"PROSPECT:{ticker}"
         from models import Position
-        phantom = Position(name=f"PROSPECT: {ticker}", ticker=ticker, conid=self.current_conid, asset_class='STK', ccy='USD', date_entry=pd.Timestamp.now(), qty=0.0, entry_price=0.0, account_id='WATCHLIST')
+        # ccy is deliberately empty — fetch_atr_data resolves the real pricing
+        # currency and the ccy->NAV fx rate in its worker thread and stamps both.
+        # (A 'USD' placeholder here would be trusted as a real answer there.)
+        phantom = Position(name=f"PROSPECT: {ticker}", ticker=ticker, conid=self.current_conid, asset_class='STK', ccy='', date_entry=pd.Timestamp.now(), qty=0.0, entry_price=0.0, account_id='WATCHLIST')
         if not any(p.conid == self.current_conid for p in self.positions):
             self.positions.append(phantom)
         if self.current_conid not in [r.value for r in table.rows]:
@@ -1317,9 +1387,20 @@ class RiskWorkspace(App):
                 active_shape = "" if tok == "-" else normalize_shape(tok)
                 raw = raw.replace(x_m.group(0), "").strip()
 
-            # TP override: TP:4 / TP:4R / TP:+35% / TP:$60K / TP:- (clear). A multiple of the
+            # §0a coupling: a THESIS tag implies the thesis-exit shape (one clock per
+            # trade — no guessed-at-entry price target) unless an explicit X: was typed
+            # this edit or a non-default shape is already stored. Overridable. Placed
+            # after X: parsing so `active_shape` reflects any explicit X: token first.
+            if active_class == "THESIS" and active_shape is None \
+                    and normalize_shape(getattr(pos, 'exit_shape', '')) == "LADDER":
+                active_shape = "THESIS"
+                self._notify_snap(f"{pos.ticker}: C:TH → thesis-exit shape applied (no price target; override with X:L or X:H).")
+
+            # TP override: TP:4 / TP:4R / TP:+35% / TP:- (clear). A multiple of the
             # frozen inception ATR — stays put when the stop ATR changes. Parsed BEFORE the
-            # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity.
+            # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity. The regex
+            # still captures the cut $/K forms so they are stripped and rejected with a
+            # warning instead of leaking into the quantity parse.
             existing_tp = pos.tp_atr_mult if getattr(pos, 'tp_is_override', False) else None
             tp_final = existing_tp
             # TP:N:1 — set the target to an N:1 forward reward:risk vs the MODELED stop (e.g.
@@ -1337,9 +1418,9 @@ class RiskWorkspace(App):
                 if tp_m:
                     raw = raw.replace(tp_m.group(0), "").strip()
                     inc_atr = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
-                    mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr, pos.qty)
+                    mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr)
                     if not ok:
-                        self.notify("TP target needs an inception ATR (and a share count for $ targets).", severity="warning")
+                        self.notify("TP target not resolved — needs an inception ATR; accepted forms: TP:nR, TP:+35%, TP:N:1, TP:- ($ form removed).", severity="warning")
                     elif clear:
                         tp_final = None
                     else:
@@ -1405,22 +1486,25 @@ class RiskWorkspace(App):
             # Hypothetical Quantity (Sizing Discovery). Gap-aware (§6) when G: is supplied:
             # risk against the LOWER of the stop and the plausible gap price. Default
             # (gap_price None) risks against the stop exactly as before.
+            # A degenerate fx (bad snapshot row: 0 / None / NaN) must degrade to 1.0,
+            # not zero out or NaN-poison the R%/NAV% math below — either silently
+            # suppresses the over-limit warnings.
+            fx = pos.fx_rate if (pos.fx_rate and math.isfinite(pos.fx_rate) and pos.fx_rate > 0) else 1.0
             calc_q = pos.qty
             if calc_q == 0 and self.total_nav > 0:
-                size_stop = gap_effective_stop(sl_p, gap_price)
-                dist_sh = abs(base_p - size_stop) * pos.multiplier
-                risk_q = (self.total_nav * (m_r / 100.0)) / dist_sh if dist_sh > 0 else float('inf')
-                exp_q = (self.total_nav * (m_e / 100.0)) / (cur_p_d * pos.multiplier) if cur_p_d > 0 else 0
-                calc_q = int(min(risk_q, exp_q))
-            
+                calc_q = compute_position_size_gap(
+                    self.total_nav, base_p, sl_p, gap_price, pos.multiplier, m_r, m_e,
+                    fx_rate=fx, exposure_price=cur_p_d,
+                )
+
             hypo_entry = pos.entry_price if pos.entry_price > 0 else base_p
             risk_v = (sl_p - hypo_entry) * calc_q * pos.multiplier
-            hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier / self.total_nav * 100) if self.total_nav > 0 else 0
+            hypo_r = (abs(base_p - sl_p) * calc_q * pos.multiplier * fx / self.total_nav * 100) if self.total_nav > 0 else 0
             
             # HCM Exposure for Modeling
             modeled_qty = pos.qty if pos.qty > 0 else calc_q
             modeled_hcm_val = max(hypo_entry, cur_p_d) * modeled_qty * pos.multiplier
-            modeled_nav_pct = (modeled_hcm_val / self.total_nav * 100) if self.total_nav > 0 else 0
+            modeled_nav_pct = (modeled_hcm_val * fx / self.total_nav * 100) if self.total_nav > 0 else 0
 
             table = self.query_one("#portfolio-table", DataTable)
             t_pfx = f"[{s_type[:1]}]"
@@ -1457,11 +1541,39 @@ class RiskWorkspace(App):
             # already carries its own distance, so it is left unchanged.
             if s_type == 'FIXED':
                 risk_dist = abs(hypo_entry - sl_p)
-                atr_choices = {r.label: r.atr_wilder for r in (disc.get('rows') or [])} if disc else {}
-                if atr_choices and risk_dist > 0:
-                    save_incep_atr = min(atr_choices.values(), key=lambda a: abs(a - risk_dist))
+                disc_rows = (disc.get('rows') or []) if disc else []
+                # Thin history shrinks a timeframe's ATR window while keeping its
+                # label — never freeze such a value as the position's R unit.
+                # snap_inception_atr (core/stop_loss) is the shared snap rule.
+                snapped, snap_label = snap_inception_atr(disc_rows, risk_dist)
+                if snapped is not None:
+                    save_incep_atr = snapped
+                    # If a shrunken (⚠) row was actually nearest, the snap moved to a
+                    # different timeframe than the one the user likely sized against —
+                    # say so instead of switching silently.
+                    naive = {r.label: r.atr_wilder for r in disc_rows}
+                    naive_label = min(naive, key=lambda k: abs(naive[k] - risk_dist))
+                    if naive_label != snap_label:
+                        self._notify_snap(f"{pos.ticker}: {naive_label} ATR has too little history (⚠) — R snapped to {snap_label} instead.")
+                elif disc_rows and risk_dist > 0:
+                    if pos.inception_atr and pos.inception_atr > 0:
+                        save_incep_atr = pos.inception_atr
+                        self._notify_snap(f"{pos.ticker}: price history too thin for a trustworthy ATR snap — keeping stored inception ATR.")
+                    else:
+                        # First commit with no trustworthy ATR anywhere: anchor the
+                        # ladder to the actual risk distance (its own documented
+                        # fallback). Never leave None — db.set_position_risk degrades
+                        # a NULL inception to atr_value, which for FIXED is the stop
+                        # PRICE, a catastrophic R unit.
+                        save_incep_atr = risk_dist
+                        self._notify_snap(f"{pos.ticker}: history too thin for any ATR — ladder anchored to entry−stop ({risk_dist:,.2f}).")
                 else:
                     save_incep_atr = pos.inception_atr
+                    if (not save_incep_atr or save_incep_atr <= 0) and risk_dist > 0:
+                        # No discovery data at all (worker still loading or yfinance
+                        # down): still never leave None — db degrades a NULL inception
+                        # to atr_value, the stop PRICE, as the frozen R unit.
+                        save_incep_atr = risk_dist
             else:
                 save_incep_atr = f_atr
 
@@ -1474,6 +1586,19 @@ class RiskWorkspace(App):
             
         except Exception as e:
             logger.error(f"Modeling Error: {e}")
+
+    def _banner_hint(self) -> str:
+        """Header mode banner: the two default-off systems' current state, always
+        visible — weeks later, 'why didn't the gates fire?' answers itself."""
+        return f"gates: {self.gates_mode} · lens: {self.calibration_profile} | [F1] Help"
+
+    def _notify_snap(self, msg: str) -> None:
+        """Warn about a thin-history snap once per distinct message per row —
+        on_strategy_change runs on every keystroke, so a raw notify would stack
+        an identical toast eight times while typing one command."""
+        if self._last_snap_note.get(str(self.current_conid)) != msg:
+            self._last_snap_note[str(self.current_conid)] = msg
+            self.notify(msg, severity="warning")
 
     def on_key(self, event) -> None:
         if event.key == "ctrl+j":
@@ -1503,7 +1628,15 @@ class RiskWorkspace(App):
         """Run entry gates on a draft per `gates_mode`. Returns True if the commit may
         proceed. `off` → always True, no evaluation (behaviour unchanged). `advisory` →
         always True, but surface any FAILs. `blocking` → False iff a hard gate FAILed.
-        Only G1/G5/G8 have inputs in this flow; the rest return NA and never block."""
+
+        Inputs (advisory build): G1 tests against a fixed, NAMED market ATR from the
+        discovery cache — never the snapped inception ATR, which by construction sits
+        near the risk distance (a tautology). Daily 14d by default; the 3–6mo lens
+        uses the weekly 12w ATR and the wider pct cap (Horizon_Calibration §4).
+        G2/G3/G5 read the latest zone-scan context (fresh within
+        GATE_CONTEXT_MAX_AGE_DAYS; stale/missing → NA, never blocks). G7 reads the
+        book's existing open R% (other names). G4 stays NA (no earnings source);
+        G6 is the cut stub."""
         if self.gates_mode == "off":
             return True
         pos = next((p for p in self.positions if str(p.conid) == str(cid)), None)
@@ -1511,18 +1644,43 @@ class RiskWorkspace(App):
             return True
         cur_p = pos.current_price or pos.mark_price
         entry = pos.entry_price if pos.entry_price > 0 else cur_p
+
+        disc = self.discovery_cache.get(str(cid)) or {}
+        atr_by_label = {r.label: r.atr_wilder for r in (disc.get('rows') or []) if not r.window_shrunk}
+        lens_3to6 = self.calibration_profile == 'position_3to6mo'
+        market_atr = atr_by_label.get('12w' if lens_3to6 else '14d', 0.0)
+
+        ctx = get_scan_context(pos.ticker, max_age_days=GATE_CONTEXT_MAX_AGE_DAYS) or {}
+
+        # Existing open R% across the OTHER stopped names — the honest correlated-
+        # heat proxy for a concentrated single-strategy book. For a fresh prospect
+        # (qty 0) the trade adds 0%, so G7 fails only when the book itself is
+        # already beyond the heat cap.
+        heat = sum(
+            (getattr(p, 'risk_pct_nav', 0.0) or 0.0)
+            for p in self.positions
+            if str(p.conid) != str(cid) and p.qty > 0
+        )
+
         trade = ProposedTrade(
             ticker=d.get('ticker', ''),
             entry=entry,
             stop=d.get('hypo_stop') or 0.0,
-            atr=d.get('inception_atr') or 0.0,
+            atr=market_atr,
             qty=pos.qty,
             nav=self.total_nav,
             multiplier=pos.multiplier,
             max_r_pct=d.get('max_r_pct', 1.0),
+            stop_source=ctx.get('stop_source') or '',
+            flagged=ctx.get('flagged'),
+            regime=ctx.get('regime') or '',
+            confluence_count=ctx.get('confluence_count'),
+            trail_anchor=ctx.get('trail_anchor'),
+            portfolio_heat_pct=heat,
             ccy=pos.ccy,
             base_ccy=self.nav_ccy,
             fx_rate=pos.fx_rate,
+            g1_max_stop_pct=(GATE_G1_MAX_STOP_PCT_3TO6MO if lens_3to6 else None),
         )
         summary = gates_summary(evaluate_gates(trade))
         if summary["n_fail"]:
@@ -1538,7 +1696,10 @@ class RiskWorkspace(App):
         Fires when a THESIS/TECHNICAL tag (`C:`) OR a source (`SRC:`) is set, so
         untagged commits write nothing and behave exactly as before. r1 is stored
         when both entry and stop are known — the unit the backfill needs to
-        compute realized R at close."""
+        compute realized R at close. One decision per open lot: re-committing the
+        same conid UPDATES its open row (realized_r still NULL) instead of
+        appending — duplicates would double-count the lot in the expectancy
+        report. A closed-out lot (outcome backfilled) starts a fresh row."""
         classification = (d.get('classification') or '').strip()
         source = (d.get('source') or '').strip()
         theme = (d.get('theme') or '').strip()
@@ -1548,20 +1709,25 @@ class RiskWorkspace(App):
         entry = pos.entry_price if pos and pos.entry_price > 0 else None
         stop = d.get('hypo_stop')
         r1 = (entry - stop) if (entry and stop and entry > stop) else None
+        fields = dict(
+            date=pd.Timestamp.now().strftime("%Y-%m-%d"),
+            ticker=d.get('ticker', ''),
+            conid=str(cid),
+            status=STATUS_TAKEN,
+            source=source,
+            theme=theme,
+            classification=classification,
+            entry=entry,
+            stop=stop,
+            r1=r1,
+            atr_value=d.get('inception_atr'),
+        )
         try:
-            add_trade_log_entry(TradeLogEntry(
-                date=pd.Timestamp.now().strftime("%Y-%m-%d"),
-                ticker=d.get('ticker', ''),
-                conid=str(cid),
-                status=STATUS_TAKEN,
-                source=source,
-                theme=theme,
-                classification=classification,
-                entry=entry,
-                stop=stop,
-                r1=r1,
-                atr_value=d.get('inception_atr'),
-            ))
+            open_id = find_open_trade_log_id(str(cid))
+            if open_id is not None:
+                update_trade_log_entry(open_id, **fields)
+            else:
+                add_trade_log_entry(TradeLogEntry(**fields))
         except Exception as e:
             logger.error(f"Trade-log write failed for {d.get('ticker')}: {e}")
 
@@ -1592,6 +1758,8 @@ class RiskWorkspace(App):
     def action_open_matrix(self) -> None:
         def on_closed(changed_keys):
             self.gates_mode = (get_setting('gates_mode', 'off') or 'off').lower()
+            self.calibration_profile = (get_setting('calibration_profile', 'default') or 'default').lower()
+            self.sub_title = UIUtils.nav_subtitle(self.total_nav, self.nav_ccy, len(self.enriched_data), self._banner_hint())
             if changed_keys:
                 self.query_one("#preset-legend", Label).update(_preset_legend())
                 self.load_portfolio()

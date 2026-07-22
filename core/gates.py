@@ -7,11 +7,16 @@ branches no trade logic; wiring decides what to do with the verdicts (see the
 `gates_mode = off | advisory | blocking` flag in the pre-trade flow).
 
 NA is a first-class outcome: when a gate's inputs are absent (no earnings date, no
-ADV, no heat context), it returns NA and never blocks. Only an explicit FAIL blocks
+heat context), it returns NA and never blocks. Only an explicit FAIL blocks
 in `blocking` mode — so partial context degrades gracefully.
 
 Thresholds come from constants.py (Phase-1 config), so they can be tuned from the
 log without touching this logic.
+
+Deviations from the §4 spec (assessment review, 2026-07-04): G6 (liquidity) is a
+permanent NA stub — no ADV/slippage source feeds this single-user mega-cap book and
+none is worth building. G7 evaluates portfolio heat only — the spec's theme
+dimension is cut until themes exist somewhere in the app.
 """
 
 from dataclasses import dataclass
@@ -26,7 +31,6 @@ from constants import (
     GATE_G3_MOMO_VAL_STOP_PCT,
     GATE_G4_EVENT_DAYS,
     GATE_G5_MAX_EXTENSION_ATR,
-    GATE_G6_ADV_FRACTION,
     GATE_G7_HEAT_MULT,
 )
 
@@ -58,6 +62,12 @@ class ProposedTrade:
     multiplier: float = 1.0
     max_r_pct: float = 1.0                 # single-trade R% cap (for the heat cap)
 
+    # G1 threshold overrides (calibration lens): the 3-6mo profile widens the
+    # width caps (weekly ATR arm, ~18% pct cap) so blocking-grade advice never
+    # rejects its own correct wide stops. None -> the constants.py defaults.
+    g1_max_stop_atr: Optional[float] = None
+    g1_max_stop_pct: Optional[float] = None
+
     # scanner / structural context
     stop_source: str = ""
     flagged: Optional[bool] = None
@@ -70,14 +80,7 @@ class ProposedTrade:
     # extension (G5)
     trail_anchor: Optional[float] = None   # the anchor you'd trail from (30-wk MA / DMA / …)
 
-    # liquidity (G6)
-    adv: Optional[float] = None            # average daily volume, in shares
-    slippage_est: Optional[float] = None   # modeled slippage (same unit as budget)
-    slippage_budget: Optional[float] = None
-
     # heat (G7)
-    theme: str = ""
-    theme_heat_pct: Optional[float] = None       # existing Σ R% already on this theme (base ccy)
     portfolio_heat_pct: Optional[float] = None    # existing Σ R% on correlated names (base ccy)
 
     # currency (G8)
@@ -115,19 +118,21 @@ def g1_stop_width(trade: ProposedTrade) -> GateResult:
     name = "Stop-width"
     if trade.atr <= 0 or trade.entry <= 0 or r1(trade) <= 0:
         return GateResult("G1", name, NA, "Need entry, stop and ATR (with entry > stop).")
+    max_atr = trade.g1_max_stop_atr or GATE_G1_MAX_STOP_ATR
+    max_pct = trade.g1_max_stop_pct or GATE_G1_MAX_STOP_PCT
     width_atr = r1(trade) / trade.atr
     width_pct = r1(trade) / trade.entry
-    ok_atr = width_atr <= GATE_G1_MAX_STOP_ATR
-    ok_pct = width_pct <= GATE_G1_MAX_STOP_PCT
+    ok_atr = width_atr <= max_atr
+    ok_pct = width_pct <= max_pct
     if ok_atr and ok_pct:
         return GateResult("G1", name, PASS,
                           f"R₁ {width_atr:.2f}×ATR ({width_pct*100:.1f}% of price) within "
-                          f"{GATE_G1_MAX_STOP_ATR}×ATR / {GATE_G1_MAX_STOP_PCT*100:.0f}%.")
+                          f"{max_atr}×ATR / {max_pct*100:.0f}%.")
     parts = []
     if not ok_atr:
-        parts.append(f"{width_atr:.2f}×ATR > {GATE_G1_MAX_STOP_ATR}×")
+        parts.append(f"{width_atr:.2f}×ATR > {max_atr}×")
     if not ok_pct:
-        parts.append(f"{width_pct*100:.1f}% > {GATE_G1_MAX_STOP_PCT*100:.0f}%")
+        parts.append(f"{width_pct*100:.1f}% > {max_pct*100:.0f}%")
     return GateResult("G1", name, FAIL,
                       "Stop too wide (" + "; ".join(parts) + ") — wrong location or mid-air, not licence to risk more.")
 
@@ -186,42 +191,27 @@ def g5_extension(trade: ProposedTrade) -> GateResult:
 
 
 def g6_liquidity(trade: ProposedTrade) -> GateResult:
-    name = "Liquidity"
-    checks = []
-    failed = []
-    if trade.adv is not None and trade.adv > 0:
-        cap = GATE_G6_ADV_FRACTION * trade.adv
-        checks.append("ADV")
-        if trade.qty > cap:
-            failed.append(f"size {trade.qty:.0f} > {GATE_G6_ADV_FRACTION*100:.0f}% of ADV ({cap:.0f})")
-    if trade.slippage_est is not None and trade.slippage_budget is not None:
-        checks.append("slippage")
-        if trade.slippage_est > trade.slippage_budget:
-            failed.append(f"slippage {trade.slippage_est:g} > budget {trade.slippage_budget:g}")
-    if not checks:
-        return GateResult("G6", name, NA, "No ADV or slippage inputs supplied.")
-    if failed:
-        return GateResult("G6", name, FAIL, "; ".join(failed) + " — a stop you can't exit at is not a stop.")
-    return GateResult("G6", name, PASS, "Within ADV and slippage budget.")
+    """Permanent NA stub (cut). For a single-user book of a few mega-cap names,
+    ADV/slippage constraints are unreachable by orders of magnitude and no data
+    source feeds them. Kept for §4 symmetry; NA never blocks."""
+    return GateResult("G6", "Liquidity", NA, "Not evaluated — no liquidity data source (cut).")
 
 
-def g7_theme_heat(trade: ProposedTrade) -> GateResult:
-    name = "Theme/portfolio heat"
-    if trade.theme_heat_pct is None and trade.portfolio_heat_pct is None:
-        return GateResult("G7", name, NA, "No theme/portfolio heat context supplied.")
+def g7_portfolio_heat(trade: ProposedTrade) -> GateResult:
+    """Portfolio-heat half of the spec's G7. The theme dimension is cut until
+    themes exist somewhere in the app — nothing could ever supply it."""
+    name = "Portfolio heat"
+    if trade.portfolio_heat_pct is None:
+        return GateResult("G7", name, NA, "No portfolio heat context supplied.")
     add = r_pct(trade)
     if add is None:
         return GateResult("G7", name, NA, "Need NAV to compute this trade's R%.")
     cap = GATE_G7_HEAT_MULT * trade.max_r_pct
-    failed = []
-    if trade.theme_heat_pct is not None and (trade.theme_heat_pct + add) > cap:
-        failed.append(f"theme '{trade.theme or '?'}' → {trade.theme_heat_pct + add:.2f}% > {cap:.2f}%")
-    if trade.portfolio_heat_pct is not None and (trade.portfolio_heat_pct + add) > cap:
-        failed.append(f"correlated heat → {trade.portfolio_heat_pct + add:.2f}% > {cap:.2f}%")
-    if failed:
+    if (trade.portfolio_heat_pct + add) > cap:
         return GateResult("G7", name, FAIL,
-                          "; ".join(failed) + " — clustered one-view risk; count the theme, not the trade.")
-    return GateResult("G7", name, PASS, f"Adding {add:.2f}% keeps theme/correlated heat ≤ {cap:.2f}%.")
+                          f"Correlated heat → {trade.portfolio_heat_pct + add:.2f}% > {cap:.2f}% — "
+                          f"clustered one-view risk; count the cluster, not the trade.")
+    return GateResult("G7", name, PASS, f"Adding {add:.2f}% keeps correlated heat ≤ {cap:.2f}%.")
 
 
 def g8_currency(trade: ProposedTrade) -> GateResult:
@@ -243,7 +233,7 @@ def g8_currency(trade: ProposedTrade) -> GateResult:
 
 _GATES = (
     g1_stop_width, g2_basis_quality, g3_fallback_artifact, g4_event,
-    g5_extension, g6_liquidity, g7_theme_heat, g8_currency,
+    g5_extension, g6_liquidity, g7_portfolio_heat, g8_currency,
 )
 
 

@@ -8,6 +8,7 @@ from core.zone_scan import (
     _nearest_support,
     _micro_support,
     _breakout_gap_floor,
+    _independent_count,
     scan_ticker,
     build_zone_report,
 )
@@ -180,6 +181,34 @@ def test_size_monotonic_across_presets():
     r = scan_ticker(df, 1_000_000, PRESETS, current_price=100.0)
     s, b, l = (r["sizes"][k]["qty"] for k in ("S", "B", "L"))
     assert s <= b <= l  # larger preset -> at least as many shares
+
+
+def test_independent_count_collapses_coincident_levels():
+    """§4a minimum form: VAL and POC landing on the same bucket are ONE signal
+    counted twice, not two independent walls. The eps band is 0.05 x ATR."""
+    sig = lambda v: {"value": v}
+    assert _independent_count([sig(100.0), sig(100.0)], atr=2.0) == 1     # identical (VAL==POC)
+    assert _independent_count([sig(100.0), sig(100.05)], atr=2.0) == 1    # inside 0.1 band
+    assert _independent_count([sig(100.0), sig(101.0)], atr=2.0) == 2     # clearly separate
+    assert _independent_count([sig(100.0), sig(100.05), sig(101.0)], atr=2.0) == 2
+    assert _independent_count([], atr=2.0) == 0
+
+
+def test_build_report_surfaces_insufficient_data():
+    """A ticker too young for the scan window must appear as a stub row, not
+    silently vanish from the report."""
+    thin = _sine_ohlcv(n=5)
+    good = _sine_ohlcv(n=300, center=100.0)
+    universe = [
+        {"ticker": "IPO", "price": 100.0, "_df": thin},
+        {"ticker": "HIT", "price": 100.0, "_df": good},
+    ]
+    out = build_zone_report(universe, lambda item: item["_df"], 1_000_000, PRESETS)
+    assert [r["ticker"] for r in out] == ["HIT", "IPO"]   # stub sorts to the bottom
+    stub = out[1]
+    assert stub["insufficient_data"] is True
+    assert stub["flagged"] is False and stub["entry_signals"] == []
+    assert stub["n_bars"] == 5
 
 
 def test_build_report_sorts_flagged_first():

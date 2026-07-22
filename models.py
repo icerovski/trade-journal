@@ -38,6 +38,10 @@ class ATRDiscoveryRow:
     buffer_pct: float
     pl_pct_nav: float
     qty: float = 0.0
+    # True when history was too thin for the timeframe's full ATR window: the value
+    # was computed on a shrunken window and keeps its label only nominally. Never
+    # freeze such a value as a position's inception R unit.
+    window_shrunk: bool = False
 
 @dataclass
 class RiskProfile:
@@ -61,7 +65,8 @@ class RiskProfile:
     profile: Optional[str] = None
     tp_atr_mult: Optional[float] = None  # TP override as a multiple of inception ATR; None = default 3R
     classification: Optional[str] = None  # THESIS / TECHNICAL / None (unset). Carried only — no exit branching.
-    exit_shape: Optional[str] = None      # §5a exit shape (None/LADDER = default ladder; HARD/RUNNER/THESIS)
+    exit_shape: Optional[str] = None      # §5a exit shape (None/LADDER = default ladder; HARD/THESIS; RUNNER = legacy alias)
+    ccy: Optional[str] = None             # pricing currency of a WATCH prospect (from yfinance at add time); None = unknown (assume USD)
 
     @classmethod
     def from_row(cls, row) -> "RiskProfile":

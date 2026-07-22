@@ -97,10 +97,16 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN classification TEXT")
     except Exception: pass
-    # Exit shape (§5a): NULL/LADDER = today's default ladder; HARD / RUNNER / THESIS.
+    # Exit shape (§5a): NULL/LADDER = today's default ladder; HARD / THESIS (RUNNER = legacy alias).
     # See core/exit_shapes.py. Default reproduces current exit behaviour exactly.
     try:
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN exit_shape TEXT")
+    except Exception: pass
+    # Pricing currency of a WATCH prospect, resolved from yfinance at add time.
+    # NULL = unknown (legacy rows) — consumers fall back to USD, the pre-existing guess.
+    # Needed so prospect sizing borrows the RIGHT ccy->NAV fx rate (fix 2026-07-04).
+    try:
+        cursor.execute("ALTER TABLE risk_profiles ADD COLUMN ccy TEXT")
     except Exception: pass
 
     # Migration: Tag existing positions that matched old preset definitions, and update
@@ -213,6 +219,23 @@ def init_db():
         except Exception:
             pass
 
+    # Structural context from the latest zone scan, per ticker (Entry & Stop §4).
+    # Written by the zone-scanner workspace after each scan; read by the risk
+    # workspace's gate check (freshness-guarded) so G2/G3/G5 get real inputs.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scan_context (
+            ticker TEXT PRIMARY KEY,
+            scan_date TEXT,
+            regime TEXT,
+            flagged INTEGER,
+            confluence_count INTEGER,
+            stop_source TEXT,
+            stop_price REAL,
+            trail_anchor REAL,
+            tag TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -228,7 +251,7 @@ def wipe_trades_only():
 # for callers that don't manage it) from an explicit None ("clear the override → default 3R").
 _KEEP = object()
 
-def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP, classification=_KEEP, exit_shape=_KEEP):
+def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=False, entry_type='SINGLE', scale_step=0.5, status='ACTIVE', max_r_pct=1.0, max_exp_pct=5.0, inception_stop=None, inception_atr=None, profile=None, tp_atr_mult=_KEEP, classification=_KEEP, exit_shape=_KEEP, ccy=None):
     """Saves or updates a risk profile (ACTIVE or WATCH) for a conid.
 
     tp_atr_mult: take-profit override as a multiple of the inception ATR. Pass a number to
@@ -238,8 +261,12 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
     classification: THESIS / TECHNICAL tag (§0a). Pass a string to set it, "" or None to clear
     it (unset), or omit it (_KEEP) to leave the stored value untouched. Write-many.
 
-    exit_shape: §5a exit shape (HARD / RUNNER / THESIS; "" or None → default ladder). Pass a
-    string to set it, "" / None to clear (default), or omit it (_KEEP) to leave untouched. Write-many.
+    exit_shape: §5a exit shape (HARD / THESIS; RUNNER = legacy alias of the default; "" or None
+    → default ladder). Pass a string to set it, "" / None to clear (default), or omit it
+    (_KEEP) to leave untouched. Write-many.
+
+    ccy: pricing currency of a WATCH prospect (e.g. from yfinance at add time). Pass a string
+    to set it; None leaves the stored value untouched (legacy rows stay NULL → USD assumed).
     """
     conn = get_conn()
     conid = str(conid)
@@ -280,6 +307,12 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
             sql += ", exit_shape = ?"
             params.append(exit_shape or None)
 
+        # Pricing currency: set only when the caller resolved one (never clears).
+        # Case preserved — 'GBp' (pence) must not become 'GBP' (pounds).
+        if ccy is not None:
+            sql += ", ccy = ?"
+            params.append(str(ccy).strip())
+
         if reset_sl:
             sql += ", highest_sl = 0.0"
         sql += " WHERE id = ?"
@@ -292,11 +325,12 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
         i_tp = float(tp_atr_mult) if (tp_atr_mult is not _KEEP and tp_atr_mult is not None) else None
         i_class = classification or None if classification is not _KEEP else None
         i_shape = exit_shape or None if exit_shape is not _KEEP else None
+        i_ccy = str(ccy).strip() if ccy else None  # case preserved: 'GBp' != 'GBP'
 
         conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape))
+            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape, ccy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape, i_ccy))
 
     conn.commit()
     conn.close()
@@ -576,6 +610,86 @@ def get_trades_for_conid(conid):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def save_scan_context(rows):
+    """Persist per-ticker structural context from a zone scan (§4 gate inputs):
+    regime, flagged, independent confluence count, stop_source/price, DMA trail
+    anchor. REPLACE per ticker — the latest scan wins; consumers apply their own
+    freshness window via get_scan_context(max_age_days)."""
+    from datetime import date
+    today = date.today().isoformat()
+    conn = get_conn()
+    for r in rows:
+        ticker = (r.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        conn.execute(
+            "REPLACE INTO scan_context (ticker, scan_date, regime, flagged, confluence_count, "
+            "stop_source, stop_price, trail_anchor, tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, today, r.get("regime") or "",
+             (1 if r.get("flagged") else 0) if r.get("flagged") is not None else None,
+             r.get("confluence_count"), r.get("stop_source") or "",
+             r.get("stop_price"), r.get("trail_anchor"), r.get("tag") or ""),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_scan_context(ticker, max_age_days=None):
+    """Latest scan context for a ticker as a dict, or None when absent or older
+    than `max_age_days` (stale structure must degrade gates to NA, not misfire)."""
+    from datetime import date
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM scan_context WHERE ticker = ?", ((ticker or "").upper(),)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    ctx = dict(row)
+    if max_age_days is not None:
+        try:
+            age = (date.today() - date.fromisoformat(ctx.get("scan_date") or "")).days
+        except ValueError:
+            return None
+        if age > max_age_days:
+            return None
+    if ctx.get("flagged") is not None:
+        ctx["flagged"] = bool(ctx["flagged"])
+    return ctx
+
+
+def avg_sell_price_since(conid, since_date):
+    """Qty-weighted average SELL price for a conid since a date — the realized
+    exit basis for §7 backfill suggestions. None when no sells exist yet."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT SUM(quantity * price) / SUM(quantity) AS avg_px FROM trades "
+        "WHERE conid = ? AND side = 'SELL' AND quantity > 0 AND date >= ?",
+        (str(conid), since_date or ""),
+    ).fetchone()
+    conn.close()
+    return float(row["avg_px"]) if row and row["avg_px"] is not None else None
+
+
+def find_open_trade_log_id(conid):
+    """Id of the most recent OPEN decision row for a conid — a TAKEN entry whose
+    outcome has not been backfilled (realized_r IS NULL). One decision, one row:
+    re-committing the same open lot must UPDATE this row, not append a duplicate
+    that would double-count the lot in the expectancy report. Returns None when
+    the last decision was closed out (a fresh lot starts a fresh row)."""
+    if conid is None:
+        return None
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id FROM trade_log WHERE conid = ? AND status = ? AND realized_r IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (str(conid), "TAKEN"),
+    ).fetchone()
+    conn.close()
+    return row["id"] if row else None
+
 
 def update_trade_log_entry(entry_id, **fields):
     """Backfill/patch a decision-journal row (e.g. realized R, MAE/MFE at exit).

@@ -62,7 +62,7 @@ def test_low_rr_does_not_force_exit_fixed_tp_normal():
     rec = _rec('TP', 'NORMAL', rr=0.5, cur_p=112.0, tp=115.0)
     assert rec['verb'] == 'TRIM'
     assert rec['pct'] == pytest.approx(0.33)
-    assert rec['urgent'] is False
+    assert 'urgent' not in rec  # the RR-exit urgency axis was removed outright
 
 
 def test_low_rr_ranging_tp_is_matrix_full_exit():

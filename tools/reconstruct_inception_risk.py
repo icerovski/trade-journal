@@ -6,12 +6,14 @@ from core.portfolio_manager import PortfolioManager
 from logger import logger
 
 def calculate_wilder_atr(df, window=12):
-    if len(df) < 2:
+    """Wilder ATR over the full `window`, or 0.0 when history cannot fill it.
+    A shrunken-window value keeps the timeframe label only nominally and must never
+    be frozen as an inception R unit (same invariant as ATRDiscoveryRow.window_shrunk)."""
+    if len(df) - 1 < window:
         return 0.0
-    
-    # Adaptive Window for short history
-    actual_window = min(window, len(df) - 1)
-    
+
+    actual_window = window
+
     df = df.copy()
     df['PrevClose'] = df['Close'].shift(1)
     df['TR'] = np.maximum(df['High'] - df['Low'], 
@@ -76,8 +78,8 @@ def heal_inception_anchors():
             yf_ticker = pm.mapper.resolve_yf_ticker(ticker, conid=conid)
             hist = yf.Ticker(yf_ticker).history(start=start_search, end=end_search, interval="3mo")
             
-            if len(hist) < 2:
-                logger.warning(f"Insufficient history for {ticker}. Falling back to 12w ATR.")
+            if len(hist) < 13:  # needs window+1 quarterly bars for a full 12q ATR
+                logger.warning(f"Insufficient quarterly history for {ticker}. Falling back to 12w ATR.")
                 hist = yf.Ticker(yf_ticker).history(start=entry_date - pd.DateOffset(weeks=20), end=end_search, interval="1wk")
 
             if hist.empty:
@@ -86,6 +88,10 @@ def heal_inception_anchors():
 
             # 4. Calculate ATR at that point in time
             i_atr = calculate_wilder_atr(hist, window=12)
+            if i_atr <= 0:
+                logger.warning(f"Skipping {ticker}: history too thin for a full-window ATR — "
+                               f"never freeze a shrunken-window value as the inception R unit.")
+                continue
             i_stop = entry_price - i_atr
             
             # 5. Commit to DB

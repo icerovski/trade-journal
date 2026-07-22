@@ -4,7 +4,7 @@ How to enter a stop-loss / sizing command in the Risk Workspace. The input box a
 one command of the form:
 
 ```
-VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [TP:n]  [C:TH/TE]  [X:H/R/T]  [G:gap]  [SRC:name]  [THM:theme]  [+N/-N]  [BE]
+VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [TP:n]  [C:TH/TE]  [G:gap]  [X:H/T]  [SRC:name]  [THM:theme]  [+N/-N]  [BE]
 ```
 
 Tokens can appear in any order. Only the parts you want to change are required —
@@ -81,9 +81,11 @@ tighten the stop. M1/M2 always stay at +1R / +2R.
 |---|---|
 | `TP:4` / `TP:4R` | entry + 4×inception ATR (the R is optional) |
 | `TP:+35%` | entry +35% → multiple = (entry×35%)/ATR |
-| `TP:$60K` | total open profit = $60,000 (needs share count) |
 | `TP:3:1` | auto N:1 forward reward:risk vs the stop you're setting |
 | `TP:-` | clears the override → back to default 3R |
+
+*(The absolute-$ form `TP:$60K` was removed — `TP:nR` and `TP:N:1` carry the real use
+cases. A `$`/`K` token is rejected with a warning.)*
 
 **`TP:N:1` — anchor the target to the stop.** Sets `target = price + N×(price − stop)`. It
 reads the stop from the *same* command, so `@655 T TP:3:1` locks a 655 floor and puts the
@@ -121,8 +123,10 @@ technical wobble that never invalidated the thesis.
 
 The tag is **carried and displayed** (a chip shows while you draft, and a classified commit
 writes a row to the decision journal for the expectancy report) — it does **not** itself
-change the stop or exit. To make a THESIS trade actually exit on thesis-only, pair it with
-`X:T` (below).
+change the stop. As a convenience, **`C:TH` auto-applies the thesis exit** (`X:T`, below) when
+you have not typed an explicit `X:` and the position is still on the default ladder — so a
+fundamental hold carries no guessed-at-entry target. Type `X:L` or `X:H` on the same commit
+to override.
 
 ```
 C:TH           → tag this position THESIS (fundamental clock)

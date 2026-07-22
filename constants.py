@@ -75,6 +75,12 @@ ZONE_CONFLUENCE_PCT = 0.025
 # for the scanner to flag an entry zone (the brief's "2 or more align").
 ZONE_MIN_CONFLUENCE = 2
 
+# Independence check (Entry & Stop System §4a, minimum viable form): entry signals
+# whose level values sit within this many ATRs of EACH OTHER are one signal counted
+# twice (e.g. VAL and POC landing on the same volume-profile bucket), not two
+# independent walls. Only the flag decision dedups; the signal list stays complete.
+ZONE_DEDUP_EPS_ATR = 0.05
+
 # Momentum-regime stop tiering. When price runs more than MOMENTUM_VAL_PREMIUM_PCT
 # above the 6-month VAL, the 6mo support is too far for a momentum-flag entry
 # (a 20%+ stop). The scanner switches to a micro-structure stop built from the
@@ -177,9 +183,15 @@ GATE_G3_MOMO_VAL_STOP_PCT = 0.10
 GATE_G4_EVENT_DAYS = 5
 # G5 Extension: don't initiate if price is > this many ATRs above the trail anchor.
 GATE_G5_MAX_EXTENSION_ATR = 2.0
-# G6 Liquidity: size ≤ this fraction of ADV (placeholder default — tune per book).
-GATE_G6_ADV_FRACTION = 0.10
-# G7 Theme/portfolio heat cap = this multiple of the single-trade R% cap.
+# G1 pct cap under the 3-6mo calibration lens (Horizon_Calibration §4: wider
+# weekly-structure stops are correct there — the daily 8% cap would reject them).
+GATE_G1_MAX_STOP_PCT_3TO6MO = 0.18
+# Zone-scan structural context (stop_source/flagged/confluence/regime) feeds the
+# gates only while fresh; older structure degrades to NA (never blocks).
+GATE_CONTEXT_MAX_AGE_DAYS = 7
+# G6 Liquidity: cut — permanent NA stub in core/gates.py, no constants.
+# G7 Portfolio-heat cap = this multiple of the single-trade R% cap.
+# (The spec's theme dimension is cut until themes exist somewhere in the app.)
 GATE_G7_HEAT_MULT = 3.0
 
 # --- Expectancy (Entry & Stop System §5) ------------------------------------
@@ -200,3 +212,7 @@ CAL_3TO6MO_CONFLUENCE_PCT = 0.05    # wider band (~0.5 × weekly ATR) than the d
 CAL_3TO6MO_STOP_BUFFER_PCT_BAND = (0.03, 0.07)   # buffer beneath the anchor, % of price
 CAL_3TO6MO_STOP_WIDTH_PCT_BAND = (0.10, 0.18)    # total entry→stop width, % of price
 CAL_3TO6MO_EXTENSION_ATR_MAX = 2.0  # G5: not > 2 × (weekly) ATR above the 30-week MA
+# §1a staleness: daily ATR normally sits near 1/√5 ≈ 0.45 of the weekly ATR. When
+# the 14d ATR exceeds this fraction of the 12w ATR, short-term volatility is far
+# outside the weekly baseline — the structure the 3–6mo stops lean on is stale.
+CAL_ATR_STALENESS_RATIO = 0.7

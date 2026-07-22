@@ -263,7 +263,7 @@ def _resample_ohlcv(df_daily: pd.DataFrame, rule: str) -> pd.DataFrame:
 
 def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_price,
                       multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
-                      price_service, df_prospect_daily=None):
+                      price_service, df_prospect_daily=None, fx_rate=1.0):
     """Computes ATRDiscoveryRow objects for all timeframes and stop types."""
     intervals = ATR_DISCOVERY_INTERVALS
     results = []
@@ -296,9 +296,11 @@ def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_pric
             calc_qty = qty
             if calc_qty == 0 and total_nav > 0:
                 calc_qty = compute_position_size(
-                    total_nav, effective_entry, stop_price, inst_multiplier, max_r_pct, max_exp_pct
+                    total_nav, effective_entry, stop_price, inst_multiplier, max_r_pct, max_exp_pct,
+                    fx_rate=fx_rate,
                 )
 
+            # Local (asset-ccy) risk; converted by fx_rate only where it meets NAV.
             risk_amt = (effective_entry - stop_price) * calc_qty * inst_multiplier
             results.append(ATRDiscoveryRow(
                 label=label,
@@ -309,23 +311,45 @@ def _compute_atr_rows(yf_ticker, conid, effective_entry, max_price, current_pric
                 atr_base_pct=atr_pct,
                 pl_at_stop=(stop_price - effective_entry) * calc_qty * inst_multiplier,
                 buffer_pct=((current_price - stop_price) / current_price * 100) if current_price > 0 else 0,
-                pl_pct_nav=(risk_amt / total_nav * 100) if total_nav > 0 else 0,
+                pl_pct_nav=(risk_amt * fx_rate / total_nav * 100) if total_nav > 0 else 0,
                 qty=calc_qty,
+                window_shrunk=actual_window < window,
             ))
 
     return results
+
+
+def snap_inception_atr(rows, risk_dist):
+    """Nearest trustworthy discovery ATR to the risk distance (entry − stop), deduped
+    by timeframe label. Rows whose ATR window was shrunken by thin history are
+    excluded — a '12q' value from 3 quarterly bars is not a quarterly ATR and must
+    never be frozen as a position's inception R unit.
+
+    Single source of the FIXED-stop snap rule: the live commit path
+    (ui/risk_workspace.py) and the retroactive migration tool
+    (tools/migrate_fixed_inception_atr.py) both call this so they cannot diverge.
+    Returns (atr, label), or (None, None) when nothing trustworthy remains.
+    """
+    choices = {r.label: r.atr_wilder for r in (rows or []) if not r.window_shrunk}
+    if not choices or risk_dist <= 0:
+        return None, None
+    label = min(choices, key=lambda k: abs(choices[k] - risk_dist))
+    return choices[label], label
 
 
 def get_atr_discovery_data(
     ticker_symbol, entry_date_str, entry_price, multiplier=1.0, conid=None,
     qty=0.0, inst_multiplier=1.0, total_nav=0.0, max_r_pct=1.0,
     max_exp_pct=5.0, mapper=None, max_since_entry: float = 0.0,
+    fx_rate: float = 1.0,
 ):
     """
     Returns ATR analysis data for both FIXED and TRAILING stop types across all timeframes.
     Pass mapper= to avoid a redundant PortfolioManager instantiation when the caller already holds one.
     Pass max_since_entry= (from position enrichment) to ensure the TRAILING base matches the
     portfolio risk status, which uses max(prices.db high, live intraday price).
+    Pass fx_rate= (asset ccy -> NAV ccy) so prospect sizing and pl_pct_nav are risked
+    against the real base-currency budget; 1.0 = same currency.
     """
     try:
         if mapper is None:
@@ -345,7 +369,7 @@ def get_atr_discovery_data(
         rows = _compute_atr_rows(
             yf_ticker, conid, effective_entry, max_price, current_price,
             multiplier, inst_multiplier, qty, total_nav, max_r_pct, max_exp_pct,
-            price_service, df_prospect_daily=df_prospect_daily,
+            price_service, df_prospect_daily=df_prospect_daily, fx_rate=fx_rate,
         )
 
         trend_data = price_service.get_trend_analysis(

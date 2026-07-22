@@ -21,7 +21,7 @@ from core.gates import (
     g4_event,
     g5_extension,
     g6_liquidity,
-    g7_theme_heat,
+    g7_portfolio_heat,
     g8_currency,
     PASS,
     FAIL,
@@ -50,6 +50,23 @@ def test_g1_fail_too_wide_in_pct():
 
 def test_g1_na_without_atr():
     assert g1_stop_width(ProposedTrade(entry=100.0, stop=97.0, atr=0.0)).status == NA
+
+
+def test_g1_lens_overrides_widen_caps():
+    """3–6mo lens (Horizon_Calibration §4): wider weekly-structure stops are
+    correct there — the overrides must widen exactly the arm they target."""
+    # 15% stop, 1.25×ATR: fails the daily 8% cap, passes the lens 18% cap.
+    t = ProposedTrade(entry=100.0, stop=85.0, atr=12.0)
+    assert g1_stop_width(t).status == FAIL
+    t2 = ProposedTrade(entry=100.0, stop=85.0, atr=12.0, g1_max_stop_pct=0.18)
+    assert g1_stop_width(t2).status == PASS
+    # The ×ATR arm still binds independently (1.875× > 1.5×)…
+    t3 = ProposedTrade(entry=100.0, stop=85.0, atr=8.0, g1_max_stop_pct=0.18)
+    assert g1_stop_width(t3).status == FAIL
+    # …unless its own override widens it too.
+    t4 = ProposedTrade(entry=100.0, stop=85.0, atr=8.0,
+                       g1_max_stop_pct=0.18, g1_max_stop_atr=2.0)
+    assert g1_stop_width(t4).status == PASS
 
 
 # --- G2 basis quality ------------------------------------------------------
@@ -120,42 +137,35 @@ def test_g5_na_without_anchor():
     assert g5_extension(ProposedTrade(entry=115.0, atr=10.0)).status == NA
 
 
-# --- G6 liquidity ----------------------------------------------------------
-def test_g6_fail_size_over_adv():
-    t = ProposedTrade(qty=2000.0, adv=10000.0)  # 20% > 10% of ADV
-    assert g6_liquidity(t).status == FAIL
+# --- G6 liquidity (cut — permanent NA stub) ---------------------------------
+def test_g6_is_always_na_and_never_blocks():
+    """G6 was cut: no liquidity data source. It must be NA for any trade, so it
+    can never block a commit in blocking mode."""
+    assert g6_liquidity(ProposedTrade()).status == NA
+    assert g6_liquidity(ProposedTrade(qty=2_000_000.0, entry=100.0, stop=90.0)).status == NA
 
 
-def test_g6_fail_slippage_over_budget():
-    t = ProposedTrade(qty=100.0, adv=10000.0, slippage_est=0.5, slippage_budget=0.2)
-    assert g6_liquidity(t).status == FAIL
-
-
-def test_g6_pass_within_limits():
-    t = ProposedTrade(qty=500.0, adv=100000.0, slippage_est=0.1, slippage_budget=0.3)
-    assert g6_liquidity(t).status == PASS
-
-
-def test_g6_na_without_inputs():
-    assert g6_liquidity(ProposedTrade(qty=500.0)).status == NA
-
-
-# --- G7 theme/portfolio heat ----------------------------------------------
-def test_g7_fail_theme_over_cap():
-    # cap = 3 × 1.0 = 3.0%. Adding ~1% R on top of 2.5% theme heat -> > 3%.
+# --- G7 portfolio heat (theme dimension cut) --------------------------------
+def test_g7_fail_portfolio_heat_over_cap():
+    # cap = 3 × 1.0 = 3.0%. Adding ~1% R on top of 2.5% correlated heat -> > 3%.
     t = ProposedTrade(entry=100.0, stop=90.0, qty=100.0, nav=100000.0, max_r_pct=1.0,
-                      theme="AI", theme_heat_pct=2.5)
-    assert g7_theme_heat(t).status == FAIL
+                      portfolio_heat_pct=2.5)
+    assert g7_portfolio_heat(t).status == FAIL
 
 
 def test_g7_pass_within_cap():
     t = ProposedTrade(entry=100.0, stop=99.0, qty=100.0, nav=1_000_000.0, max_r_pct=1.0,
-                      theme="AI", theme_heat_pct=0.5)
-    assert g7_theme_heat(t).status == PASS
+                      portfolio_heat_pct=0.5)
+    assert g7_portfolio_heat(t).status == PASS
 
 
 def test_g7_na_without_context():
-    assert g7_theme_heat(ProposedTrade(entry=100.0, stop=90.0, nav=100000.0)).status == NA
+    assert g7_portfolio_heat(ProposedTrade(entry=100.0, stop=90.0, nav=100000.0)).status == NA
+
+
+def test_g7_na_without_nav():
+    assert g7_portfolio_heat(ProposedTrade(entry=100.0, stop=90.0, qty=100.0,
+                                           portfolio_heat_pct=1.0)).status == NA
 
 
 # --- G8 currency -----------------------------------------------------------

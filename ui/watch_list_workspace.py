@@ -11,6 +11,7 @@ from textual import on, work
 from core.portfolio_manager import PortfolioManager
 from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
 from core.trade_log import TradeLogEntry, STATUS_SKIPPED
+from services.market_data_service import fetch_ticker_currency
 from db import get_all_monitored_profiles, delete_risk_profile, set_position_risk, get_presets, add_trade_log_entry
 from logger import logger, suppress_console_logging
 from .chart_utils import launch_price_chart
@@ -480,17 +481,33 @@ class WatchListWorkspace(App):
                 if row is None:
                     self.post_message(self.ProspectAdded(symbol, False, f"No daily ATR available for {symbol}."))
                     return
+                if row.window_shrunk:
+                    # Thin history: the '14d' ATR was computed on a shrunken window and
+                    # would be frozen as the profile's stop distance AND inception R
+                    # unit. Never auto-profile off that — add manually once there is
+                    # enough history (≥15 daily bars) or set a stop by hand in the
+                    # Risk Workspace.
+                    self.post_message(self.ProspectAdded(
+                        symbol, False,
+                        f"{symbol} has too little price history for a trustworthy daily ATR — "
+                        f"auto-profile skipped. Set a manual stop via the Risk Workspace instead."))
+                    return
 
                 presets = get_presets() or {}
                 base = presets.get('B', {})
                 max_r = base.get('max_r_pct', 0.60)
                 max_exp = base.get('max_exp_pct', 3.0)
 
+                # Real pricing currency (one metadata call) so prospect sizing can
+                # borrow the RIGHT ccy->NAV fx rate later; None leaves the column
+                # NULL (consumers assume USD, the legacy behaviour).
+                ccy = fetch_ticker_currency(self.pm.mapper.resolve_yf_ticker(symbol))
+
                 set_position_risk(
                     f"PROSPECT:{symbol}", symbol, row.atr_wilder, "TRAILING",
                     status="WATCH", max_r_pct=max_r, max_exp_pct=max_exp,
                     inception_stop=row.stop_price, inception_atr=row.atr_wilder,
-                    profile="B", reset_sl=True,
+                    profile="B", reset_sl=True, ccy=ccy,
                 )
             self.post_message(self.ProspectAdded(symbol, True, f"Added {symbol} to the watch list (TRAILING / Base)."))
         except Exception as e:

@@ -1,26 +1,122 @@
-"""Expectancy Report (menu option 9) — read-only view over the decision journal.
+"""Expectancy Report (menu option 9) — the decision journal's front door.
 
 Renders per-archetype expectancy, source-vs-benchmark funnel stats, and base-currency
-totals from `trade_log`. Display-only: it never writes and never touches the trade
-flow. Mirrors the rich-console style of ui/portfolio_risk.py.
+totals from `trade_log`, then offers the §7 capture loop: backfill realized R on
+closed lots (ledger-suggested, user-confirmed) and log skipped source picks. These
+are the only journal writes here — the report itself stays a pure read. Mirrors the
+rich-console style of ui/portfolio_risk.py.
 """
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+from datetime import date
 
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
 
-from db import get_trade_log_entries
-from core.expectancy import build_expectancy_report
+from db import (
+    get_trade_log_entries,
+    update_trade_log_entry,
+    add_trade_log_entry,
+    avg_sell_price_since,
+)
+from core.expectancy import build_expectancy_report, suggest_realized_r
+from core.trade_log import TradeLogEntry, STATUS_TAKEN, STATUS_SKIPPED
 
 console = Console()
 
 
 def _r_str(value, suffix="R", none="---"):
     return f"{value:+.2f}{suffix}" if value is not None else none
+
+
+def _closed_lots_awaiting_backfill():
+    """Open journal rows (TAKEN, realized_r NULL) whose position is no longer
+    open — the lot closed, the decision's outcome is measurable."""
+    pending = [e for e in get_trade_log_entries(status=STATUS_TAKEN)
+               if e.realized_r is None and e.conid]
+    if not pending:
+        return []
+    from core.portfolio_manager import PortfolioManager
+    try:
+        open_conids = {str(p.conid) for p in PortfolioManager().get_open_positions_hybrid()}
+    except Exception as e:
+        console.print(f"[red]Could not load open positions ({e}) — backfill unavailable.[/red]")
+        return []
+    return [e for e in pending if str(e.conid) not in open_conids]
+
+
+def _backfill_closed_lots():
+    """§7 realized-R backfill: suggest (avg ledger SELL − entry) / R₁ per closed
+    lot; the user confirms, overrides, or skips. Never writes unconfirmed."""
+    lots = _closed_lots_awaiting_backfill()
+    if not lots:
+        console.print("[dim]No closed lots awaiting backfill.[/dim]")
+        return
+    for e in lots:
+        avg_exit = avg_sell_price_since(e.conid, e.date)
+        sug = suggest_realized_r(e.entry, e.stop, avg_exit)
+        geo = f"entry {e.entry:,.2f} / stop {e.stop:,.2f}" if e.entry and e.stop else "geometry incomplete"
+        if sug is not None:
+            console.print(f"\n[bold]{e.ticker}[/] ({e.date}, {geo}) — avg exit {avg_exit:,.2f} "
+                          f"→ suggested realized R [bold]{sug:+.2f}[/]")
+        else:
+            console.print(f"\n[bold]{e.ticker}[/] ({e.date}, {geo}) — no ledger suggestion; enter manually.")
+        raw = input("  realized R [Enter=accept suggestion / value / s=skip]: ").strip().lower()
+        if raw == "s" or (raw == "" and sug is None):
+            continue
+        try:
+            val = sug if raw == "" else float(raw)
+        except ValueError:
+            console.print("  [red]Not a number — skipped.[/red]")
+            continue
+        update_trade_log_entry(e.id, realized_r=round(val, 4))
+        console.print(f"  [green]Saved: {e.ticker} realized R {val:+.2f}[/green]")
+
+
+def _log_skipped_pick():
+    """§0a: log a source pick that was NOT taken, so the funnel itself can be
+    benchmarked. Entry price auto-resolved when Yahoo cooperates."""
+    ticker = input("  Ticker: ").strip().upper()
+    if not ticker:
+        console.print("  [yellow]No ticker — cancelled.[/yellow]")
+        return
+    source = input("  Source [Stansberry]: ").strip() or "Stansberry"
+    note = input("  Note (optional): ").strip()
+    price = None
+    try:
+        from core.portfolio_manager import PortfolioManager
+        from services.market_data_service import silence_yfinance
+        import yfinance as yf
+        yf_t = PortfolioManager().mapper.resolve_yf_ticker(ticker)
+        with silence_yfinance():
+            price = float(yf.Ticker(yf_t).fast_info["last_price"])
+    except Exception:
+        price = None
+    add_trade_log_entry(TradeLogEntry(
+        date=date.today().isoformat(), ticker=ticker, status=STATUS_SKIPPED,
+        source=source, entry=price, notes=note,
+    ))
+    px = f"@ {price:,.2f}" if price else "(no price resolved)"
+    console.print(f"  [green]Logged skipped pick: {ticker} from {source} {px}[/green]")
+
+
+def _journal_actions(n_pending: int):
+    """§7 capture loop — the only journal writes in this view."""
+    while True:
+        hint = f"  [yellow][B] backfill {n_pending} closed lot(s)[/yellow]" if n_pending else "  [dim][B] backfill closed lots[/dim]"
+        console.print(f"\n{hint}  [dim][K] log skipped pick   [Enter] back to menu[/dim]")
+        choice = input("Choice: ").strip().lower()
+        if choice == "b":
+            _backfill_closed_lots()
+            n_pending = len(_closed_lots_awaiting_backfill())
+        elif choice == "k":
+            _log_skipped_pick()
+        else:
+            return
 
 
 def run_expectancy_report():
@@ -36,10 +132,10 @@ def run_expectancy_report():
 
     if report["n_entries"] == 0:
         console.print(
-            "\n[yellow]The trade log is empty.[/yellow] Log trades (and skipped picks) "
-            "from the Risk Workspace to build expectancy — see §7."
+            "\n[yellow]The trade log is empty.[/yellow] Tag commits with C: in the Risk "
+            "Workspace, and log skipped picks here ([K] below) to build expectancy — see §7."
         )
-        input("\nPress Enter to return to menu...")
+        _journal_actions(0)
         return
 
     threshold = report["threshold_r"]
@@ -110,4 +206,4 @@ def run_expectancy_report():
             f"total [bold]{b.total_return_base:,.0f}[/] over {b.n} closed  (avg {avg})"
         )
 
-    input("\nPress Enter to return to menu...")
+    _journal_actions(len(_closed_lots_awaiting_backfill()))

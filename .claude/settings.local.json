@@ -26,7 +26,11 @@
       "Bash(grep -iv \"milestone\\\\|logging error\\\\|charmap\\\\|codecs\\\\|unicodeencode\\\\|call stack\\\\|frozen\\\\|exec_module\\\\|_call_with\\\\|_find_and\\\\|_load\\\\|stream.write\\\\|~~~\\\\|\\\\.py\\\\\", line\\\\|message:\\\\|arguments:\\\\|enrich_regime\\\\|^---$\\\\|traceback\")",
       "Bash(git reset *)",
       "Bash(git log *)",
-      "PowerShell(uv run *)"
+      "PowerShell(uv run *)",
+      "PowerShell(git status*)",
+      "PowerShell(git diff*)",
+      "PowerShell(git log*)",
+      "PowerShell(git *)"
     ]
   }
 }

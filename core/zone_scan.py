@@ -29,6 +29,7 @@ from constants import (
     TRADING_DAYS_PER_MONTH,
     VP_LOOKBACKS_MONTHS,
     ZONE_CONFLUENCE_PCT,
+    ZONE_DEDUP_EPS_ATR,
     ZONE_MIN_CONFLUENCE,
 )
 from core.anchored_vwap import anchored_vwap, compute_anchored_vwaps
@@ -187,6 +188,22 @@ def _micro_support(
     return stop, name
 
 
+def _independent_count(signals, atr: float, eps_atr: float = ZONE_DEDUP_EPS_ATR) -> int:
+    """Number of INDEPENDENT price levels among entry signals (§4a, minimum viable
+    form). Levels within `eps_atr` x ATR of each other are one signal counted twice
+    — e.g. VAL and POC landing on the same volume-profile bucket after a
+    consolidation — not two independent walls. Only the flag decision uses this;
+    the full signal list is untouched for display."""
+    if atr <= 0:
+        return len(signals)
+    count, last = 0, None
+    for v in sorted(z["value"] for z in signals):
+        if last is None or (v - last) > eps_atr * atr:
+            count += 1
+        last = v
+    return count
+
+
 def scan_ticker(
     ohlcv: pd.DataFrame,
     nav: float,
@@ -194,6 +211,7 @@ def scan_ticker(
     *,
     ticker: str = "",
     multiplier: float = 1.0,
+    fx_rate: float = 1.0,
     current_price: float | None = None,
     lookbacks=VP_LOOKBACKS_MONTHS,
     atr_window: int = SCANNER_ATR_WINDOW,
@@ -268,7 +286,7 @@ def scan_ticker(
     conf = evaluate_confluence(price, stop_price, levels, atr, threshold=threshold)
 
     entry_signals = [z for z in conf["zones"] if z["type"] == "ENTRY"]
-    flagged = len(entry_signals) >= min_confluence
+    flagged = _independent_count(entry_signals, atr) >= min_confluence
     nearest = min(conf["levels"], key=lambda l: l["price_pct"]) if conf["levels"] else None
 
     result = {
@@ -293,7 +311,8 @@ def scan_ticker(
     sizes = {}
     for key, p in presets.items():
         qty = compute_position_size(
-            nav, price, stop_price, multiplier, p["max_r_pct"], p["max_exp_pct"]
+            nav, price, stop_price, multiplier, p["max_r_pct"], p["max_exp_pct"],
+            fx_rate=fx_rate,
         )
         sizes[key] = {
             "label": p.get("label", key),
@@ -316,8 +335,10 @@ def scan_ticker(
 
 def build_zone_report(universe, price_loader, nav: float, presets: dict, **kwargs) -> list[dict]:
     """Scan a universe of tickers. `universe` is an iterable of dicts with at
-    least 'ticker' (optionally 'conid', 'multiplier', 'price'); `price_loader` is
-    a callable receiving each item and returning its OHLCV DataFrame.
+    least 'ticker' (optionally 'conid', 'multiplier', 'fx_rate', 'price');
+    `price_loader` is a callable receiving each item and returning its OHLCV
+    DataFrame. `fx_rate` converts the asset currency to the NAV currency so
+    preset sizes are risked against the real base-currency budget.
 
     Results are sorted flagged-first, then by proximity to the nearest level.
     """
@@ -328,11 +349,27 @@ def build_zone_report(universe, price_loader, nav: float, presets: dict, **kwarg
             ohlcv, nav, presets,
             ticker=item.get("ticker", ""),
             multiplier=item.get("multiplier", 1.0),
+            fx_rate=item.get("fx_rate", 1.0),
             current_price=item.get("price"),
             **kwargs,
         )
-        if r is not None:
-            results.append(r)
+        if r is None:
+            # Too little history for the scan window: surface the name instead of
+            # silently dropping it — a watched ticker must never just vanish.
+            r = {
+                "ticker": item.get("ticker", ""),
+                "price": item.get("price"),
+                "atr": None,
+                "flagged": False,
+                "regime": "",
+                "tag": None,
+                "levels": {},
+                "entry_signals": [],
+                "dist_to_zone_pct": None,
+                "insufficient_data": True,
+                "n_bars": int(len(ohlcv)) if ohlcv is not None else 0,
+            }
+        results.append(r)
 
     results.sort(key=lambda r: (not r["flagged"], r["dist_to_zone_pct"] if r["dist_to_zone_pct"] is not None else 1e9))
     return results

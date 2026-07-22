@@ -9,7 +9,9 @@ The volume profile underneath is a daily-bar approximation, not tick-derived —
 flagged in the footer.
 """
 
+import json
 import sqlite3
+import time
 from typing import Optional
 
 import pandas as pd
@@ -21,11 +23,12 @@ from textual.widgets import DataTable, Footer, Header, Label, Static
 from textual import on, work
 
 from config import PRICES_DB_PATH
+from constants import DMA_LONG_WINDOW
 from core.portfolio_manager import PortfolioManager
 from core.ui_utils import UIUtils
-from core.zone_scan import build_zone_report
+from core.zone_scan import build_zone_report, _independent_count
 from core.calibration import get_calibration
-from db import get_presets, get_setting
+from db import get_presets, get_setting, save_scan_context, save_setting
 from logger import logger, suppress_console_logging
 from services.price_service import PriceService
 
@@ -91,6 +94,7 @@ class ZoneScanWorkspace(App):
     BINDINGS = [
         Binding("q", "exit_app", "Exit"),
         Binding("r", "refresh", "Rescan"),
+        Binding("c", "handoff", "Hand off to Risk Workspace"),
     ]
 
     class ScanLoaded(Message):
@@ -173,7 +177,7 @@ class ZoneScanWorkspace(App):
                 total_nav, nav_ccy = (nav_res[0], nav_res[1]) if nav_res else (0.0, "???")
 
                 _, positions = self.pm.get_dashboard_df(
-                    include_watch=True, total_nav=total_nav, silent=True
+                    include_watch=True, total_nav=total_nav, silent=True, nav_ccy=nav_ccy
                 )
                 universe = []
                 for p in positions:
@@ -182,13 +186,33 @@ class ZoneScanWorkspace(App):
                         "ticker": p.ticker,
                         "conid": str(p.conid),
                         "multiplier": p.multiplier or 1.0,
+                        "fx_rate": p.fx_rate or 1.0,
                         "price": price if price and price > 0 else None,
                     })
 
                 presets = get_presets() or _DEFAULT_PRESETS
-                calibration = get_calibration(get_setting('calibration_profile', 'default'))
+                self._lens = (get_setting('calibration_profile', 'default') or 'default').lower()
+                calibration = get_calibration(self._lens)
                 results = build_zone_report(universe, self._load_or_fetch_ohlcv,
                                             total_nav, presets, calibration=calibration)
+                # Persist structural context per ticker so the risk workspace's
+                # gate check (G2/G3/G5) runs on real scan inputs — freshness is
+                # the consumer's problem (GATE_CONTEXT_MAX_AGE_DAYS). Non-flagged
+                # rows persist too: G3 specifically needs flagged=False + regime.
+                save_scan_context([
+                    {
+                        "ticker": r["ticker"],
+                        "regime": r.get("regime", ""),
+                        "flagged": bool(r.get("flagged")),
+                        "confluence_count": _independent_count(
+                            r.get("entry_signals", []), r.get("atr") or 0.0),
+                        "stop_source": r.get("stop_source", "") or "",
+                        "stop_price": r.get("stop"),
+                        "trail_anchor": (r.get("levels") or {}).get(f"DMA{DMA_LONG_WINDOW}"),
+                        "tag": r.get("tag") or "",
+                    }
+                    for r in results if not r.get("insufficient_data")
+                ])
             self.post_message(self.ScanLoaded(results, total_nav, nav_ccy))
         except Exception as e:
             logger.error(f"Zone scan error: {e}")
@@ -199,7 +223,8 @@ class ZoneScanWorkspace(App):
         self.results = message.results
         self.by_ticker = {r["ticker"]: r for r in message.results}
         n_flagged = sum(1 for r in message.results if r["flagged"])
-        self.sub_title = UIUtils.nav_subtitle(message.nav, message.nav_ccy, len(message.results))
+        self.sub_title = UIUtils.nav_subtitle(message.nav, message.nav_ccy, len(message.results),
+                                              f"lens: {getattr(self, '_lens', 'default')}")
 
         t = self.query_one("#results-table", DataTable)
         t.clear()
@@ -208,18 +233,22 @@ class ZoneScanWorkspace(App):
             return
 
         for r in self.results:
-            tag = r["tag"] or "—"
+            thin = r.get("insufficient_data", False)
+            tag = "THIN" if thin else (r["tag"] or "—")
             tag_styled = (
-                f"[bold magenta]{tag}[/]" if tag == "ZONE-MOMO"
+                "[dim yellow]THIN[/]" if thin
+                else f"[bold magenta]{tag}[/]" if tag == "ZONE-MOMO"
                 else f"[bold green]{tag}[/]" if tag == "ZONE"
                 else f"[dim]{tag}[/]"
             )
             dist = f"{r['dist_to_zone_pct']:.2f}%" if r["dist_to_zone_pct"] is not None else "—"
             stop = f"{r['stop']:.2f}" if r["flagged"] else "—"
-            regime = ("[magenta]MOMO[/]" if r["regime"] == "MOMENTUM" else "[dim]base[/]")
+            regime = ("[dim]—[/]" if thin else
+                      "[magenta]MOMO[/]" if r["regime"] == "MOMENTUM" else "[dim]base[/]")
+            price = f"{r['price']:,.2f}" if r.get("price") else "—"
             t.add_row(
                 tag_styled, f"[cyan]{r['ticker']}[/]", regime,
-                f"{r['price']:,.2f}", dist, str(len(r["entry_signals"])), stop,
+                price, dist, str(len(r["entry_signals"])), stop,
                 key=r["ticker"],
             )
         self.query_one("#detail-header", Static).update(
@@ -231,6 +260,19 @@ class ZoneScanWorkspace(App):
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         r = self.by_ticker.get(event.row_key.value)
         if not r:
+            return
+        self._selected = r
+
+        if r.get("insufficient_data"):
+            self.query_one("#detail-header", Static).update(
+                f"[yellow]{r['ticker']} — insufficient history ({r.get('n_bars', 0)} daily bars cached) "
+                f"for the scan's ATR window.[/]"
+            )
+            self.query_one("#detail-signals", Static).update(
+                "[dim]Not scanned. Sync prices (menu 1) or wait for more trading history.[/]"
+            )
+            self.query_one("#detail-plan", Static).update("[dim]—[/]")
+            self.query_one("#detail-sizes", Static).update("[dim]—[/]")
             return
 
         tag = r["tag"] or "no zone"
@@ -268,6 +310,23 @@ class ZoneScanWorkspace(App):
         else:
             self.query_one("#detail-plan", Static).update("[dim]No zone flagged — nearest level shown in DIST.[/]")
             self.query_one("#detail-sizes", Static).update("[dim]—[/]")
+
+    def action_handoff(self) -> None:
+        """One-shot handoff of the highlighted flagged zone to the Risk Workspace:
+        writes a pending prefill (ticker + scanner stop) that the workspace
+        consumes on its next launch. Nothing is committed — the workspace only
+        prefills the command box for review."""
+        r = getattr(self, "_selected", None)
+        if not r or r.get("insufficient_data") or not r.get("flagged"):
+            self.notify("Select a FLAGGED zone row to hand off.", severity="warning")
+            return
+        save_setting("pending_handoff", json.dumps({
+            "ticker": r["ticker"],
+            "stop": r.get("stop"),
+            "ts": time.time(),
+        }))
+        self.notify(f"{r['ticker']} handed off — open the Risk Workspace (menu 2): "
+                    f"command box will prefill with the scanner stop {r['stop']:,.2f}.")
 
     def action_refresh(self) -> None:
         self.query_one("#detail-header", Static).update("[dim]Rescanning…[/dim]")

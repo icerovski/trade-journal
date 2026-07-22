@@ -148,6 +148,12 @@ sign. Defaults below are *starting points to be tuned from your log* (§7), not 
 | G7 | **Portfolio & theme heat** | `Σ R%` over **correlated names *and* over each theme** ≤ heat cap (default 3× single-trade cap). One-source picks cluster by theme — count the theme, not the trade. | 10 names on one macro theme are one bet, not ten; your "1% per trade" is then 10% on one view. |
 | G8 | **Currency** | measure `R%` and exposure in your **base currency**, not the asset's. Decide per book: ignore, cap, or hedge USD/EUR. | A USD-stop says nothing about your EUR/BGN risk; FX can swing 10–15%/yr. |
 
+> **Implementation status (assessment review, 2026-07-04):** in `core/gates.py`, **G6 is a
+> permanent NA stub** — for a single-user book of a few mega-cap names there is no ADV/slippage
+> data source and the constraint is unreachable by orders of magnitude. **G7 evaluates the
+> portfolio-heat half only** — the theme dimension is cut until themes exist somewhere in the
+> app. NA never blocks, so neither deviation can reject a trade.
+
 ### 4a. The independence check (don't fake confluence)
 
 VAL, a DMA, and an AVWAP that all sit at the same price after a consolidation are often
@@ -202,6 +208,10 @@ Design the exit to *keep* the tail, and decide its shape **at entry**, alongside
 **Rule of thumb:** entry, stop, and exit are *one* decision. If you can't state the exit
 shape (target / scale-out+runner / thesis-exit) when you set the stop, you're not ready to
 enter.
+
+> **Implementation status (assessment review, 2026-07-04):** in the app, *scale-out + runner*
+> **is the default exit ladder** — it needs no token. The explicit shapes are `X:H` (hard
+> target) and `X:T` (thesis exit); `X:R` is accepted only as a legacy alias of the default.
 
 ---
 
