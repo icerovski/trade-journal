@@ -20,3 +20,6 @@ gha-creds-*.json
 /GEMINI.md
 # Linter caches
 .ruff_cache/
+
+# Claude Code per-machine local settings (personal permission allowlist)
+.claude/settings.local.json
