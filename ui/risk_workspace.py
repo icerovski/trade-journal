@@ -24,6 +24,7 @@ from db import set_position_risk, get_presets, save_preset, update_preset_profil
 from core.trade_log import TradeLogEntry, STATUS_TAKEN
 from core.gates import ProposedTrade, evaluate_gates, gates_summary
 from core.sizing import compute_position_size_gap
+from core.modeling import ModelInputs, build_position_model, solve_breakeven_add
 from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS, GATE_G1_MAX_STOP_PCT_3TO6MO, GATE_CONTEXT_MAX_AGE_DAYS, CAL_ATR_STALENESS_RATIO
@@ -72,17 +73,8 @@ def _stage_desc(stage: str, regime: str) -> str:
         }.get(regime, _STAGE_DESC['TP'])
     return _STAGE_DESC.get(stage, '')
 
-def solve_breakeven_add(qty: float, entry: float, stop: float, price: float) -> Optional[float]:
-    """Shares to BUY at `price` so the aggregate average cost equals `stop` (P/L @ Stop = 0).
-    Derivation: solve the WAC blend (entry·qty + price·add)/(qty + add) = stop  →
-    add = qty·(entry − stop)/(stop − price). Returns None when no purchase achieves it —
-    price == stop, no current quantity, or the math yields a non-positive add (trimming
-    can't move a weighted-average cost, so break-even is only reachable by buying)."""
-    denom = stop - price
-    if denom == 0 or qty <= 0:
-        return None
-    add = qty * (entry - stop) / denom
-    return round(add) if add > 0 else None
+# solve_breakeven_add now lives in core.modeling and is imported above; it stays
+# re-exported from this module so existing call sites and tests are unaffected.
 
 
 def parse_classification(raw: str):
@@ -861,124 +853,37 @@ class RiskWorkspace(App):
             hypo_add     = d.get('hypo_add')
             goal_seek    = d.get('goal_seek')
 
-        # Audit price: an EXISTING position is always priced at the live market price
-        # (current_price resolves live → cached DB close → mark upstream); NEVER at the entry
-        # price, which would fabricate a stop breach for a winner whose stop sits above cost.
-        # A PROSPECT (qty 0) has no market position, so it prices the hypothetical entry.
         disc = self.discovery_cache.get(self.current_conid)
-        if pos.qty > 0:
-            cur_p = pos.current_price or pos.mark_price
-        else:
-            cur_p = hypo_entry if hypo_entry is not None else (pos.current_price or pos.mark_price)
-        if cur_p == 0 and disc:
-            cur_p = disc.get('current_price', 0.0)
-
-        # Quantity modeling (+N / -N / BE goal-seek) transacts at the LIVE market price, not
-        # the modeled entry that stop-analysis anchors to — so an add reflects what you would
-        # actually pay now. active_entry still holds the real average cost for the WAC blend.
-        if hypo_add is not None or goal_seek:
-            market_p = pos.current_price or pos.mark_price
-            if market_p and market_p > 0:
-                cur_p = market_p
-
-        active_max_r = hypo_max_r if hypo_max_r is not None else pos.max_r_pct
-        active_max_exp = hypo_max_exp if hypo_max_exp is not None else pos.max_exp_pct
-        active_qty = hypo_qty if hypo_qty is not None else pos.qty
-        active_entry = hypo_entry if hypo_entry is not None else (pos.entry_price if pos.entry_price > 0 else cur_p)
-        stop_p = hypo_stop if hypo_stop is not None else pos.sl_price
-        
         audit_content = "[dim]Enter ATR/Stop in Lab to calculate risk...[/]"
         exit_stage = getattr(pos, 'exit_stage', '')
         regime = getattr(pos, 'trend_regime', 'NORMAL')
 
         is_modeling = self.current_conid in self.drafts
-        
-        # Determine effective stop for audit logic (Default to entry if none set)
-        effective_stop = stop_p if pd.notnull(stop_p) else active_entry
-        
-        if pd.notnull(effective_stop) and cur_p > 0:
-            is_safe = cur_p > effective_stop
-            buffer = ((cur_p - effective_stop) / cur_p * 100) if cur_p > 0 else 0
-            res = audit_position_risk(cur_p, effective_stop, active_entry, active_qty, pos.multiplier, self.total_nav, max_r_pct=active_max_r, max_exp_pct=active_max_exp, fx_rate=pos.fx_rate)
-            
-            # For FIXED stop: pos.atr holds the stop price, not an ATR distance.
-            # Resolve a proper ATR from inception_atr or discovery for efficiency/pilot calcs.
-            if pos.stop_type == 'FIXED' and hypo_atr is None:
-                disc_atr = next((r.atr_wilder for r in disc['rows'] if r.label == '14d'), None) if (disc and disc.get('rows')) else None
-                effective_atr = disc_atr or (pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else max(0.0, (active_entry or 0) - (stop_p or active_entry or 0)))
-            else:
-                effective_atr = hypo_atr if hypo_atr is not None else pos.atr
 
-            atr_width = effective_atr
-            # TP is anchored to entry + TP_ATR_MULTIPLE × R, where R is the ORIGINAL risk
-            # unit (inception ATR) — same as pos.tp_price and the M1/M2/TP ladder — so the
-            # audit-panel RR and the exit-stage efficiency floor never diverge. The live
-            # trailing ATR (atr_width) governs the stop, not the reward target. Falls back
-            # to entry-stop distance, and stays modeling-aware via active_entry/effective_stop.
-            r_unit = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) \
-                     else max(0.0, (active_entry or 0) - (effective_stop or active_entry or 0))
-            # Effective TP multiple: a modeled override (hypo_tp_mult ≠ -1, where None→default)
-            # takes precedence; otherwise the saved override; otherwise the default 3R.
-            if hypo_tp_mult != -1.0:
-                tp_mult_eff = hypo_tp_mult if (hypo_tp_mult and hypo_tp_mult > 0) else TP_ATR_MULTIPLE
-            else:
-                tp_mult_eff = pos.tp_atr_mult if (getattr(pos, 'tp_is_override', False) and pos.tp_atr_mult) else TP_ATR_MULTIPLE
-            tp_target = active_entry + (tp_mult_eff * r_unit)
-            efficiency = ((tp_target - cur_p) / (cur_p - effective_stop) if cur_p > effective_stop else 0)
+        # All decision logic lives in core.modeling — this method only renders what
+        # it returns. The exit ladder is injected rather than moved, so the
+        # extraction touches one seam at a time.
+        active_shape = self.drafts.get(self.current_conid, {}).get('exit_shape') if is_modeling else None
+        model = build_position_model(
+            pos, total_nav=self.total_nav, discovery=disc, is_modeling=is_modeling,
+            exit_recommender=_exit_recommendation,
+            inputs=ModelInputs(
+                stop=hypo_stop, atr=hypo_atr, max_r_pct=hypo_max_r, max_exp_pct=hypo_max_exp,
+                qty=hypo_qty, entry=hypo_entry, add=hypo_add, goal_seek=goal_seek,
+                tp_mult=hypo_tp_mult, exit_shape=active_shape,
+            ),
+        )
 
-            # User-driven scenario: an explicit +/- quantity or a goal-seek overrides the
-            # system's recommended adjustment so the sizing table reflects YOUR what-if.
-            modeled_add = None
-            if goal_seek == 'BE':
-                modeled_add = solve_breakeven_add(active_qty, active_entry, effective_stop, cur_p)
-            elif hypo_add is not None:
-                modeled_add = int(hypo_add)
-
-            # 2. Reconciled verdict — ONE directive across the three axes, by precedence:
-            #    breach → exit-stage ladder → sizing add/trim → hold.
-            #    The fundamental that resolves the add-vs-trim conflict: exposure headroom
-            #    sizes a new/early position; it is never licence to add to a winner that has
-            #    reached a profit-taking stage. So at an exit stage the ladder governs and the
-            #    headroom is reported but muted (mirrors the table ACTION column outward).
-            active_shape = self.drafts.get(self.current_conid, {}).get('exit_shape') if is_modeling else None
-            if active_shape is None:
-                active_shape = getattr(pos, 'exit_shape', '')
-            exit_rec = _exit_recommendation(exit_stage, regime, active_qty, active_entry,
-                                            effective_stop, pos.tp_price, cur_p, efficiency,
-                                            pos.stop_type, exit_shape=active_shape)
-            room = int(res['adjustment'])
-            if res['is_breached']:
-                v_color, v_label = 'red', 'EXIT NOW — stop breached'
-                v_sub = f"Sell all {int(active_qty)} sh @ {cur_p:,.2f}."
-                target_qty = 0
-            elif modeled_add is not None:
-                target_qty = int(active_qty + modeled_add)
-                verb = "ADD" if modeled_add >= 0 else "TRIM"
-                tag = " (P/L@Stop → 0)" if goal_seek == 'BE' else ""
-                v_color, v_label = 'magenta', f"MODELING: {verb} {abs(int(modeled_add))} sh{tag}"
-                v_sub = f"@ {cur_p:,.2f} → {target_qty} sh"
-            elif goal_seek == 'BE':
-                target_qty = int(active_qty)
-                v_color, v_label = 'magenta', "GOAL-SEEK: P/L@Stop = 0 not reachable by buying"
-                v_sub = f"Would require trimming at {cur_p:,.2f}, which can't move average cost."
-            elif exit_rec:
-                target_qty = int(active_qty)   # never add at a profit-taking stage
-                v_color, v_label, v_sub = exit_rec['color'], exit_rec['headline'], exit_rec['reason']
-                if room > 0:
-                    headroom = active_max_exp - res['current_exposure_pct']
-                    v_sub += f"  [dim]({headroom:.1f}% exposure room exists, but no adds at target.)[/]"
-            elif room > 0:
-                target_qty = int(active_qty + room)
-                v_color, v_label = 'green', f"ADD +{room} sh"
-                v_sub = f"@ {cur_p:,.2f} → {target_qty} sh — room to the {active_max_exp:.1f}% exposure limit."
-            elif room < 0:
-                target_qty = int(active_qty + room)
-                v_color, v_label = 'yellow', f"TRIM {abs(room)} sh"
-                v_sub = f"Over the {active_max_exp:.1f}% exposure limit @ {cur_p:,.2f}."
-            else:
-                target_qty = int(active_qty)
-                v_color, v_label = 'white', "HOLD — at max size"
-                v_sub = "Within all limits; no adjustment needed."
+        if model is not None:
+            res = model.audit
+            effective_stop = model.stop
+            effective_atr = model.atr
+            active_entry, active_qty = model.entry, model.qty
+            active_max_r, active_max_exp = model.max_r_pct, model.max_exp_pct
+            cur_p = model.price
+            is_safe, buffer = model.is_safe, model.buffer_pct
+            efficiency, tp_target, tp_mult_eff = model.efficiency, model.tp_target, model.tp_mult
+            v_color, v_label, v_sub = model.verdict.color, model.verdict.label, model.verdict.sub
 
             # Capital-efficiency nudge (orthogonal to the ATR ladder). Suppressed on a breach,
             # where the exit directive already dominates. Reflects the live position's AAGR/age.
@@ -990,55 +895,28 @@ class RiskWorkspace(App):
                 )
 
             # 3. Final Layout Assembly
-            cost_val = (pos.qty * active_entry * pos.multiplier)
-            market_val = (pos.qty * cur_p * pos.multiplier)
-
-            # HCM Exposure: Use higher of cost or market for capital budgeting
-            hcm_exposure = max(cost_val, market_val)
+            hcm_exposure = model.hcm_exposure
 
             # Sizing Impact Table — post-action projection
-            net_action = int(target_qty) - int(active_qty)
-            if active_qty > 0 and self.total_nav > 0 and net_action != 0:
-                if net_action > 0:
-                    new_qty_t   = active_qty + net_action
-                    new_entry_t = (active_entry * active_qty + cur_p * net_action) / new_qty_t
-                else:
-                    new_qty_t   = max(0.0, active_qty + net_action)
-                    new_entry_t = active_entry if new_qty_t > 0 else 0.0
-                new_cost_t = new_qty_t * new_entry_t * pos.multiplier
-                new_mkt_t  = new_qty_t * cur_p * pos.multiplier
-                new_hcm_t  = max(new_cost_t, new_mkt_t)
-                new_R_t    = (new_entry_t - effective_stop) * new_qty_t * pos.multiplier * pos.fx_rate / self.total_nav * 100 if new_qty_t > 0 else 0.0
-                new_E_t    = new_hcm_t * pos.fx_rate / self.total_nav * 100
+            sz = model.sizing
+            if sz is not None:
+                net_action = sz.net_action
+                new_qty_t, new_entry_t = sz.new_qty, sz.new_entry
+                new_hcm_t, new_R_t, new_E_t = sz.new_hcm, sz.new_r_pct, sz.new_e_pct
                 r_col  = "red" if new_R_t > active_max_r else ("yellow" if new_R_t > active_max_r * 0.8 else "green")
                 e_col  = "red" if new_E_t > active_max_exp * 1.1 else ("yellow" if new_E_t >= active_max_exp else "green")
                 cur_r  = res['current_risk_pct']
                 cur_e  = res['current_exposure_pct']
-                # ADD column values: per-transaction contributions (add up exactly to BALANCE)
-                r_add  = (cur_p - effective_stop) * net_action * pos.multiplier * pos.fx_rate / self.total_nav * 100
-                e_add  = cur_p * net_action * pos.multiplier * pos.fx_rate / self.total_nav * 100
-                tx_hcm = net_action * cur_p * pos.multiplier  # pos.ccy, signed
+                r_add, e_add, tx_hcm = sz.r_add_pct, sz.e_add_pct, sz.tx_hcm
                 # HCM basis: mkt=market (winner, +unrealized), cst=cost (loser, -unrealized)
-                beg_is_mkt  = market_val >= cost_val
-                bal_is_mkt  = new_mkt_t >= new_cost_t
-                basis_tag   = "green" if beg_is_mkt else "yellow"
-                bal_hcm_col = "green" if bal_is_mkt else "yellow"
-                basis_lim   = f"[{basis_tag}]{'mkt' if beg_is_mkt else 'cst':>7}[/]"
+                basis_tag   = "green" if sz.beg_is_market else "yellow"
+                bal_hcm_col = "green" if sz.bal_is_market else "yellow"
+                basis_lim   = f"[{basis_tag}]{'mkt' if sz.beg_is_market else 'cst':>7}[/]"
                 r_lim       = f"{active_max_r:.2f}%"
                 e_lim       = f"{active_max_exp:.2f}%"
                 stop_flag   = pos.stop_type[:1]
-                if pos.stop_type == 'TRAILING':
-                    hwm = pos.max_since_entry if pos.max_since_entry > 0 else active_entry
-                    sl_pct_beg = effective_atr / hwm * 100 if hwm > 0 else 0.0
-                    sl_pct_add = sl_pct_beg   # ATR width is unchanged by the transaction
-                    sl_pct_bal = sl_pct_beg
-                else:  # FIXED
-                    sl_pct_beg = max(0.0, active_entry - effective_stop) / active_entry * 100 if active_entry > 0 else 0.0
-                    sl_pct_add = max(0.0, cur_p - effective_stop) / cur_p * 100 if cur_p > 0 else 0.0
-                    sl_pct_bal = max(0.0, new_entry_t - effective_stop) / new_entry_t * 100 if new_entry_t > 0 else 0.0
-                pl_s_beg    = (effective_stop - active_entry) * active_qty * pos.multiplier
-                pl_s_add    = (effective_stop - cur_p) * net_action * pos.multiplier
-                pl_s_bal    = (effective_stop - new_entry_t) * new_qty_t * pos.multiplier
+                sl_pct_beg, sl_pct_add, sl_pct_bal = sz.sl_pct_beg, sz.sl_pct_add, sz.sl_pct_bal
+                pl_s_beg, pl_s_add, pl_s_bal = sz.pl_stop_beg, sz.pl_stop_add, sz.pl_stop_bal
                 pl_s_beg_c  = "green" if pl_s_beg >= 0 else "red"
                 pl_s_add_c  = "green" if pl_s_add >= 0 else "red"
                 pl_s_bal_c  = "green" if pl_s_bal >= 0 else "red"
