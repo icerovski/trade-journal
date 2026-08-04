@@ -35,7 +35,7 @@ No linting configuration is set up; no ruff/flake8/mypy config exists.
 
 `DB_PATH`, `PRICES_DB_PATH`, and all data directories resolve from `DATA_PATH` in `.env`. On startup, `sync_config.smart_sync()` syncs `.env` from OneDrive. On exit, it backs it up.
 
-**Verify the hub before trusting any report.** `config.DATA_DIR` calls `mkdir(parents=True)`, so a wrong or stale `DATA_PATH` does not fail — it silently creates an empty hub, and `init_db` populates it with empty tables. The app then runs normally against a book with no history and no risk profiles. A second `TradeJournalData` folder under `OneDrive\Accounts\` was populated this way (2026-08); if a report looks impossibly sparse, check `DATA_PATH` first. The live book has ~2,300 trades back to 2024-09 and ~54 ACTIVE risk profiles.
+**A stale `DATA_PATH` silently forks the book — never assume an empty hub is a new one.** `config.DATA_DIR` calls `mkdir(parents=True, exist_ok=True)` (`config.py:31`), so a `DATA_PATH` naming a folder that no longer exists does not fail: it *recreates* it, `init_db` fills it with empty tables, and the app runs normally against a book with no history and no risk layer. Renaming the OneDrive parent folder did exactly this in 2026-08 — `.env` still named the old path, and a full ghost hub (empty DB + YTD-only ingest + price sync) was rebuilt under it. **Any path change to the data hub must be made in `.env` at the same time.** If a report looks impossibly sparse, check `DATA_PATH` before anything else: the live book has ~2,300 trades back to 2024-09 and ~54 ACTIVE risk profiles.
 
 ### Data Flow
 

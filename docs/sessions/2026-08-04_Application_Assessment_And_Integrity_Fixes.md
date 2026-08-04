@@ -66,7 +66,17 @@ Deleted `main.print_watch_list_summary` (dead, and subscripted a dataclass — w
 - Split self-heal simulated end to end: a 10:1 re-basing is detected (90% disagreement), the series rebuilds, and the result has a max day-over-day ratio of 1.0 — no seam.
 - Merge verified beyond the test suite: no conflict markers repo-wide, `active_shape` binding order correct, `SRC:`/`THM:` plumbed through to the `trade_log` write, and this branch's error reporting and heat clamp intact.
 
-**Observation, not a change:** the `trade_journal.db` at the configured `DATA_PATH` holds 488 trades and 68 `ticker_info` rows but **0 `risk_profiles`, 0 `trade_log`, and `gates_mode='off'`** — so the advisory-gates flip recorded in `OPEN_ITEMS.md` is not present in the data. Worth confirming that is the intended hub before reading any report from it.
+### Data hub was misconfigured (found and fixed 2026-08-04)
+
+The `trade_journal.db` at the configured `DATA_PATH` held 488 trades and 68 `ticker_info` rows but **0 `risk_profiles`, 0 `trade_log`, and `gates_mode='off'`** — the advisory-gates flip recorded above was absent from the data. Cause: the OneDrive parent folder had been renamed `Accounts` → `Companies`, while `.env` still named `Accounts`.
+
+**`config.py` turns a stale path into a silent second book.** `DATA_DIR` is created with `mkdir(parents=True, exist_ok=True)` (`config.py:31`), so a `DATA_PATH` pointing at nothing does not fail — it *recreates* the directory. `init_db` then populates it with empty tables and the app runs normally against a book with no history and no risk layer. The YTD CSV ingest gave it 488 trades from 2026-01-02 and the price sync filled `prices.db` through 2026-08-03. Nothing anywhere signals "this hub is empty because it is wrong" rather than "empty because it is new".
+
+Fixed by repointing `DATA_PATH` to `Companies\HTC_EOOD\TradeJournalData` in both `.env` copies (repo + vault, propagated via `sync_config.py`). Verified: 2,306 trades from 2024-09-05, 57 profiles (54 ACTIVE), `gates_mode=advisory`, `regime_lens=horizon`. The stray `Accounts\` hub holds nothing unique — its `prices.db` has 4 days (7/31–8/3) the live one lacks, which re-sync on the next price sync.
+
+Migration safety checked before repointing: all six one-shot migrations match **zero rows** in the live database, so the first `init_db` under the new code records them and changes nothing.
+
+*Note on the assessment's severity call:* migration 006 (the FIXED-stop rewrite) was flagged as a live corruption path. On this data it has zero exposure — no profile matches its guard. The finding stands as a mechanism argument (an unbounded-in-time guard on user rows), not as an active defect.
 
 ## Next Steps
 
