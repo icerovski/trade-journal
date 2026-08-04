@@ -67,7 +67,15 @@ class TickerMapper:
         Priority: 1. ticker_info table (conid PK), 2. Online Search (via ISIN), 3. Heuristics
         """
         ticker_upper = ticker_ibkr.upper()
-        
+
+        # `info` must be bound on every path, not just the conid branch below: when
+        # no conid is supplied, a symbol matched in the cached positions CSV further
+        # down ASSIGNS one, and the later `if conid and info:` guard then stops
+        # short-circuiting and reads this name. Leaving it unbound made resolving a
+        # held symbol without a conid — the prospect/discovery flow — raise
+        # UnboundLocalError into a caller that swallows exceptions.
+        info = None
+
         # 1. Check DB via Conid (Primary Source of Truth)
         if conid:
             info = db.get_ticker_info(conid)

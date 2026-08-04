@@ -239,34 +239,45 @@ def test_details_are_filled_from_the_cached_positions_csv(mock_db):
         s.assert_called_once_with("IE00B5BMR087")
 
 
-def test_resolving_a_held_symbol_without_a_conid_raises_known_defect(mock_db, no_network):
-    """PINS A REAL DEFECT — reachable today, deliberately not fixed here.
+def test_resolving_a_held_symbol_without_a_conid_succeeds(mock_db, no_network):
+    """Regression guard for an UnboundLocalError fixed 2026-08-04.
 
-    `info` is assigned only inside `if conid:` at the top. Further down, a symbol
-    found in the cached open-positions CSV ASSIGNS `conid` from that row — and the
-    later guard `if conid and info:` then evaluates `info`, which was never bound.
-    Short-circuiting protects the no-conid case only until that reassignment.
+    `info` was assigned only inside `if conid:` at the top, but a symbol matched in
+    the cached positions CSV ASSIGNS `conid` further down — so the later
+    `if conid and info:` guard stopped short-circuiting and read an unbound name.
 
-    Trigger: resolve a ticker WITHOUT a conid for a symbol you already hold. That
-    is the prospect/discovery path (`fetch_atr_data(None, ticker=…)` →
-    `get_atr_discovery_data(conid=None)`), so *discovering a ticker already in the
-    book* raises. `get_atr_discovery_data` wraps everything in `except Exception`
-    and logs, so the user sees discovery return nothing, with no reason given.
-
-    The live broker CSV contains 'BRK B', 'FOUR PRA' and an IWM option — exactly
-    the space-containing symbols that reach this path. Same class as the `C:TH`
-    use-before-assignment fixed earlier; the fix is one line, in its own commit.
+    Trigger: resolve WITHOUT a conid for a symbol already held — the
+    prospect/discovery path (`fetch_atr_data(None, ticker=…)` →
+    `get_atr_discovery_data(conid=None)`). `get_atr_discovery_data` swallows
+    exceptions, so discovery silently returned nothing. The live broker CSV holds
+    'BRK B', 'FOUR PRA' and an IWM option — the symbols that reach this path.
     """
     _positions_csv("BRK B")
-    with pytest.raises(UnboundLocalError, match="info"):
-        TickerMapper.resolve_yf_ticker("BRK B", asset="STK", ccy="USD")
+    assert TickerMapper.resolve_yf_ticker("BRK B", asset="STK", ccy="USD") == "BRK-B"
 
 
-def test_the_same_symbol_resolves_cleanly_when_a_conid_is_supplied(mock_db, no_network):
-    # Confirms the defect above is specifically the unbound path, not the symbol.
+def test_a_conid_discovered_from_the_csv_is_used_to_persist_the_mapping(mock_db, no_network):
+    # The reassignment that caused the bug has a purpose: it lets a symbol resolved
+    # without a conid still be written to the asset master under the right key.
+    _positions_csv("BRK B", conid=777)
+    TickerMapper.resolve_yf_ticker("BRK B", asset="STK", ccy="USD")
+    assert mock_db.save_ticker_info.call_args.kwargs["conid"] == 777
+
+
+def test_the_same_symbol_resolves_identically_with_a_conid_supplied(mock_db, no_network):
     _positions_csv("BRK B")
     assert TickerMapper.resolve_yf_ticker("BRK B", asset="STK", ccy="USD",
                                           conid="12345") == "BRK-B"
+
+
+@pytest.mark.parametrize("symbol,expected", [
+    ("BRK B", "BRK-B"),
+    ("FOUR PRA", "FOUR-PA"),
+])
+def test_every_space_containing_symbol_in_the_live_book_resolves(mock_db, no_network, symbol, expected):
+    # The exact symbols that triggered the defect in production data.
+    _positions_csv(symbol)
+    assert TickerMapper.resolve_yf_ticker(symbol, asset="STK", ccy="USD") == expected
 
 
 # --------------------------------------------------------------------------
