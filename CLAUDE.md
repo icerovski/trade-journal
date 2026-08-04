@@ -73,6 +73,8 @@ The tighter constraint wins. HCM = Higher of Cost or Market (never understates e
 
 **Entry & Stop System is additive/default-off:** Every feature from the Entry & Stop System / horizon-calibration build (gates, classification, exit shapes, gap sizing, calibration lens) sits behind a flag/profile whose default reproduces prior behaviour. `tests/test_characterization.py` (golden master over `scan_ticker` / sizing / `classify_regime` / the exit ladder) is the tripwire — it must stay byte-identical with defaults unchanged. Do not alter a default such that this snapshot moves.
 
+**Three golden masters, one rule.** `test_characterization.py` (core decision paths), `test_risk_panel_characterization.py` (the rendered risk panel, 32 scenarios), and `test_command_dsl_characterization.py` (the command DSL, 51 commands) each compare against a committed snapshot in `tests/snapshots/`. They exist so behaviour-preserving work can be *proved* behaviour-preserving: **commit the snapshot before touching the source**, then require it to stay byte-identical through the change. A diff is either a bug or an intended change — if intended, delete the snapshot and regenerate it in its own commit so the diff is reviewable. Never let one silently re-arm around new behaviour (each fails on bootstrap for that reason).
+
 ### Key Modules
 
 - **`core/portfolio_manager.py`** — Central orchestrator. Lazily initializes all services via `@property`. `get_dashboard_df()` runs the full enrichment pipeline. Start here when tracing any data issue.
