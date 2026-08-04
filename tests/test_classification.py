@@ -15,7 +15,7 @@ import db
 from core import stop_loss
 from core.stop_loss import calculate_position_risk
 from models import Position, RiskProfile
-from ui.risk_workspace import parse_classification
+from ui.risk_workspace import RiskWorkspace, parse_classification
 
 
 @pytest.fixture
@@ -117,3 +117,155 @@ def test_untagged_position_classification_empty(monkeypatch):
     calculate_position_risk(p, {"999": profile})
     # Default carries as "" — identical to pre-Phase-3 behaviour; nothing branches on it.
     assert p.classification == ""
+
+
+# --------------------------------------------------------------------------
+# C:TH → X:T coupling, driven through the real command handler (§0a)
+#
+# Regression guard for a shipped defect: the coupling block referenced
+# `active_shape` ABOVE the line that binds it, so every `C:TH` command raised
+# UnboundLocalError. `on_strategy_change` swallows exceptions into the log, so
+# the failure was invisible — no draft, no notification, nothing to commit.
+# These tests assert the draft that a successful parse must produce, which is
+# unreachable if the handler raises.
+# --------------------------------------------------------------------------
+class _StubWidget:
+    """Stands in for the three Textual widgets the handler touches."""
+
+    def __init__(self, value=""):
+        self.value = value
+        self.cells = {}
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def update_cell(self, row_key, column_key, value):
+        self.cells[column_key] = value
+
+
+class _StubWorkspace:
+    """Drives RiskWorkspace.on_strategy_change without mounting a Textual app.
+
+    The command DSL and the modeling maths live inside a 250-line UI method, so
+    this harness is the only way to test their branches. If that logic is ever
+    extracted into a core module, point these tests at it instead.
+    """
+
+    def __init__(self, position, command, total_nav=1_000_000.0):
+        self.current_conid = str(position.conid)
+        self.positions = [position]
+        self.discovery_cache = {}
+        self.drafts = {}
+        self.total_nav = total_nav
+        self.messages = []
+        self._last_modeling_error = None
+        self._widgets = {
+            "#atr-input": _StubWidget(command),
+            "#preset-legend": _StubWidget(),
+            "#portfolio-table": _StubWidget(),
+        }
+
+    def query_one(self, selector, _widget_cls=None):
+        return self._widgets[selector]
+
+    def notify(self, message, **kwargs):
+        self.messages.append(message)
+
+    def _notify_snap(self, message):
+        self.messages.append(message)
+
+    def refresh_risk_checklist(self, *args, **kwargs):
+        pass
+
+    def run(self, command=None):
+        if command is not None:
+            self._widgets["#atr-input"].value = command
+        RiskWorkspace.on_strategy_change(self)
+        return self.drafts.get(self.current_conid)
+
+
+def _draft_for(command, **position_over):
+    pos = _position()
+    for field, value in position_over.items():
+        setattr(pos, field, value)
+    return _StubWorkspace(pos, command).run()
+
+
+def test_thesis_tag_produces_a_draft_at_all():
+    # The defect's signature: the handler raised, so no draft was ever recorded.
+    draft = _draft_for("10 T C:TH")
+    assert draft is not None, "C:TH must not abort the modeling pass"
+    assert draft["classification"] == "THESIS"
+
+
+def test_thesis_tag_implies_thesis_exit_shape():
+    draft = _draft_for("10 T C:TH")
+    assert draft["exit_shape"] == "THESIS"
+
+
+def test_explicit_exit_shape_overrides_the_thesis_default():
+    # X: typed in the same edit wins — the coupling is a default, not a law.
+    draft = _draft_for("10 T C:TH X:H")
+    assert draft["classification"] == "THESIS"
+    assert draft["exit_shape"] == "HARD"
+
+
+def test_stored_non_default_shape_is_not_overridden():
+    draft = _draft_for("10 T C:TH", exit_shape="HARD")
+    assert draft["exit_shape"] == "HARD"
+
+
+def test_technical_tag_leaves_the_shape_alone():
+    draft = _draft_for("10 T C:TE")
+    assert draft["classification"] == "TECHNICAL"
+    assert draft["exit_shape"] == "LADDER"  # the Position default, carried unchanged
+
+
+def test_untagged_command_touches_neither_field():
+    draft = _draft_for("10 T")
+    assert draft["classification"] == ""
+    assert draft["exit_shape"] == "LADDER"
+
+
+# --------------------------------------------------------------------------
+# A modeling failure must reach the user
+#
+# on_strategy_change catches everything so a half-typed command can't crash the
+# app. That is right, but a bare logger.error is not: the command was NOT
+# applied, no draft exists to commit, and the table still shows the previous
+# model — indistinguishable from success. Input.Changed fires per keystroke, so
+# the report has to be deduped rather than dropped.
+# --------------------------------------------------------------------------
+BAD_COMMAND = "1.2.3"   # float("1.2.3") — a realistic typo, raises inside the parse
+
+
+def test_modeling_failure_is_reported_to_the_user():
+    ws = _StubWorkspace(_position(), BAD_COMMAND)
+    assert ws.run() is None                       # nothing staged, as before
+    assert ws.messages, "a failed command must not fail silently"
+    assert "not applied" in ws.messages[0].lower()
+    assert "ValueError" in ws.messages[0]         # names the actual fault
+
+
+def test_repeated_failure_is_reported_once():
+    # Typing one bad character at a time must not stack a toast per keystroke.
+    ws = _StubWorkspace(_position(), BAD_COMMAND)
+    ws.run()
+    ws.run()
+    ws.run()
+    assert len(ws.messages) == 1
+
+
+def test_failure_is_reported_again_after_a_good_command():
+    # Dedup is per distinct fault, not once ever — a recurring fault still speaks up.
+    ws = _StubWorkspace(_position(), BAD_COMMAND)
+    ws.run()
+    ws.run("10 T")                  # a clean parse clears the memo
+    ws.run(BAD_COMMAND)
+    assert len(ws.messages) == 2
+
+
+def test_successful_command_says_nothing():
+    ws = _StubWorkspace(_position(), "10 T")
+    assert ws.run() is not None
+    assert ws.messages == []

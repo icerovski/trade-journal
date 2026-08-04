@@ -6,6 +6,20 @@ from datetime import datetime, timedelta
 from config import PRICES_DB_PATH
 from logger import logger
 
+# --- Adjustment-basis guard -------------------------------------------------
+# Yahoo is queried with auto_adjust=True, so every split and dividend re-bases its
+# ENTIRE history. save_prices only ever appends dates it has not seen, so without
+# a guard the cache ends up as old-basis history welded to new-basis recent bars,
+# with an invisible discontinuity at the seam. That corrupts the ATR, the 200-DMA,
+# the volume profile, and — worst — highest_high_since, which feeds the trailing
+# ratchet that writes a stop into the database permanently.
+#
+# The guard: re-fetch a few bars we already hold and compare. A re-basing shows up
+# as disagreement on dates that cannot otherwise have changed.
+PRICE_BASIS_OVERLAP_DAYS = 7      # calendar days of already-cached bars to re-verify
+PRICE_BASIS_TOLERANCE = 0.001     # 0.1% — below this is rounding; above it, the basis moved
+
+
 class PriceService:
     def __init__(self, db_path: Path = PRICES_DB_PATH):
         self.db_path = db_path
@@ -64,13 +78,13 @@ class PriceService:
         return (pd.to_datetime(result[0]) if result[0] else None, 
                 pd.to_datetime(result[1]) if result[1] else None)
 
-    def save_prices(self, conid: str, ticker: str, df: pd.DataFrame):
-        if df.empty:
-            return 0
-
-        # Prepare for DB
+    @staticmethod
+    def _normalize(conid: str, ticker: str, df: pd.DataFrame) -> pd.DataFrame:
+        """A yfinance frame → the prices_daily column shape (flat lowercase columns,
+        ISO date strings). Shared by save_prices and the basis check so the two can
+        never compare differently-shaped dates."""
         df = df.copy()
-        
+
         # --- MultiIndex Fix: Flatten columns if they are MultiIndex ---
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -79,24 +93,104 @@ class PriceService:
             df = df.rename(columns={'Date': 'date'})
         elif 'date' not in df.columns:
             df = df.reset_index().rename(columns={'Date': 'date', 'index': 'date'})
-        
+
         df['conid'] = str(conid)
         df['ticker'] = ticker.upper()
-        
+
         # Standardize column names
         name_map = {
-            'Open': 'open', 'High': 'high', 'Low': 'low', 
+            'Open': 'open', 'High': 'high', 'Low': 'low',
             'Close': 'close', 'Adj Close': 'close', 'Volume': 'volume'
         }
         df = df.rename(columns=name_map)
-        
+
         # Filter columns
         cols = ['conid', 'ticker', 'date', 'open', 'high', 'low', 'close', 'volume']
         df = df[[c for c in cols if c in df.columns]]
-        
+
         # Ensure date is string format for SQLite
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-        
+        return df
+
+    def basis_shifted(self, conid: str, fetched: pd.DataFrame, cached_latest) -> bool:
+        """True when freshly fetched bars disagree with cached bars on the SAME dates.
+
+        A settled daily bar cannot change — unless Yahoo re-based the series after a
+        split or dividend, which is exactly the event that would otherwise leave a
+        silent seam in the cache. The most recent cached bar is excluded from the
+        comparison: mid-session it is a partial day and would flag on every intraday
+        sync. Returns False whenever there is nothing comparable, so an empty or
+        malformed fetch never triggers a rebuild.
+        """
+        if fetched is None or fetched.empty or cached_latest is None:
+            return False
+        cutoff = pd.to_datetime(cached_latest).strftime('%Y-%m-%d')
+        settled = fetched[fetched['date'] < cutoff]
+        if settled.empty:
+            return False
+
+        conn = self._connect()
+        try:
+            cached = pd.read_sql_query(
+                "SELECT date, close FROM prices_daily WHERE conid = ? AND date BETWEEN ? AND ?",
+                conn, params=(str(conid), settled['date'].min(), settled['date'].max()),
+            )
+        finally:
+            conn.close()
+        if cached.empty:
+            return False
+
+        merged = settled[['date', 'close']].merge(cached, on='date', suffixes=('_new', '_old'))
+        merged = merged[merged['close_old'].notna() & (merged['close_old'] > 0)
+                        & merged['close_new'].notna()]
+        if merged.empty:
+            return False
+
+        drift = ((merged['close_new'] / merged['close_old']) - 1.0).abs().max()
+        if drift > PRICE_BASIS_TOLERANCE:
+            logger.warning(
+                f"Price basis shift detected for conid {conid}: cached closes differ from a "
+                f"fresh fetch by up to {drift * 100:.2f}% on settled dates."
+            )
+            return True
+        return False
+
+    def rebuild_series(self, conid: str, yf_ticker: str, days_back: int = 365 * 10) -> int:
+        """Re-download the full window and REPLACE the cached series for one conid.
+
+        The only way to put a whole series back on one adjustment basis. The cache
+        is deleted only after a non-empty download succeeds, so a failed fetch
+        leaves the existing (seamed but present) history intact rather than
+        emptying it.
+        """
+        start = (datetime.now() - timedelta(days=days_back)).date()
+        floor = self._get_floor_date(conid)
+        if floor and floor > start:
+            start = floor
+
+        df = yf.download(yf_ticker, start=start.strftime('%Y-%m-%d'), interval="1d",
+                         progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            logger.warning(f"Rebuild aborted for {yf_ticker}: no data returned; cache left intact.")
+            return 0
+
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM prices_daily WHERE conid = ?", (str(conid),))
+            conn.commit()
+        finally:
+            conn.close()
+
+        n = self.save_prices(conid, yf_ticker, df)
+        logger.info(f"Rebuilt {yf_ticker}: {n} bars on the current adjustment basis.")
+        return n
+
+    def save_prices(self, conid: str, ticker: str, df: pd.DataFrame):
+        if df.empty:
+            return 0
+
+        df = self._normalize(conid, ticker, df)
+
         # --- Deduplication Check ---
         conn = self._connect()
         existing = pd.read_sql_query(
@@ -132,11 +226,21 @@ class PriceService:
         # 1. Check for Forward Update (Missing recent data)
         if latest:
             if latest.date() < datetime.now().date() - timedelta(days=1):
-                start_f = (latest + timedelta(days=1)).strftime('%Y-%m-%d')
+                # Start BEFORE the last cached bar, not after it: the overlap is what
+                # makes a re-basing detectable. save_prices discards dates already
+                # held, so re-fetching them costs nothing when the basis is unchanged.
+                start_f = (latest - timedelta(days=PRICE_BASIS_OVERLAP_DAYS)).strftime('%Y-%m-%d')
                 logger.info(f"Updating {yf_ticker} forward from {start_f}")
                 df_f = yf.download(yf_ticker, start=start_f, interval="1d", progress=False, auto_adjust=True)
                 if not df_f.empty:
-                    self.save_prices(conid, yf_ticker, df_f)
+                    if self.basis_shifted(conid, self._normalize(conid, yf_ticker, df_f), latest):
+                        logger.warning(
+                            f"{yf_ticker}: adjustment basis changed (split/dividend) — "
+                            f"rebuilding the cached series so old and new bars stay comparable."
+                        )
+                        self.rebuild_series(conid, yf_ticker, days_back)
+                    else:
+                        self.save_prices(conid, yf_ticker, df_f)
 
         # 2. Check for Backward Gap (Missing historical data)
         if not first or first.date() > required_start:

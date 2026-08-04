@@ -568,6 +568,10 @@ class RiskWorkspace(App):
         # Last thin-history snap notice per conid — on_strategy_change fires per
         # keystroke, so repeat warnings must be deduped or they stack as toasts.
         self._last_snap_note: Dict[str, str] = {}
+        # Last modeling failure reported to the user, for the same reason. Cleared
+        # on a successful parse and on row change so a recurring fault is always
+        # re-reported once rather than reported once ever.
+        self._last_modeling_error: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -815,6 +819,7 @@ class RiskWorkspace(App):
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         conid = event.row_key.value
         self.current_conid = conid
+        self._last_modeling_error = None  # a new row gets a clean slate for error reporting
         try:
             self.query_one("#discover-input", Input).value = ""
         except Exception:
@@ -1308,6 +1313,7 @@ class RiskWorkspace(App):
             return
         raw = self.query_one("#atr-input", Input).value.strip().upper()
         if not raw:
+            self._last_modeling_error = None
             if self.current_conid in self.drafts:
                 del self.drafts[self.current_conid]
             self.query_one("#preset-legend", Label).update(_preset_legend())
@@ -1344,14 +1350,6 @@ class RiskWorkspace(App):
             # "" = explicit clear. Carried only — no exit logic branches on it.
             active_class, raw = parse_classification(raw)
 
-            # §0a coupling: a THESIS tag implies the thesis-exit shape (one clock per
-            # trade — no guessed-at-entry price target) unless an explicit X: was
-            # typed this edit or a non-default shape is already stored. Overridable.
-            if active_class == "THESIS" and active_shape is None \
-                    and normalize_shape(getattr(pos, 'exit_shape', '')) == "LADDER":
-                active_shape = "THESIS"
-                self._notify_snap(f"{pos.ticker}: C:TH → thesis-exit shape applied (no price target; override with X:L or X:H).")
-
             # Gap-aware sizing (§6): G:<price> = plausible post-event gap price. Opt-in —
             # absent (default) leaves sizing on the standard fixed-fractional path. Parsed
             # before the +N/-N and stop-value regexes so its digits aren't misread.
@@ -1370,6 +1368,16 @@ class RiskWorkspace(App):
                 tok = x_m.group(1)
                 active_shape = "" if tok == "-" else normalize_shape(tok)
                 raw = raw.replace(x_m.group(0), "").strip()
+
+            # §0a coupling: a THESIS tag implies the thesis-exit shape (one clock per
+            # trade — no guessed-at-entry price target) unless an explicit X: was typed
+            # this edit or a non-default shape is already stored. Overridable.
+            # MUST stay below the X: parse: `active_shape` is bound there, and only
+            # after it is `active_shape is None` a truthful "no X: typed this edit".
+            if active_class == "THESIS" and active_shape is None \
+                    and normalize_shape(getattr(pos, 'exit_shape', '')) == "LADDER":
+                active_shape = "THESIS"
+                self._notify_snap(f"{pos.ticker}: C:TH → thesis-exit shape applied (no price target; override with X:L or X:H).")
 
             # TP override: TP:4 / TP:4R / TP:+35% / TP:- (clear). A multiple of the
             # frozen inception ATR — stays put when the stop ATR changes. Parsed BEFORE the
@@ -1558,9 +1566,22 @@ class RiskWorkspace(App):
             self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek, 'classification': draft_class, 'gap_price': gap_price, 'exit_shape': draft_shape}
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek, hypo_tp_mult=tp_final)
-            
+            self._last_modeling_error = None
+
         except Exception as e:
-            logger.error(f"Modeling Error: {e}")
+            # A silent failure here means the command was NOT applied and no draft
+            # exists to commit, while the table still shows the previous model — the
+            # user has no way to tell. (A broken C:TH token hid behind this log line
+            # for a month.) Input.Changed fires per keystroke, so report each distinct
+            # fault once, the same dedup contract as _notify_snap.
+            detail = f"{type(e).__name__}: {e}"
+            logger.error(f"Modeling Error [{self.current_conid}] {raw!r}: {detail}", exc_info=True)
+            if getattr(self, '_last_modeling_error', None) != detail:
+                self._last_modeling_error = detail
+                self.notify(
+                    f"Command not applied — {detail}. Nothing staged; fix the command or press F1.",
+                    severity="error", timeout=10,
+                )
 
     def _banner_hint(self) -> str:
         """Header mode banner: the two default-off systems' current state, always
@@ -1630,9 +1651,12 @@ class RiskWorkspace(App):
         # Existing open R% across the OTHER stopped names — the honest correlated-
         # heat proxy for a concentrated single-strategy book. For a fresh prospect
         # (qty 0) the trade adds 0%, so G7 fails only when the book itself is
-        # already beyond the heat cap.
+        # already beyond the heat cap. Each name is floored at 0: a stop ratcheted
+        # above entry has no downside, but it must not net off live risk elsewhere
+        # and wave through an entry the book has no room for (same rule as
+        # core.sizing.compute_portfolio_risk).
         heat = sum(
-            (getattr(p, 'risk_pct_nav', 0.0) or 0.0)
+            max(0.0, (getattr(p, 'risk_pct_nav', 0.0) or 0.0))
             for p in self.positions
             if str(p.conid) != str(cid) and p.qty > 0
         )
@@ -1694,7 +1718,15 @@ class RiskWorkspace(App):
             else:
                 add_trade_log_entry(TradeLogEntry(**fields))
         except Exception as e:
-            logger.error(f"Trade-log write failed for {d.get('ticker')}: {e}")
+            # The stop/risk commit already succeeded — only the decision journal
+            # missed the row. Say so explicitly: silently dropped entries are
+            # invisible until the expectancy report is quietly wrong months later.
+            logger.error(f"Trade-log write failed for {d.get('ticker')}: {e}", exc_info=True)
+            self.notify(
+                f"{d.get('ticker')}: risk saved, but the decision journal entry failed "
+                f"({type(e).__name__}) — re-commit to log it.",
+                severity="warning", timeout=10,
+            )
 
     def action_save_all(self) -> None:
         if not self.drafts:

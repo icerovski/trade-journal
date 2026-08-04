@@ -17,7 +17,7 @@ from core.expectancy import (
     build_expectancy_report,
     suggest_realized_r,
 )
-from constants import EXPECTANCY_THRESHOLD_R
+from constants import EXPECTANCY_MIN_SAMPLE, EXPECTANCY_THRESHOLD_R
 
 
 def _taken(archetype="Value reclaim", realized_r=None, source="", **kw):
@@ -73,7 +73,9 @@ def test_archetype_expectancy_formula():
     assert s.avg_win_r == pytest.approx(2.0)
     assert s.avg_loss_r == pytest.approx(1.0)
     assert s.expectancy_r == pytest.approx(1.25)
-    assert s.above_threshold is True
+    # E[R] is reported at any n; the VERDICT is not. 4 trades is an anecdote.
+    assert s.is_provisional is True
+    assert s.above_threshold is False
 
 
 def test_negative_expectancy_flagged_below_threshold():
@@ -82,6 +84,53 @@ def test_negative_expectancy_flagged_below_threshold():
     s = compute_archetype_expectancy(entries)[0]
     assert s.expectancy_r == pytest.approx(-0.5)
     assert s.above_threshold is False
+
+
+# --- Sample-size gate on the verdict ---------------------------------------
+def _sample(n, realized_r=2.0, archetype="Value reclaim"):
+    return [_taken(archetype=archetype, realized_r=realized_r) for _ in range(n)]
+
+
+def test_single_lucky_winner_is_never_proven():
+    # The failure this gate exists to stop: n=1 at +3R reads E[R] = +3.00R, which
+    # would license full size off one trade.
+    s = compute_archetype_expectancy(_sample(1, realized_r=3.0))[0]
+    assert s.expectancy_r == pytest.approx(3.0)
+    assert s.is_provisional is True
+    assert s.above_threshold is False
+    assert s.n_min_sample == EXPECTANCY_MIN_SAMPLE
+
+
+def test_verdict_unlocks_exactly_at_the_minimum_sample():
+    just_short = compute_archetype_expectancy(_sample(EXPECTANCY_MIN_SAMPLE - 1))[0]
+    at_minimum = compute_archetype_expectancy(_sample(EXPECTANCY_MIN_SAMPLE))[0]
+    assert just_short.is_provisional is True and just_short.above_threshold is False
+    assert at_minimum.is_provisional is False and at_minimum.above_threshold is True
+
+
+def test_large_sample_below_the_r_threshold_is_still_unproven():
+    # Enough evidence, and the evidence says no — a different answer from
+    # "not enough evidence", and it must not read as provisional.
+    s = compute_archetype_expectancy(_sample(EXPECTANCY_MIN_SAMPLE, realized_r=0.10))[0]
+    assert s.expectancy_r == pytest.approx(0.10)
+    assert s.is_provisional is False
+    assert s.above_threshold is False
+
+
+def test_sample_size_counts_per_archetype_not_per_book():
+    # Two half-sized archetypes do not add up to one proven archetype…
+    entries = (_sample(EXPECTANCY_MIN_SAMPLE - 1, archetype="A")
+               + _sample(EXPECTANCY_MIN_SAMPLE - 1, archetype="B"))
+    assert all(s.is_provisional for s in compute_archetype_expectancy(entries))
+    # …though the combined ALL row, which does have the trades, is judged.
+    overall = compute_overall_expectancy(entries)
+    assert overall.n == 2 * (EXPECTANCY_MIN_SAMPLE - 1)
+    assert overall.is_provisional is False
+    assert overall.above_threshold is True
+
+
+def test_report_publishes_the_sample_requirement():
+    assert build_expectancy_report([])["min_sample"] == EXPECTANCY_MIN_SAMPLE
 
 
 def test_breakeven_counts_as_zero_loss():

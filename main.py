@@ -12,6 +12,7 @@ from services.ibkr import (
 )
 from ui.dashboard import print_nav_table, run_live_dashboard
 from core.portfolio_manager import PortfolioManager
+from logger import logger
 import sync_config
 from rich.console import Console
 from rich.panel import Panel
@@ -143,6 +144,7 @@ def handle_maintenance(manager):
         print("2. Sync Trade History (Fetch latest IBKR CSV)")
         print("3. Re-ingest ALL local CSVs (Full History Replay)")
         print("4. Sync Historical Prices (Manual)")
+        print("5. Rebuild Price History (Re-download on one adjustment basis)")
         print("0. Back")
 
         choice = input("\nChoice: ").strip()
@@ -154,6 +156,8 @@ def handle_maintenance(manager):
             process_local_csvs()
         elif choice == '4':
             handle_sync_prices(manager)
+        elif choice == '5':
+            handle_rebuild_prices(manager)
         elif choice == '0':
             break
 
@@ -185,6 +189,54 @@ def handle_sync_prices(manager, silent=False):
 
     if not silent:
         console.print("\n[bold green]Price sync complete.[/bold green]")
+
+def handle_rebuild_prices(manager):
+    """Re-download every cached price series from scratch.
+
+    Ongoing syncs now detect a Yahoo re-basing (split/dividend) and heal that
+    series automatically. This is the one-off cure for a seam already welded into
+    the cache from before that guard existed — the symptom is an impossible
+    one-day jump on a chart, or a trailing stop anchored to a high-water mark the
+    position never traded at.
+    """
+    console.print("\n[bold cyan]--- REBUILD PRICE HISTORY ---[/bold cyan]")
+    console.print("Re-downloads all cached price history so every bar sits on the CURRENT")
+    console.print("split/dividend adjustment basis. Existing history is replaced, not merged.")
+    console.print("[dim]Trades and risk profiles are untouched. Expect one request per position.[/dim]")
+    if input("\nProceed? (y/N): ").strip().lower() != 'y':
+        console.print("Aborted.")
+        return
+
+    open_positions = manager.get_open_positions_hybrid()
+    if not open_positions:
+        console.print("[yellow]No open positions found to rebuild.[/yellow]")
+        return
+
+    from services.price_service import PriceService
+    from rich.progress import Progress
+
+    ps = PriceService()
+    rebuilt, failed = 0, []
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Rebuilding...", total=len(open_positions))
+        for pos in open_positions:
+            try:
+                yf_ticker = manager.mapper.resolve_yf_ticker(pos.ticker, conid=pos.conid)
+                if ps.rebuild_series(pos.conid, yf_ticker) > 0:
+                    rebuilt += 1
+                else:
+                    failed.append(pos.ticker)
+            except Exception as e:
+                logger.error(f"Price rebuild failed for {pos.ticker}: {e}")
+                failed.append(pos.ticker)
+            progress.update(task, advance=1, description=f"[cyan]Rebuilt {pos.ticker}")
+
+    console.print(f"\n[bold green]Rebuilt {rebuilt} series.[/bold green]")
+    if failed:
+        # A failed rebuild leaves that series' existing history in place — say so,
+        # rather than letting a silent skip read as success.
+        console.print(f"[yellow]No data returned for {', '.join(failed)} — those caches were left as they were.[/yellow]")
+
 
 def handle_rebuild_db():
     console.print("\n[bold red]WARNING: Surgical Rebuild initiated.[/bold red]")

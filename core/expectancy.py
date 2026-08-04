@@ -20,7 +20,7 @@ counts, conservatively, as a zero-magnitude loss), so wins + losses always == n.
 from dataclasses import dataclass
 from typing import Optional
 
-from constants import EXPECTANCY_THRESHOLD_R
+from constants import EXPECTANCY_MIN_SAMPLE, EXPECTANCY_THRESHOLD_R
 from core.trade_log import STATUS_TAKEN, STATUS_SKIPPED
 
 
@@ -35,7 +35,9 @@ class ArchetypeStats:
     avg_loss_r: float   # L̄  (mean |realized_r| over losers; 0 if none)
     expectancy_r: float  # E[R]
     total_r: float
-    above_threshold: bool  # E[R] > EXPECTANCY_THRESHOLD_R
+    above_threshold: bool  # E[R] > EXPECTANCY_THRESHOLD_R *and* the sample is big enough
+    n_min_sample: int      # closed trades required before E[R] is actionable
+    is_provisional: bool   # n < n_min_sample — E[R] is an anecdote, not an estimate
 
 
 @dataclass
@@ -81,7 +83,7 @@ def _closed_taken(entries):
             if (e.status or STATUS_TAKEN) == STATUS_TAKEN and e.realized_r is not None]
 
 
-def _archetype_stats(archetype: str, rows) -> ArchetypeStats:
+def _archetype_stats(archetype: str, rows, min_sample: int = EXPECTANCY_MIN_SAMPLE) -> ArchetypeStats:
     realized = [e.realized_r for e in rows]
     winners = [r for r in realized if r > 0]
     losers = [r for r in realized if r <= 0]
@@ -90,12 +92,19 @@ def _archetype_stats(archetype: str, rows) -> ArchetypeStats:
     avg_win = (sum(winners) / len(winners)) if winners else 0.0
     avg_loss = (sum(abs(r) for r in losers) / len(losers)) if losers else 0.0
     expectancy = w * avg_win - (1 - w) * avg_loss
+    # E[R] is always reported — it is the best available read and the user should
+    # see it accumulate. What the sample size gates is the VERDICT: below
+    # min_sample the archetype is provisional and can never read as proven, so a
+    # lucky first trade cannot license full size. See EXPECTANCY_MIN_SAMPLE.
+    provisional = n < min_sample
     return ArchetypeStats(
         archetype=archetype or "(unspecified)",
         n=n, wins=len(winners), losses=len(losers),
         win_rate=w, avg_win_r=avg_win, avg_loss_r=avg_loss,
         expectancy_r=expectancy, total_r=sum(realized),
-        above_threshold=expectancy > EXPECTANCY_THRESHOLD_R,
+        above_threshold=(expectancy > EXPECTANCY_THRESHOLD_R and not provisional),
+        n_min_sample=min_sample,
+        is_provisional=provisional,
     )
 
 
@@ -166,4 +175,5 @@ def build_expectancy_report(entries) -> dict:
         "sources": compute_source_stats(entries),
         "base_ccy": compute_base_currency_stats(entries),
         "threshold_r": EXPECTANCY_THRESHOLD_R,
+        "min_sample": EXPECTANCY_MIN_SAMPLE,
     }

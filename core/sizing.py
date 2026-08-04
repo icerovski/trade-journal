@@ -77,11 +77,22 @@ def compute_portfolio_risk(df: pd.DataFrame, total_nav: float, nav_ccy: str) -> 
     with_stop = active[has_stop].copy()
     without_stop = active[~has_stop].copy()
 
-    # P/L at stop in NAV currency
+    # P/L at stop in NAV currency. This one is legitimately NET: a position whose
+    # stop sits above entry really does bank a gain, and the question here is
+    # "what does a full stop-out cost me in cash?".
     with_stop['stop_out_nav'] = with_stop['Risk_Val'] * with_stop['FXRate'].fillna(1.0)
     total_stop_out = with_stop['stop_out_nav'].sum()
 
-    total_r_pct = with_stop['risk_pct_nav'].sum()
+    # Portfolio heat answers a different question — "how much NAV is still exposed
+    # to being lost?" — and must NOT net. A ratcheted winner carries a negative
+    # risk_pct_nav (a locked-in gain at its stop); summing raw lets it cancel live
+    # downside on other names, so a book of three 1%-risk positions plus one −3%
+    # winner would report ~0% heat and hand back false budget headroom. Heat is the
+    # sum of POSITIVE risk only; the net figure is kept alongside for context.
+    open_risk = with_stop['risk_pct_nav'].clip(lower=0.0)
+    total_r_pct = float(open_risk.sum())
+    total_r_pct_net = float(with_stop['risk_pct_nav'].sum())
+    n_locked_in = int((with_stop['risk_pct_nav'] < 0).sum())
     total_e_pct = active['NavPct'].sum()
 
     total_budget = with_stop['MaxRPct'].sum()
@@ -107,7 +118,9 @@ def compute_portfolio_risk(df: pd.DataFrame, total_nav: float, nav_ccy: str) -> 
         'n_with_stop': len(with_stop),
         'n_without_stop': len(without_stop),
         'total_stop_out': float(total_stop_out),
-        'total_r_pct': float(total_r_pct),
+        'total_r_pct': float(total_r_pct),          # heat: positive risk only
+        'total_r_pct_net': total_r_pct_net,         # net of stops ratcheted above entry
+        'n_locked_in': n_locked_in,                 # positions whose stop is above entry
         'total_e_pct': float(total_e_pct),
         'total_budget': float(total_budget),
         'headroom': float(headroom),

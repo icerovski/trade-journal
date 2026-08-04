@@ -141,7 +141,11 @@ def run_expectancy_report():
     threshold = report["threshold_r"]
 
     # ── Per-archetype expectancy ──────────────────────────────────────────────
-    console.print(f"\n[bold]EXPECTANCY BY ARCHETYPE[/bold]  [dim](threshold E[R] > {threshold:+.2f}R)[/dim]")
+    min_sample = report.get("min_sample", 0)
+    console.print(
+        f"\n[bold]EXPECTANCY BY ARCHETYPE[/bold]  "
+        f"[dim](proven = E[R] > {threshold:+.2f}R over at least {min_sample} closed trades)[/dim]"
+    )
     if not report["archetypes"]:
         console.print("[dim]No closed trades yet (need realized R).[/dim]")
     else:
@@ -154,8 +158,17 @@ def run_expectancy_report():
         t.add_column("E[R]", justify="right")
         t.add_column("", justify="left")
         for s in report["archetypes"]:
-            e_color = "green" if s.above_threshold else ("yellow" if s.expectancy_r > 0 else "red")
-            verdict = "[green]proven[/]" if s.above_threshold else "[yellow]unproven — starter size[/]"
+            # Three states, not two: too few trades to judge is a different answer
+            # from judged and found wanting, and must not be coloured like a verdict.
+            if s.is_provisional:
+                e_color = "dim"
+                verdict = f"[dim]provisional — {s.n}/{s.n_min_sample} trades[/]"
+            elif s.above_threshold:
+                e_color = "green"
+                verdict = "[green]proven[/]"
+            else:
+                e_color = "yellow" if s.expectancy_r > 0 else "red"
+                verdict = "[yellow]unproven — starter size[/]"
             t.add_row(
                 s.archetype, str(s.n), f"{s.win_rate*100:.0f}%",
                 f"+{s.avg_win_r:.2f}R", f"-{s.avg_loss_r:.2f}R",

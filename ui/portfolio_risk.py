@@ -75,7 +75,14 @@ def run_portfolio_risk():
     agg = Table(box=box.SIMPLE_HEAD, show_header=False, padding=(0, 2))
     agg.add_column("", style="dim")
     agg.add_column("", justify="right")
-    agg.add_row("Portfolio R%  (total risk at stop)",  f"[{rc}]{m['total_r_pct']:.2f}%[/]")
+    agg.add_row("Portfolio R%  (open risk at stop)",   f"[{rc}]{m['total_r_pct']:.2f}%[/]")
+    # Stops ratcheted above entry carry no downside, so they are excluded from heat
+    # above. Show what they take off the book so the two numbers never look wrong.
+    if m.get('n_locked_in'):
+        agg.add_row(
+            f"[dim]…net of {m['n_locked_in']} locked-in stop{'' if m['n_locked_in'] == 1 else 's'}[/]",
+            f"[dim]{m['total_r_pct_net']:.2f}%[/]",
+        )
     agg.add_row("Portfolio E%  (total HCM exposure)",  f"{m['total_e_pct']:.1f}%")
     agg.add_row("P/L if all stops hit",                stop_out_str)
     agg.add_row(

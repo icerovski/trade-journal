@@ -10,6 +10,90 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+# ---------------------------------------------------------------------------
+# One-shot data migrations
+#
+# The CREATE TABLE / ALTER statements in init_db are structurally idempotent and
+# re-run harmlessly on every startup. These are different: they MUTATE user rows,
+# and their WHERE clauses are historical guards, not permanent invariants. A guard
+# that only matched legacy rows in 2026 can match a perfectly legitimate row later
+# — the FIXED-stop rewrite below would then overwrite a deliberately deep stop with
+# the frozen inception stop AND ratchet highest_sl up to match, fabricating a breach
+# on a position the user had just re-stopped. Re-running a destructive migration
+# forever is a latent corruption path, so each one is recorded in schema_migrations
+# after it runs and can never fire again.
+#
+# Appending a new entry is the migration mechanism: give it a fresh name and it
+# runs once, on the next startup, on every installation.
+# ---------------------------------------------------------------------------
+_ONE_SHOT_MIGRATIONS = (
+    # Manual trade entry was removed; no code path can create a MANUAL row any more
+    # (every services/ibkr_parser.py ingest passes an explicit IBKR_* source), so
+    # this is a pure one-time purge of pre-removal rows.
+    ("001_purge_legacy_manual_trades", """
+        DELETE FROM trades WHERE source = 'MANUAL'
+    """),
+    # Tag positions matching the old preset definitions and move them to the new
+    # limits. Guarded on profile IS NULL, i.e. never re-tag an already-tagged row.
+    ("002_tag_preset_small", """
+        UPDATE risk_profiles SET profile = 'S', max_exp_pct = 1.5, max_r_pct = 0.30
+        WHERE profile IS NULL AND max_exp_pct = 3.0 AND max_r_pct = 0.50
+    """),
+    ("003_tag_preset_base", """
+        UPDATE risk_profiles SET profile = 'B', max_exp_pct = 3.0, max_r_pct = 0.60
+        WHERE profile IS NULL AND max_exp_pct = 4.0 AND max_r_pct = 0.75
+    """),
+    ("004_tag_preset_large", """
+        UPDATE risk_profiles SET profile = 'L'
+        WHERE profile IS NULL AND max_exp_pct = 5.0 AND max_r_pct = 1.00
+    """),
+    # Scale-In was removed — entry type is always SINGLE.
+    ("005_convert_scale_in_to_single", """
+        UPDATE risk_profiles SET entry_type = 'SINGLE' WHERE entry_type = 'SCALE_IN'
+    """),
+    # FIXED-stop redesign: atr_value now stores the absolute stop PRICE, where it
+    # previously stored the ATR distance. The "looks like a distance" heuristic is
+    # exactly why this must never run twice — a legitimate stop below half the
+    # inception stop (a leveraged name that halved and was re-stopped) matches it.
+    ("006_fixed_stop_atr_value_is_price", """
+        UPDATE risk_profiles
+        SET atr_value = inception_stop,
+            highest_sl = MAX(highest_sl, inception_stop)
+        WHERE stop_type = 'FIXED'
+          AND inception_stop IS NOT NULL
+          AND inception_stop > 0
+          AND atr_value < (inception_stop * 0.5)
+    """),
+)
+
+
+def _apply_one_shot_migrations(cursor):
+    """Run any migration in _ONE_SHOT_MIGRATIONS not yet recorded, then record it.
+
+    Called from init_db once the tables the migrations touch exist. On an
+    established database the pending set is every migration on the first startup
+    after this mechanism ships — the same statements that have been running on
+    every startup until now, so that final pass changes nothing that was not
+    already changed — and empty on every startup after that.
+    """
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    applied = {r[0] for r in cursor.execute("SELECT name FROM schema_migrations").fetchall()}
+
+    for name, sql in _ONE_SHOT_MIGRATIONS:
+        if name in applied:
+            continue
+        cursor.execute(sql)
+        if cursor.rowcount > 0:
+            logger.info(f"Migration {name}: {cursor.rowcount} row(s) affected.")
+        cursor.execute("INSERT INTO schema_migrations (name) VALUES (?)", (name,))
+
+
 def init_db():
     conn = get_conn()
     cursor = conn.cursor()
@@ -38,11 +122,6 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN multiplier REAL DEFAULT 1.0")
     except Exception: pass
-
-    # Cleanup: Remove legacy MANUAL trades as the feature is now disabled
-    cursor.execute("DELETE FROM trades WHERE source = 'MANUAL'")
-    if cursor.rowcount > 0:
-        logger.info(f"Surgical Cleanup: Removed {cursor.rowcount} legacy manual trades.")
 
     # 2. Risk Profiles Table
     cursor.execute("""
@@ -109,40 +188,11 @@ def init_db():
         cursor.execute("ALTER TABLE risk_profiles ADD COLUMN ccy TEXT")
     except Exception: pass
 
-    # Migration: Tag existing positions that matched old preset definitions, and update
-    # their limits to the new values. The WHERE profile IS NULL guard makes this a no-op
-    # after the first run (already-tagged rows are skipped).
-    cursor.execute("""
-        UPDATE risk_profiles SET profile = 'S', max_exp_pct = 1.5, max_r_pct = 0.30
-        WHERE profile IS NULL AND max_exp_pct = 3.0 AND max_r_pct = 0.50
-    """)
-    cursor.execute("""
-        UPDATE risk_profiles SET profile = 'B', max_exp_pct = 3.0, max_r_pct = 0.60
-        WHERE profile IS NULL AND max_exp_pct = 4.0 AND max_r_pct = 0.75
-    """)
-    cursor.execute("""
-        UPDATE risk_profiles SET profile = 'L'
-        WHERE profile IS NULL AND max_exp_pct = 5.0 AND max_r_pct = 1.00
-    """)
-
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_conid ON risk_profiles(conid) WHERE status = 'ACTIVE'")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_conid ON risk_profiles(conid) WHERE status = 'WATCH'")
 
-    # Migration: Remove Scale-In — convert any remaining SCALE_IN profiles to SINGLE.
-    cursor.execute("UPDATE risk_profiles SET entry_type = 'SINGLE' WHERE entry_type = 'SCALE_IN'")
-
-    # Migration: FIXED stop redesign — atr_value now stores the absolute stop price.
-    # Old behavior stored the ATR distance (small number); inception_stop stored the computed price.
-    # Guard: only migrate rows where atr_value looks like a distance (< half of inception_stop).
-    cursor.execute("""
-        UPDATE risk_profiles
-        SET atr_value = inception_stop,
-            highest_sl = MAX(highest_sl, inception_stop)
-        WHERE stop_type = 'FIXED'
-          AND inception_stop IS NOT NULL
-          AND inception_stop > 0
-          AND atr_value < (inception_stop * 0.5)
-    """)
+    # Historical data migrations — run exactly once each (see _apply_one_shot_migrations).
+    _apply_one_shot_migrations(cursor)
 
     # 3. Preset Definitions Table (persists matrix edits across sessions)
     cursor.execute("""
@@ -345,20 +395,68 @@ def get_all_monitored_profiles():
     conn.close()
     return [RiskProfile.from_row(r) for r in rows]
 
+# Columns carried from a WATCH prospect onto the ACTIVE profile it becomes.
+# Everything the user decided while the idea was on the watch list must survive
+# the promotion — an omission here silently discards a preset tag, a THESIS
+# classification, an exit shape or a TP override the moment the trade is filled,
+# with no user action to associate the loss with (promotion runs automatically
+# during dashboard consolidation). `highest_sl` is deliberately NOT carried: the
+# ratchet belongs to the lot, and a new lot starts from zero.
+_PROMOTED_COLUMNS = (
+    'atr_value', 'stop_type', 'entry_type', 'scale_step', 'max_r_pct', 'max_exp_pct',
+    'inception_stop', 'inception_atr', 'profile', 'tp_atr_mult', 'classification',
+    'exit_shape', 'ccy',
+)
+
 def promote_prospect_to_active(ticker, real_conid):
+    """Convert a WATCH prospect into the ACTIVE profile for its real conid.
+
+    Called during dashboard consolidation for every held position, so it must be
+    a cheap no-op when there is nothing to promote, and must never raise: an
+    ACTIVE profile already existing for this conid (possible — the ACTIVE and
+    WATCH unique indexes are independent) would otherwise hit idx_active_conid
+    and take the whole dashboard down. In that case the existing ACTIVE profile
+    wins untouched and the redundant WATCH row is simply retired.
+    """
     conn = get_conn()
-    cursor = conn.execute("SELECT id, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, inception_stop, inception_atr FROM risk_profiles WHERE ticker = ? AND status = 'WATCH'", (ticker.upper(),))
-    prospect = cursor.fetchone()
-    if prospect:
+    try:
+        prospect = conn.execute(
+            "SELECT * FROM risk_profiles WHERE ticker = ? AND status = 'WATCH'",
+            (ticker.upper(),)
+        ).fetchone()
+        if not prospect:
+            return
+
         conn.execute("UPDATE risk_profiles SET status = 'CLOSED', end_date = CURRENT_TIMESTAMP WHERE id = ?", (prospect['id'],))
-        conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, status, start_date, inception_stop, inception_atr)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP, ?, ?)
-        """, (str(real_conid), ticker.upper(), prospect['atr_value'], prospect['stop_type'], 
-              prospect['entry_type'], prospect['scale_step'], prospect['max_r_pct'], prospect['max_exp_pct'], prospect['inception_stop'], prospect['inception_atr']))
+
+        already_active = conn.execute(
+            "SELECT id FROM risk_profiles WHERE conid = ? AND status = 'ACTIVE'",
+            (str(real_conid),)
+        ).fetchone()
+        if already_active:
+            conn.commit()
+            logger.info(
+                f"PROMOTE SKIPPED: {ticker} (conid {real_conid}) already has an ACTIVE profile; "
+                f"retired the redundant WATCH row without overwriting it."
+            )
+            return
+
+        # Column names come from the module constant above, never from input.
+        # start_date stays the SQL keyword (as before) — it cannot be bound.
+        row = dict(prospect)
+        columns = ('conid', 'ticker', 'status') + _PROMOTED_COLUMNS
+        values = (str(real_conid), ticker.upper(), 'ACTIVE') + tuple(
+            row.get(col) for col in _PROMOTED_COLUMNS
+        )
+        conn.execute(
+            f"INSERT INTO risk_profiles (start_date, {', '.join(columns)}) "
+            f"VALUES (CURRENT_TIMESTAMP, {', '.join('?' for _ in columns)})",
+            values,
+        )
         conn.commit()
         logger.info(f"PROMOTED: Prospect {ticker} is now ACTIVE with conid {real_conid}")
-    conn.close()
+    finally:
+        conn.close()
 
 def delete_risk_profile(conid):
     conn = get_conn()

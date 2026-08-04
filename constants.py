@@ -183,6 +183,16 @@ GATE_G7_HEAT_MULT = 3.0
 # "proven" and worth trading at full size. Below this, trade starter size only.
 EXPECTANCY_THRESHOLD_R = 0.20
 
+# Minimum closed trades before an archetype's E[R] is treated as an estimate at
+# all. The formula is exact but the sample is not: with n=1 a single 3R winner
+# reads as E[R] = +3.00R and would promote an archetype to full size on one
+# trade — the metric would then be manufacturing the very over-sizing the log
+# exists to prevent. Below this bar the archetype is reported as PROVISIONAL and
+# never counts as proven, whatever E[R] says. At a few trades a month this is
+# roughly a year of trading per archetype; that is the honest cost of an
+# evidence-based rule, not a tuning knob to relax when the number looks good.
+EXPECTANCY_MIN_SAMPLE = 20
+
 # --- Horizon calibration (Horizon_Calibration_3to6mo.md) --------------------
 # The default (short-swing) lens uses the daily constants above. The 3–6mo
 # position lens retunes every horizon-sensitive knob (see core/calibration.py).
