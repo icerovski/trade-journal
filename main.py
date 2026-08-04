@@ -284,6 +284,9 @@ def handle_expectancy():
 
 def main():
     sync_config.smart_sync()
+    # Before anything reads the ledger: a OneDrive conflict copy means two machines
+    # forked it and nothing else in the app would say so.
+    sync_config.check_data_hub()
     init_db()
     manager = PortfolioManager()
 

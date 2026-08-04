@@ -1,3 +1,4 @@
+import re
 import shutil
 from pathlib import Path
 import atexit
@@ -10,6 +11,82 @@ REPO_DIR = Path.cwd()
 FILES_TO_SYNC = [
     (REPO_DIR / '.env', METADATA_VAULT / '.env'),
 ]
+
+# ---------------------------------------------------------------------------
+# Data-hub duplicate detection
+#
+# The ledger is a live SQLite file inside a synced OneDrive folder. OneDrive
+# cannot merge a binary file, so if the app runs on two machines with overlapping
+# writes it does not fail — it silently writes a SECOND database beside the first
+# ("trade_journal-LAPTOP-XYZ.db"). Nothing in the app would tell you which copy it
+# opened, so a forked ledger looks exactly like a working one. That is the whole
+# danger: not the lost file, the undetectable fork.
+#
+# Detection is keyed off the canonical filenames rather than OneDrive's naming
+# conventions (which differ per client and version): anything in the hub that
+# looks like another copy of a canonical file is reported. A `.db` duplicate is
+# loud; a stray `.log` is a one-liner.
+# ---------------------------------------------------------------------------
+CANONICAL_HUB_FILES = ("trade_journal.db", "prices.db", "trade_journal.log")
+
+# OneDrive/Dropbox conflict markers, vs. a deliberate hand-made backup.
+_CONFLICT_MARKERS = re.compile(
+    r"(-(?:LAPTOP|DESKTOP|PC|MACBOOK)-|conflicted copy|conflict|\(\d+\)$)",
+    re.IGNORECASE,
+)
+
+
+def find_duplicate_hub_files(names) -> dict:
+    """Classify data-hub filenames into extra copies of the canonical files.
+
+    Pure — takes an iterable of bare filenames so it can be tested without a
+    filesystem. Returns {'conflict': [...], 'other': [...]}: `conflict` carries a
+    sync-conflict marker (a genuine fork), `other` is any remaining extra copy
+    (typically a deliberate `.backup_` file). Canonical names are never reported.
+    """
+    conflict, other = [], []
+    for name in names:
+        if name in CANONICAL_HUB_FILES:
+            continue
+        for canonical in CANONICAL_HUB_FILES:
+            stem = Path(canonical).stem
+            # A duplicate shares the canonical stem and extension but not the name.
+            if name.startswith(stem) and name.endswith(Path(canonical).suffix):
+                (conflict if _CONFLICT_MARKERS.search(Path(name).stem) else other).append(name)
+                break
+    return {"conflict": sorted(conflict), "other": sorted(other)}
+
+
+def check_data_hub(data_dir=None) -> dict:
+    """Scan the data hub for duplicate ledgers and report to the console.
+
+    Called on startup. Read-only: it never deletes or moves anything — which copy
+    is authoritative is a judgement call, and guessing at it is how you lose a
+    ledger. Returns the same dict as find_duplicate_hub_files.
+    """
+    if data_dir is None:
+        from config import DATA_DIR
+        data_dir = DATA_DIR
+    data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        return {"conflict": [], "other": []}
+
+    found = find_duplicate_hub_files(p.name for p in data_dir.iterdir() if p.is_file())
+
+    forked_db = [n for n in found["conflict"] if n.endswith(".db")]
+    if forked_db:
+        print("\n[!!] SYNC CONFLICT — the data hub holds more than one copy of the ledger:")
+        for name in forked_db:
+            print(f"       {name}")
+        print("     Two machines wrote to it at once. Neither copy is authoritative and the")
+        print("     app cannot tell you which one it is using. Compare them before trading on")
+        print(f"     these numbers.  Hub: {data_dir}")
+
+    stray_logs = [n for n in found["conflict"] if not n.endswith(".db")]
+    if stray_logs:
+        print(f"[i] {len(stray_logs)} conflict-copy log file(s) in the data hub — safe to delete.")
+
+    return found
 
 def backup():
     """Copies local files TO OneDrive."""

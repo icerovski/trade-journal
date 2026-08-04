@@ -419,3 +419,19 @@ Every indicator in the app — ATR, the 200-DMA, the volume profile, anchored VW
 **Manual repair — Maintenance → `5. Rebuild Price History`.** Re-downloads every cached series from scratch onto the current basis. Use it for a seam welded in *before* the guard existed. Symptoms: an impossible one-day jump on a chart, or a trailing stop anchored to a high the position never reached. Trades and risk profiles are untouched; a series whose download returns nothing is left exactly as it was and named in the summary rather than silently skipped.
 
 Engine: `services/price_service.py` (`basis_shifted`, `rebuild_series`).
+
+### Running on more than one machine
+
+`trade_journal.db` is a live SQLite file inside a synced OneDrive folder. OneDrive cannot merge a binary file, so if the app writes it from two machines with overlapping syncs it does not fail — it quietly saves a **second** database beside the first, named after the machine (`trade_journal-LAPTOP-XYZ.db`). Both are then plausible, neither is authoritative, and nothing in the app tells you which one you are looking at. A forked ledger reads exactly like a healthy one.
+
+**The rule: close the app on one machine, let OneDrive finish syncing (green tick), then open it on the other.**
+
+On startup the app scans the data hub and warns if a duplicate ledger has appeared:
+
+```
+[!!] SYNC CONFLICT — the data hub holds more than one copy of the ledger:
+       trade_journal-LAPTOP-20V5N4Q9.db
+     Two machines wrote to it at once. Neither copy is authoritative...
+```
+
+The check is **read-only** — it never deletes or picks a winner, because which copy is correct depends on what you did on each machine. If it fires, compare the two (trade counts and the latest trade date are usually enough), keep the fuller one, and delete the other. A hand-made `trade_journal.backup_*.db` is recognised as a deliberate backup and does **not** trigger the warning. Stray `-LAPTOP-*.log` files are reported as one line and are always safe to delete.
