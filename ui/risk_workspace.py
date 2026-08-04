@@ -3,7 +3,6 @@ import math
 import time
 
 import pandas as pd
-import re
 from typing import Dict, Optional
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, Static, Label, Input, Button, TabbedContent, TabPane
@@ -25,6 +24,9 @@ from core.trade_log import TradeLogEntry, STATUS_TAKEN
 from core.gates import ProposedTrade, evaluate_gates, gates_summary
 from core.sizing import compute_position_size_gap
 from core.modeling import ModelInputs, build_position_model, solve_breakeven_add
+from core.command_parser import (
+    CommandContext, parse_classification, parse_command, resolve_tp_mult, resolve_tp_ratio,
+)
 from core.exit_shapes import normalize_shape, is_hard_target, shape_label
 from logger import logger, suppress_console_logging
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, RR_SETUP_FLOOR, CAPITAL_HURDLE_PCT, STALE_MIN_AGE_DAYS, REGIME_REVERSAL_CONFIRM_DAYS, GATE_G1_MAX_STOP_PCT_3TO6MO, GATE_CONTEXT_MAX_AGE_DAYS, CAL_ATR_STALENESS_RATIO
@@ -77,72 +79,9 @@ def _stage_desc(stage: str, regime: str) -> str:
 # re-exported from this module so existing call sites and tests are unaffected.
 
 
-def parse_classification(raw: str):
-    """Extract a `C:` classification token from an (upper-cased) command string.
-
-    Returns (classification, stripped_raw):
-      • C:TH → "THESIS",  C:TE → "TECHNICAL",  C:- → "" (explicit clear/unset);
-      • classification is None when no C: token is present (leave the stored tag untouched);
-      • stripped_raw is `raw` with the token removed.
-    Pure so it can be unit-tested without the Textual app.
-    """
-    m = re.search(r"C:(THESIS|TECHNICAL|TH|TE|-)", raw)
-    if not m:
-        return None, raw
-    tok = m.group(1)
-    classification = "" if tok == "-" else ("THESIS" if tok in ("TH", "THESIS") else "TECHNICAL")
-    return classification, raw.replace(m.group(0), "").strip()
-
-
-def resolve_tp_mult(token: str, entry: float, inception_atr: float):
-    """Resolve a `TP:` token into a multiple of the inception ATR.
-
-    Returns (mult, clear, ok):
-      • clear=True  → user typed `TP:-` (revert to the default 3R), mult is None.
-      • ok=False    → token could not be resolved (missing inception ATR or an
-                      unrecognised form); caller should warn and ignore.
-    Accepted forms (token already upper-cased, `TP:` stripped):
-      4 | 4R           → explicit multiple of inception ATR
-      +35% | 35%       → gain as % of entry, divided by inception ATR
-    The absolute-$ form ($60K) was cut — TP:nR and TP:N:1 carry the real use
-    cases; $/K tokens fall through to ok=False.
-    """
-    token = (token or "").strip()
-    if token == '-':
-        return None, True, True
-    if not inception_atr or inception_atr <= 0 or not entry or entry <= 0:
-        return None, False, False
-    try:
-        if token.endswith('R'):
-            return float(token[:-1]), False, True
-        if token.endswith('%'):
-            pct = float(token.rstrip('%').lstrip('+'))
-            return (entry * pct / 100.0) / inception_atr, False, True
-        return float(token), False, True  # plain number → multiple
-    except ValueError:
-        return None, False, False
-
-
-def resolve_tp_ratio(ratio: float, entry: float, inception_atr: float, price: float, stop: float):
-    """Resolve an N:1 forward reward:risk goal into a multiple of the inception ATR.
-
-    The target that pays `ratio`:1 measured from the CURRENT price against `stop` is
-        target = price + ratio × (price − stop)
-    i.e. `ratio` units of upside from here for every unit given back to the stop. It is then
-    expressed — like every stored TP — as a multiple of the frozen inception ATR from entry,
-    so the saved value does not drift when the stop is later tightened. This is the same
-    measure the panel's TARGET line flags against, so a freshly set N:1 target reads exactly
-    N.00 forward RR.
-
-    Returns (mult, ok); ok=False when the inputs cannot form a positive-risk target — price
-    at/below the stop (no risk to pay 3:1 on), or a missing inception ATR.
-    """
-    if not inception_atr or inception_atr <= 0 or not entry or entry <= 0:
-        return None, False
-    if ratio <= 0 or price <= stop:
-        return None, False
-    target = price + ratio * (price - stop)
-    return (target - entry) / inception_atr, True
+# parse_classification / resolve_tp_mult / resolve_tp_ratio moved to
+# core.command_parser alongside the rest of the DSL; imported above and
+# re-exported here so existing call sites and tests are unaffected.
 
 
 def _trim_shares(qty: float, pct: float) -> float:
@@ -1221,161 +1160,25 @@ class RiskWorkspace(App):
             if not pos:
                 return
             
-            f_atr, s_type, m_r, m_e = pos.atr, pos.stop_type, pos.max_r_pct, pos.max_exp_pct
+            # The DSL lives in core.command_parser — token order is load-bearing and
+            # documented there. This handler resolves context, surfaces the parser's
+            # messages, renders the row, and stores the draft.
+            ctx = CommandContext.from_position(pos, disc)
+            parsed = parse_command(raw, ctx, PRESETS)
+            if parsed is None:
+                return
 
-            active_preset = ""
-            p_m = re.search(r"P:([SBL])", raw)
-            if p_m:
-                preset = PRESETS.get(p_m.group(1))
-                if preset:
-                    m_r = preset["max_r_pct"]
-                    m_e = preset["max_exp_pct"]
-                    active_preset = p_m.group(1)
-                raw = raw.replace(p_m.group(0), "").strip()
+            for note in parsed.notes:
+                self._notify_snap(note)
+            for warning in parsed.warnings:
+                self.notify(warning, severity="warning")
 
-            r_m = re.search(r"R:([0-9\.]+)", raw)
-            if r_m:
-                m_r = float(r_m.group(1))
-                raw = raw.replace(r_m.group(0), "").strip()
-            e_m = re.search(r"E:([0-9\.]+)", raw)
-            if e_m:
-                m_e = float(e_m.group(1))
-                raw = raw.replace(e_m.group(0), "").strip()
-
-            # THESIS/TECHNICAL tag (§0a). None = not typed (preserve stored tag on commit);
-            # "" = explicit clear. Carried only — no exit logic branches on it.
-            active_class, raw = parse_classification(raw)
-
-            # Source / theme tags (§0a, §7): SRC:ZACKS THM:SEMIS. Journal-only — they ride
-            # the draft into the trade_log write at commit and are never persisted on the
-            # risk profile. Parsed before the F/T stop-type check ("THM" contains a T) and
-            # values are single uppercase tokens (the command line is upper-cased).
-            src_tag = None
-            s_m = re.search(r"SRC:([A-Z0-9_\-\.&]+)", raw)
-            if s_m:
-                src_tag = s_m.group(1)
-                raw = raw.replace(s_m.group(0), "").strip()
-            thm_tag = None
-            t_m = re.search(r"THM:([A-Z0-9_\-\.&]+)", raw)
-            if t_m:
-                thm_tag = t_m.group(1)
-                raw = raw.replace(t_m.group(0), "").strip()
-
-            # Gap-aware sizing (§6): G:<price> = plausible post-event gap price. Opt-in —
-            # absent (default) leaves sizing on the standard fixed-fractional path. Parsed
-            # before the +N/-N and stop-value regexes so its digits aren't misread.
-            gap_price = None
-            g_m = re.search(r"G:([0-9]+(?:\.[0-9]+)?)", raw)
-            if g_m:
-                gap_price = float(g_m.group(1))
-                raw = raw.replace(g_m.group(0), "").strip()
-
-            # Exit shape (§5a): X:H hard target · X:R scale+runner · X:T thesis · X:- default.
-            # None = not typed (preserve stored shape); "" = explicit clear to default ladder.
-            # Parsed before the F/T stop-type check so "X:T" isn't read as a TRAILING flag.
-            active_shape = None
-            x_m = re.search(r"X:(HARD|RUNNER|THESIS|H|R|T|L|-)", raw)
-            if x_m:
-                tok = x_m.group(1)
-                active_shape = "" if tok == "-" else normalize_shape(tok)
-                raw = raw.replace(x_m.group(0), "").strip()
-
-            # §0a coupling: a THESIS tag implies the thesis-exit shape (one clock per
-            # trade — no guessed-at-entry price target) unless an explicit X: was typed
-            # this edit or a non-default shape is already stored. Overridable.
-            # MUST stay below the X: parse: `active_shape` is bound there, and only
-            # after it is `active_shape is None` a truthful "no X: typed this edit".
-            if active_class == "THESIS" and active_shape is None \
-                    and normalize_shape(getattr(pos, 'exit_shape', '')) == "LADDER":
-                active_shape = "THESIS"
-                self._notify_snap(f"{pos.ticker}: C:TH → thesis-exit shape applied (no price target; override with X:L or X:H).")
-
-            # TP override: TP:4 / TP:4R / TP:+35% / TP:- (clear). A multiple of the
-            # frozen inception ATR — stays put when the stop ATR changes. Parsed BEFORE the
-            # +N/-N quantity regex so "TP:+35%" isn't misread as a share quantity. The regex
-            # still captures the cut $/K forms so they are stripped and rejected with a
-            # warning instead of leaking into the quantity parse.
-            existing_tp = pos.tp_atr_mult if getattr(pos, 'tp_is_override', False) else None
-            tp_final = existing_tp
-            # TP:N:1 — set the target to an N:1 forward reward:risk vs the MODELED stop (e.g.
-            # TP:3:1). The ratio is measured from current price to the stop, so it is captured
-            # and stripped here but RESOLVED below, once sl_p is known. Checked before the
-            # fixed-form regex so "3:1" isn't misread as the fixed multiple "3" (leaving ":1").
-            tp_ratio = None
-            tpr_m = re.search(r"TP:(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)", raw)
-            if tpr_m:
-                raw = raw.replace(tpr_m.group(0), "").strip()
-                num, den = float(tpr_m.group(1)), float(tpr_m.group(2))
-                tp_ratio = (num / den) if den > 0 else None
-            else:
-                tp_m = re.search(r"TP:(\-|\+?\$?\d+(?:\.\d+)?[%KR]?)", raw)
-                if tp_m:
-                    raw = raw.replace(tp_m.group(0), "").strip()
-                    inc_atr = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
-                    mult, clear, ok = resolve_tp_mult(tp_m.group(1), pos.entry_price, inc_atr)
-                    if not ok:
-                        self.notify("TP target not resolved — needs an inception ATR; accepted forms: TP:nR, TP:+35%, TP:N:1, TP:- ($ form removed).", severity="warning")
-                    elif clear:
-                        tp_final = None
-                    else:
-                        tp_final = mult
-
-            # Quantity modeling: +N / -N shares at the live price, or BE = solve P/L@Stop → 0.
-            # Parsed before the stop-value regex so the digits in "+26" aren't read as a stop.
-            hypo_add = None
-            goal_seek = None
-            if re.search(r"\bBE\b", raw):
-                goal_seek = 'BE'
-                raw = re.sub(r"\bBE\b", "", raw).strip()
-            add_m = re.search(r"([+\-]\d+(?:\.\d+)?)", raw)
-            if add_m:
-                hypo_add = float(add_m.group(1))
-                raw = raw.replace(add_m.group(1), "").strip()
-
-            if 'T' in raw:
-                s_type = "TRAILING"
-                raw = raw.replace('T', "").strip()
-            elif 'F' in raw:
-                s_type = "FIXED"
-                raw = raw.replace('F', "").strip()
-            
-            cur_p_d = disc['current_price'] if disc else (pos.current_price or pos.mark_price)
-            cached_hwm = disc.get('max_price', 0.0) if disc else 0.0
-            hwm = max(pos.entry_price, cur_p_d, pos.mark_price, cached_hwm, pos.max_since_entry)
-            base_p = hwm if s_type == 'TRAILING' else pos.entry_price
-            if base_p == 0:
-                base_p = cur_p_d
-            
-            val_m = re.search(r"([@\$0-9\.%]+)", raw)
-            if val_m:
-                v = val_m.group(1)
-                is_at = v.startswith('@')   # @PRICE T → trailing anchored to exact price
-                is_d = v.startswith('$')
-                num = float(v[1:] if (is_at or is_d) else (v[:-1] if v.endswith('%') else v))
-                if s_type == 'FIXED':
-                    f_atr = num  # for FIXED: the value IS the literal stop price
-                elif is_at:
-                    f_atr = base_p - num    # convert price floor → ATR distance from HWM
-                elif v.endswith('%'):
-                    f_atr = base_p * (num / 100.0)
-                else:
-                    f_atr = num  # dollar amount (default; $ prefix is cosmetic)
-
-            if s_type == 'FIXED':
-                sl_p = f_atr
-            else:
-                sl_p = base_p - f_atr
-
-            # Deferred TP:N:1 — now that the modeled stop price (sl_p) is known, set the target
-            # to an N:1 forward reward:risk from the current price. Stored as a frozen
-            # inception-ATR multiple, so it won't drift if the stop is later tightened.
-            if tp_ratio is not None:
-                inc_atr_r = pos.inception_atr if (pos.inception_atr and pos.inception_atr > 0) else pos.atr
-                mult_r, ok_r = resolve_tp_ratio(tp_ratio, pos.entry_price, inc_atr_r, cur_p_d, sl_p)
-                if ok_r:
-                    tp_final = mult_r
-                else:
-                    self.notify("TP ratio needs the price above the stop and an inception ATR.", severity="warning")
+            f_atr, s_type = parsed.atr, parsed.stop_type
+            m_r, m_e = parsed.max_r_pct, parsed.max_exp_pct
+            active_preset = parsed.preset or ""
+            gap_price, tp_final = parsed.gap_price, parsed.tp_atr_mult
+            hypo_add, goal_seek = parsed.add, parsed.goal_seek
+            base_p, cur_p_d, sl_p = parsed.base_price, parsed.current_price, parsed.stop_price
 
             # Hypothetical Quantity (Sizing Discovery). Gap-aware (§6) when G: is supplied:
             # risk against the LOWER of the stop and the plausible gap price. Default
@@ -1427,54 +1230,9 @@ class RiskWorkspace(App):
             table.update_cell(self.current_conid, "col_nav_pct", f"{modeled_nav_pct:.1f}% ({m_e:.1f}%)")
             table.update_cell(self.current_conid, "col_r", f"[{'red' if hypo_r>(m_r*1.5) else 'yellow' if hypo_r>m_r else 'white'}]{hypo_r:.1f}% ({m_r:.1f}%) [/]")
             
-            # For FIXED the user gives a stop *price*, not an ATR distance, so the milestone
-            # ladder needs an R unit. Snap the risk distance (entry − stop) to the nearest
-            # discovery-ATR timeframe, so the ladder runs on a real volatility horizon that
-            # matches how the stop was sized — instead of a hardcoded daily ATR, which made the
-            # ladder fire prematurely on deliberately deep (e.g. leveraged-ETF) stops. TRAILING
-            # already carries its own distance, so it is left unchanged.
-            if s_type == 'FIXED':
-                risk_dist = abs(hypo_entry - sl_p)
-                disc_rows = (disc.get('rows') or []) if disc else []
-                # Thin history shrinks a timeframe's ATR window while keeping its
-                # label — never freeze such a value as the position's R unit.
-                # snap_inception_atr (core/stop_loss) is the shared snap rule.
-                snapped, snap_label = snap_inception_atr(disc_rows, risk_dist)
-                if snapped is not None:
-                    save_incep_atr = snapped
-                    # If a shrunken (⚠) row was actually nearest, the snap moved to a
-                    # different timeframe than the one the user likely sized against —
-                    # say so instead of switching silently.
-                    naive = {r.label: r.atr_wilder for r in disc_rows}
-                    naive_label = min(naive, key=lambda k: abs(naive[k] - risk_dist))
-                    if naive_label != snap_label:
-                        self._notify_snap(f"{pos.ticker}: {naive_label} ATR has too little history (⚠) — R snapped to {snap_label} instead.")
-                elif disc_rows and risk_dist > 0:
-                    if pos.inception_atr and pos.inception_atr > 0:
-                        save_incep_atr = pos.inception_atr
-                        self._notify_snap(f"{pos.ticker}: price history too thin for a trustworthy ATR snap — keeping stored inception ATR.")
-                    else:
-                        # First commit with no trustworthy ATR anywhere: anchor the
-                        # ladder to the actual risk distance (its own documented
-                        # fallback). Never leave None — db.set_position_risk degrades
-                        # a NULL inception to atr_value, which for FIXED is the stop
-                        # PRICE, a catastrophic R unit.
-                        save_incep_atr = risk_dist
-                        self._notify_snap(f"{pos.ticker}: history too thin for any ATR — ladder anchored to entry−stop ({risk_dist:,.2f}).")
-                else:
-                    save_incep_atr = pos.inception_atr
-                    if (not save_incep_atr or save_incep_atr <= 0) and risk_dist > 0:
-                        # No discovery data at all (worker still loading or yfinance
-                        # down): still never leave None — db degrades a NULL inception
-                        # to atr_value, the stop PRICE, as the frozen R unit.
-                        save_incep_atr = risk_dist
-            else:
-                save_incep_atr = f_atr
-
-            # Preserve the stored tag/shape when the user didn't type C:/X: this edit.
-            draft_class = active_class if active_class is not None else (getattr(pos, 'classification', '') or '')
-            draft_shape = active_shape if active_shape is not None else (getattr(pos, 'exit_shape', '') or '')
-            self.drafts[self.current_conid] = {'atr': f_atr, 'type': s_type, 'ticker': pos.ticker, 'max_r_pct': m_r, 'max_exp_pct': m_e, 'hypo_stop': sl_p, 'inception_atr': save_incep_atr, 'profile': active_preset if active_preset else None, 'tp_atr_mult': tp_final, 'hypo_add': hypo_add, 'goal_seek': goal_seek, 'classification': draft_class, 'gap_price': gap_price, 'exit_shape': draft_shape, 'source': src_tag or '', 'theme': thm_tag or ''}
+            # The draft carries the parse forward to commit; tokens the user did not
+            # type this edit preserve whatever is already stored on the profile.
+            self.drafts[self.current_conid] = parsed.to_draft(pos.ticker, ctx)
             self.query_one("#preset-legend", Label).update(_preset_legend(active_preset))
             self.refresh_risk_checklist(sl_p, f_atr, m_r, m_e, hypo_qty=calc_q, hypo_entry=hypo_entry, hypo_add=hypo_add, goal_seek=goal_seek, hypo_tp_mult=tp_final)
             self._last_modeling_error = None
