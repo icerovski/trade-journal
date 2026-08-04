@@ -28,7 +28,7 @@ limits enforced on every position, and a Textual/rich TUI cockpit for daily work
 |---|---|---|
 | Code repo | `C:\repos\trade-journal` | Pure logic + docs, no secrets |
 | Config vault | OneDrive `Documents\Logos\.repos\trade-journal` | `.env` (IBKR tokens, paths), private config |
-| Data hub | OneDrive `Accounts\HTC_EOOD\TradeJournalData` | `trade_journal.db`, `prices.db`, CSVs, logs |
+| Data hub | OneDrive `Companies\HTC_EOOD\TradeJournalData` | `trade_journal.db`, `prices.db`, CSVs, logs |
 
 `sync_config.smart_sync()` pulls `.env` from the vault on startup; run
 `uv run python sync_config.py` to back it up on exit.
