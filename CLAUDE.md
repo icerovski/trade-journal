@@ -59,6 +59,8 @@ IBKR Flex API → services/ibkr.py → services/ibkr_parser.py → db.py (trades
 
 **Ledger Replay:** Positions are always derived by replaying the `trades` table in chronological order — they are never stored. `LedgerEngine.calculate_positions(trades)` is a pure function. This is the single most important architectural constraint; do not persist computed positions.
 
+**Read paths do not write.** Enrichment, parsing and consolidation compute; a named caller persists. `calculate_position_risk` reports an advanced trailing stop as `Position.pending_ratchet` and does not import `db` at all — `PortfolioManager._enrich_metrics` owns that write and commits the whole refresh through `db.update_high_water_marks` in one transaction (nothing at all when no stop moved). `get_broker_verified_snapshot` collects asset-master rows and calls `db.save_ticker_info_bulk` once; `_consolidate_positions` is pure arithmetic and prospect promotion is its own step. This matters most for the ratchet: it is monotonic and permanent, so a write buried in a per-position render loop lets one bad tick raise a stop for good. When adding to these paths, return the value — do not reach for the database.
+
 **Reset-on-Zero:** When a position's quantity reaches zero (within `QTY_ZERO_THRESHOLD = 0.0001`), cost basis is cleared. Re-entry starts a clean new lot. This prevents ghost positions and allows accurate re-entry tracking.
 
 **Reconciliation Bridge:** `ReconciliationService.reconcile_hybrid()` treats an IBKR open-positions CSV as a verified checkpoint and applies pending deltas (confirmations, manual trades entered after the snapshot date) on top. Cost-basis healing recovers true inception prices from the global ledger when the broker snapshot omits them.
