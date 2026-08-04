@@ -31,9 +31,11 @@ No linting configuration is set up; no ruff/flake8/mypy config exists.
 |---|---|---|
 | Code repo | `C:\repos\trade-journal` | Pure logic, no secrets |
 | Config vault | OneDrive `Documents\Logos\.repos\trade-journal` | `.env`, ticker mappings |
-| Data hub | OneDrive `Accounts\HTC_EOOD\TradeJournalData` | `trade_journal.db`, `prices.db`, CSVs, logs |
+| Data hub | OneDrive `Companies\HTC_EOOD\TradeJournalData` | `trade_journal.db`, `prices.db`, CSVs, logs |
 
 `DB_PATH`, `PRICES_DB_PATH`, and all data directories resolve from `DATA_PATH` in `.env`. On startup, `sync_config.smart_sync()` syncs `.env` from OneDrive. On exit, it backs it up.
+
+**Verify the hub before trusting any report.** `config.DATA_DIR` calls `mkdir(parents=True)`, so a wrong or stale `DATA_PATH` does not fail — it silently creates an empty hub, and `init_db` populates it with empty tables. The app then runs normally against a book with no history and no risk profiles. A second `TradeJournalData` folder under `OneDrive\Accounts\` was populated this way (2026-08); if a report looks impossibly sparse, check `DATA_PATH` first. The live book has ~2,300 trades back to 2024-09 and ~54 ACTIVE risk profiles.
 
 ### Data Flow
 
