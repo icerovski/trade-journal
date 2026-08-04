@@ -8,10 +8,7 @@ from config import (
     IBKR_CONFIRMATIONS_CSV
 )
 from .ibkr_parser import IBKRParser
-from logger import logger, log_system_milestone
-
-# Log the recent improvement
-log_system_milestone("Implemented Real-Time Trade Confirmations with Fingerprint De-duplication")
+from logger import logger
 
 # --- 1. MASTER DOWNLOADER (Generic) ---
 def download_flex_report(query_id, output_path, force_download=False):

@@ -3,11 +3,9 @@ import numpy as np
 from typing import List
 import db
 from models import Trade
-from logger import logger, log_system_milestone
+from logger import logger
 from core.asset_registry import AssetRegistry
 
-# Log the recent improvement
-log_system_milestone("Implemented centralized DataLoader for DB and CSV snapshots")
 
 class DataLoader:
     """

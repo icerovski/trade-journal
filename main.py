@@ -24,29 +24,6 @@ warnings.filterwarnings("ignore", module="yfinance")
 
 console = Console()
 
-def print_watch_list_summary():
-    """Displays a concise summary of prospects on the Watch List."""
-    prospects = get_watch_list_profiles()
-    if not prospects:
-        return
-
-    from rich.table import Table
-    from rich import box
-    
-    table = Table(box=box.SIMPLE_HEAD, title="[bold yellow]WATCH LIST PROSPECTS[/bold yellow]", title_justify="left")
-    table.add_column("TICKER", style="cyan")
-    table.add_column("ATR", justify="right")
-    table.add_column("TYPE", justify="center")
-
-    for p in prospects:
-        table.add_row(
-            str(p['ticker']),
-            f"{p['atr_value']:.2f}",
-            str(p['stop_type'])[:1],
-        )
-    
-    console.print(table)
-
 def print_open_items():
     """Surface unchecked items from docs/OPEN_ITEMS.md on startup. Tracked in git,
     so the reminder travels across machines (the .claude memory store does not)."""

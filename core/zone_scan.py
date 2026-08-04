@@ -147,7 +147,8 @@ def _micro_support(
     bars. Four anchor types are considered below price:
       - VAL:   the micro volume-profile value-area low,
       - HVN:   the nearest high-volume node (heavier shelf than the VAL edge),
-      - AVWAP: anchored to the most recent swing low (the lowest low in the window),
+      - AVWAP: anchored to the window's LOWEST low (not a confirmed fractal pivot —
+               find_pivots cannot confirm one within `window` bars of the end),
       - GAP:   the floor of the most recent significant breakout gap.
     The nearest of those below price wins (tightest), and the stop sits `buffer_atr`
     daily-ATRs beneath it — a clean break of that level means the parabolic move
@@ -171,7 +172,7 @@ def _micro_support(
         if hvns_below:
             candidates[f"HVN_{micro_days}d"] = max(hvns_below)
 
-    anchor_pos = int(micro["low"].to_numpy().argmin())  # most recent swing low in window
+    anchor_pos = int(micro["low"].to_numpy().argmin())  # lowest low in the window
     av = anchored_vwap(micro.reset_index(drop=True), anchor_pos)
     if math.isfinite(av) and av < price:
         candidates[f"AVWAP_{micro_days}d"] = av

@@ -212,7 +212,6 @@ class PortfolioManager:
         Hybrid Mode: Starts from IBKR Snapshot + pending MANUAL trades/transfers.
         Consolidates positions across accounts by default unless account_id is provided.
         """
-        from db import promote_prospect_to_active
         broker_snapshot, report_date = self.loader.get_broker_verified_snapshot()
         all_trades = self.loader.get_trades_as_models()
         

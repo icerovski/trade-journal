@@ -197,8 +197,17 @@ Orthogonal to the ATR exit ladder — it answers "is this capital working?", not
 
 ### Portfolio Risk Report (Menu Option 7)
 
-- **`core/portfolio_analytics.py`** — Pure computation module. Inputs: enriched positions DataFrame. Outputs: `total_stop_out` (Σ Risk_Val × FXRate in NAV currency), `total_r_pct` (Σ risk_pct_nav), `total_e_pct` (Σ NavPct), `headroom`, `pct_budget_used`, HHI concentration index, currency breakdown, breached tickers, unmanaged positions list.
+- **`core/sizing.py`** (`compute_portfolio_risk`) — Pure computation. Inputs: enriched positions DataFrame. Outputs: `total_stop_out` (Σ Risk_Val × FXRate in NAV currency), `total_r_pct`, `total_e_pct` (Σ NavPct), `headroom`, `pct_budget_used`, HHI concentration index, currency breakdown, breached tickers, unmanaged positions list.
 - **`portfolio_risk.py`** — Rich console display: panel header with NAV/count/breach flags, AGGREGATE RISK table, CONCENTRATION (top-5 by exposure and risk), CURRENCY EXPOSURE table, unmanaged positions warning.
+
+**Portfolio R% counts open risk only — it does not net.** A position whose stop has ratcheted above entry has a *negative* risk-at-stop (it banks a gain if stopped). That is the right sign for "what does a stop-out pay me", and the wrong sign for "how much NAV is still at risk". Summing raw would let one winner cancel live downside on other names:
+
+| | Old (netted) | Now (open risk) |
+|---|---|---|
+| 3 positions at 1% risk + 1 winner stopped 3% above entry | 0.40% | 2.70% |
+| Budget headroom (4% budget) | 3.60% | 1.30% |
+
+The netted figure is still shown, dimmed, as a sub-line (`…net of N locked-in stops`) when any position carries one. **P/L if all stops hit** stays net — a currency total is exactly where the winner legitimately pays for the losers. The same floor-at-zero rule applies to the G7 portfolio-heat gate (§10), so a ratcheted winner can no longer wave through an entry the book has no room for.
 
 ---
 
@@ -361,7 +370,15 @@ Menu option **9** renders the decision journal (`trade_log`) and is also its **c
 - **`B` — backfill closed lots.** Open journal rows whose position has since closed are listed with a **ledger-suggested realized R** — `(qty-weighted average SELL price − entry) / R₁` from the `trades` table. Enter accepts the suggestion, a typed value overrides it, `s` skips. Nothing is written unconfirmed; rows without usable geometry fall back to manual input.
 - **`K` — log a skipped source pick** (§0a): ticker, source (defaults to Stansberry), optional note; the entry price is auto-resolved from Yahoo when possible so the funnel benchmark has an anchor. Works even when the journal is empty — this is how it stops being dark.
 
-- **By archetype** — win rate, average win / average loss (in R), and **E[R] = w·W̄ − (1 − w)·L̄**. Each archetype is flagged *proven* / *unproven* against the `EXPECTANCY_THRESHOLD_R` (+0.20R); an `ALL` row aggregates.
+- **By archetype** — win rate, average win / average loss (in R), and **E[R] = w·W̄ − (1 − w)·L̄**. Three verdicts, not two:
+
+| Verdict | Condition | Meaning |
+|---|---|---|
+| **provisional — n/20** | fewer than `EXPECTANCY_MIN_SAMPLE` (20) closed trades | too few trades to judge — E[R] is shown but means little |
+| **proven** | E[R] > `EXPECTANCY_THRESHOLD_R` (+0.20R) **and** n ≥ 20 | trade at full size |
+| **unproven — starter size** | n ≥ 20 but E[R] at or below the threshold | judged, and found wanting |
+
+  The sample gate exists because the formula is exact while a small sample is not: at n = 1 a single +3R winner reads `E[R] = +3.00R` and would license full size off one trade — the metric manufacturing the over-sizing the journal exists to prevent. E[R] is always displayed so it can be watched accumulating; only the *verdict* waits. The count is per archetype; the `ALL` row aggregates and is judged on the combined count.
 - **Source vs benchmark** — for each source: trades taken vs **skipped picks**, average realized R, average result-vs-benchmark, and average base-currency return. This answers the funnel question: does the source add edge, net of cost?
 - **Base-currency return** — total and average realized return in the book's base currency over closed trades.
 
@@ -388,3 +405,17 @@ The Zone Scanner reads a **`calibration_profile`** setting that selects the hori
 The profile changes the **lens** (timeframe / smoothing) only; it adds no time stop. Switch it in the Risk Workspace **preset/settings modal (`M`)** — the `calibration_profile` row next to the gates row (values: `default` / `position_3to6mo`). The active lens is always visible in the risk-workspace and zone-scanner headers (`gates: off · lens: default`). Engine: `core/calibration.py` (`CalibrationProfile`, `get_calibration`).
 
 **§1a staleness check (lens only):** when ATR discovery loads under `position_3to6mo` and the daily 14d ATR exceeds ~0.7× the weekly 12w ATR (the normal ratio is ~0.45 by √5 time-scaling), the workspace warns that short-term volatility has left the weekly baseline behind — re-scan the structure before trusting lens-scale stops.
+
+---
+
+## 12. Price History Integrity (Adjustment Basis)
+
+Every indicator in the app — ATR, the 200-DMA, the volume profile, anchored VWAP, and the high-water mark that drives the trailing ratchet — reads the cached daily bars in `prices.db`. Those bars must all sit on **one** split/dividend adjustment basis, or the numbers are computed across a discontinuity that never happened in the market.
+
+**Why it can drift.** Yahoo is queried with `auto_adjust=True`, so it re-bases its *entire* price history on every split and dividend. The cache, however, only ever appends dates it has not seen. Left unguarded, a corporate action leaves old-basis history welded to new-basis recent bars, with an invisible seam between them. The most damaging consequence is not a wrong chart: `highest_high_since` would read a high the position never traded at, and the trailing ratchet writes that stop into the database **permanently** (it only ever moves up).
+
+**Automatic guard.** Every forward price update now re-fetches a few days it already holds and compares them. A settled daily bar cannot change — unless the basis moved. On disagreement beyond 0.1%, the whole series is re-downloaded and replaced, and a warning is logged. The newest cached bar is excluded from the comparison, because mid-session it is a partial day and would otherwise trigger a rebuild on every intraday sync. Cost when nothing changed: nothing — the overlapping dates are discarded as duplicates, exactly as before.
+
+**Manual repair — Maintenance → `5. Rebuild Price History`.** Re-downloads every cached series from scratch onto the current basis. Use it for a seam welded in *before* the guard existed. Symptoms: an impossible one-day jump on a chart, or a trailing stop anchored to a high the position never reached. Trades and risk profiles are untouched; a series whose download returns nothing is left exactly as it was and named in the summary rather than silently skipped.
+
+Engine: `services/price_service.py` (`basis_shifted`, `rebuild_series`).

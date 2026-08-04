@@ -44,3 +44,14 @@ Source: Fable_Application_Assessment_Review.md (Must-fixes and Cuts done 2026-07
 
 Queue clear. Standing observation (not an action item): run gates in `advisory` for a
 few weeks and review the FAIL/NA pattern before considering `blocking`.
+
+## Whole-application assessment (2026-08-04)
+
+Source: `docs/sessions/2026-08-04_Application_Assessment_And_Integrity_Fixes.md`.
+Items 1–7 and the doc cleanups are done; what remains is structural.
+
+- [ ] **Extract the modeling engine + command DSL out of `ui/risk_workspace.py`.** `refresh_risk_checklist` (336 lines / 139 branches / 9 `hypo_*` args) and `on_strategy_change` (258 / 81) are the repo's top complexity scores, in its highest-churn file, with no headless entry point — tests reach into six private helpers to get at them. Every defect found in the assessment sat in an untested function here. **Coordinate first: this branch has a second writer and this is the file that conflicts.**
+- [ ] **Push DB writes out of read paths.** `calculate_position_risk` writes the ratchet inside the enrichment loop; `_consolidate_positions` promotes prospects; `get_broker_verified_snapshot` writes the asset master. Return the values; let one caller persist.
+- [ ] **Cover the ingestion boundary.** `ticker_mapper.resolve_yf_ticker` (36 branches, zero tests) and `data_loader.get_broker_verified_snapshot` against a fixture CSV — where wrong data enters.
+- [ ] Low: `db.py` opens 33 connections against one `try/finally` — an exception mid-function leaks the handle.
+- [ ] Confirm the configured `DATA_PATH` is the intended hub: it holds 488 trades but 0 `risk_profiles`, 0 `trade_log`, and `gates_mode='off'` (the advisory flip above is not in that data).
