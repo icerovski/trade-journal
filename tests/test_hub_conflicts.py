@@ -12,7 +12,13 @@ patterns are the ones OneDrive actually produced, not invented ones.
 
 import pytest
 
-from sync_config import CANONICAL_HUB_FILES, check_data_hub, find_duplicate_hub_files
+import sync_config
+from sync_config import (
+    CANONICAL_HUB_FILES,
+    check_data_hub,
+    env_value,
+    find_duplicate_hub_files,
+)
 
 
 # Exactly what was found in the hub (5 conflict logs + 1 conflict db + 1 backup).
@@ -126,3 +132,90 @@ def test_scan_never_deletes_anything(tmp_path):
 
 def test_missing_hub_is_not_an_error(tmp_path):
     assert check_data_hub(tmp_path / "nope") == {"conflict": [], "other": []}
+
+
+# --------------------------------------------------------------------------
+# Stale DATA_PATH — the ghost hub
+#
+# `config.DATA_DIR` mkdirs its path, so a DATA_PATH naming a folder that has been
+# renamed away is not an error: it is recreated, init_db fills it with empty
+# tables, and the app runs normally against a book with no history. That happened
+# in 2026-08. Nothing failed; the reports just went quiet.
+# --------------------------------------------------------------------------
+def test_a_hub_without_a_ledger_is_called_out(tmp_path, capsys):
+    # check_data_hub runs BEFORE init_db, so this is the last moment the empty
+    # book can still be questioned rather than explained afterwards.
+    (tmp_path / "prices.db").write_text("x")
+    check_data_hub(tmp_path)
+    out = capsys.readouterr().out
+    assert "NO LEDGER IN THE CONFIGURED DATA HUB" in out
+    assert "DATA_PATH" in out
+    assert str(tmp_path) in out              # name the path, so it can be checked
+
+
+def test_a_hub_with_a_ledger_says_nothing(tmp_path, capsys):
+    (tmp_path / "trade_journal.db").write_text("x")
+    check_data_hub(tmp_path)
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("text,expected", [
+    ('DATA_PATH=C:\\Users\\U\\OneDrive\\Companies\\HTC_EOOD\\TradeJournalData',
+     'C:\\Users\\U\\OneDrive\\Companies\\HTC_EOOD\\TradeJournalData'),
+    ('DATA_PATH="C:\\a\\b"', 'C:\\a\\b'),
+    ("DATA_PATH='C:\\a\\b'", 'C:\\a\\b'),
+    ('  DATA_PATH = C:\\a\\b  ', 'C:\\a\\b'),
+    ('DATA_PATH=C:\\a\\b\\', 'C:\\a\\b'),            # trailing separator is not a difference
+    ('IBKR_TOKEN=abc\nDATA_PATH=C:\\a\\b\n', 'C:\\a\\b'),
+    ('# DATA_PATH=C:\\old\nDATA_PATH=C:\\new', 'C:\\new'),   # a comment is not a value
+    ('DATA_PATH=C:\\first\nDATA_PATH=C:\\last', 'C:\\last'),  # last wins, as dotenv does
+    ('IBKR_TOKEN=abc', None),
+    ('', None),
+    ('DATA_PATH=', None),
+    ('garbage without an equals sign', None),
+])
+def test_env_value_reads_data_path(text, expected):
+    assert env_value(text) == expected
+
+
+def _env_pair(tmp_path, local_text, remote_text):
+    local, remote = tmp_path / ".env", tmp_path / "vault" / ".env"
+    remote.parent.mkdir()
+    local.write_text(local_text)
+    remote.write_text(remote_text)
+    return local, remote
+
+
+def test_diverging_data_paths_are_reported_before_the_sync_picks_one(tmp_path, capsys):
+    """THE OTHER-LAPTOP CASE. A machine that missed a path change still names the
+    old hub; whichever .env is newer wins on mtime alone and can push the stale
+    path back. Warn before that is decided silently."""
+    local, remote = _env_pair(tmp_path, "DATA_PATH=C:\\OneDrive\\Accounts\\X",
+                              "DATA_PATH=C:\\OneDrive\\Companies\\X")
+    result = sync_config._warn_on_data_path_divergence(local, remote)
+
+    out = capsys.readouterr().out
+    assert "DIFFERENT DATA HUBS" in out
+    assert "Accounts" in out and "Companies" in out    # both named, neither chosen
+    assert result == ("C:\\OneDrive\\Accounts\\X", "C:\\OneDrive\\Companies\\X")
+
+
+def test_matching_data_paths_are_silent(tmp_path, capsys):
+    local, remote = _env_pair(tmp_path, "DATA_PATH=C:\\same\nIBKR_TOKEN=a",
+                              "IBKR_TOKEN=b\nDATA_PATH=C:\\same")
+    assert sync_config._warn_on_data_path_divergence(local, remote) is None
+    assert capsys.readouterr().out == ""
+
+
+def test_a_missing_data_path_on_either_side_is_not_a_divergence(tmp_path, capsys):
+    # Only one side declaring a hub says nothing about the other being wrong.
+    local, remote = _env_pair(tmp_path, "IBKR_TOKEN=a", "DATA_PATH=C:\\b")
+    assert sync_config._warn_on_data_path_divergence(local, remote) is None
+    assert capsys.readouterr().out == ""
+
+
+def test_an_unreadable_env_never_breaks_startup(tmp_path, capsys):
+    # This runs before anything else on launch; it must degrade, not raise.
+    local, remote = _env_pair(tmp_path, "DATA_PATH=C:\\a", "DATA_PATH=C:\\b")
+    remote.unlink()
+    assert sync_config._warn_on_data_path_divergence(local, remote) is None

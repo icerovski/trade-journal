@@ -57,12 +57,69 @@ def find_duplicate_hub_files(names) -> dict:
     return {"conflict": sorted(conflict), "other": sorted(other)}
 
 
+# ---------------------------------------------------------------------------
+# Stale-DATA_PATH detection
+#
+# `config.DATA_DIR` calls mkdir(parents=True, exist_ok=True), so a DATA_PATH
+# naming a folder that no longer exists does not fail — it RECREATES it, init_db
+# fills it with empty tables, and the app runs normally against a book with no
+# history and no risk layer. Renaming the OneDrive parent folder did exactly that
+# in 2026-08: .env still named the old path and a full ghost hub was rebuilt under
+# it, indistinguishable from a real one except by being impossibly sparse.
+#
+# Both checks below are warnings only. Which hub is right is a judgement call, the
+# same as which forked ledger is authoritative, and this module does not guess.
+# ---------------------------------------------------------------------------
+
+def env_value(text: str, key: str = "DATA_PATH"):
+    """Read one key out of .env text. Pure — no dotenv, no environment, no I/O.
+
+    Deliberately not `dotenv_values`: this has to read the OTHER machine's copy
+    without loading it into this process, and it must never raise on a malformed
+    line. Last assignment wins, matching dotenv's own override behaviour.
+    """
+    value = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, raw = line.partition("=")
+        if name.strip() == key:
+            value = raw.strip().strip('"').strip("'").rstrip("\\/")
+    return value or None
+
+
+def _warn_on_data_path_divergence(local_path, remote_path):
+    """Report two .env copies that disagree about where the data hub is.
+
+    This is the two-machine failure mode: the laptop that missed a path change
+    still names the old hub, and whichever copy happens to be newer wins the sync
+    silently. Say it out loud before that decision is made by an mtime.
+    """
+    try:
+        local = env_value(local_path.read_text(encoding="utf-8", errors="replace"))
+        remote = env_value(remote_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    if not local or not remote or local == remote:
+        return None
+
+    print(f"\n[!!] THE TWO .env COPIES NAME DIFFERENT DATA HUBS:")
+    print(f"       local (this machine): {local}")
+    print(f"       vault (OneDrive):     {remote}")
+    print("     Only one of these is the real book. The newer file is about to win on")
+    print("     mtime alone, and a path that no longer exists is silently RECREATED as")
+    print("     an empty hub — it will not error. Fix .env before continuing.")
+    return (local, remote)
+
+
 def check_data_hub(data_dir=None) -> dict:
     """Scan the data hub for duplicate ledgers and report to the console.
 
-    Called on startup. Read-only: it never deletes or moves anything — which copy
-    is authoritative is a judgement call, and guessing at it is how you lose a
-    ledger. Returns the same dict as find_duplicate_hub_files.
+    Called on startup, before init_db, so a hub about to be filled with empty
+    tables can still be questioned. Read-only: it never deletes or moves anything
+    — which copy is authoritative is a judgement call, and guessing at it is how
+    you lose a ledger. Returns the same dict as find_duplicate_hub_files.
     """
     if data_dir is None:
         from config import DATA_DIR
@@ -70,6 +127,14 @@ def check_data_hub(data_dir=None) -> dict:
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
         return {"conflict": [], "other": []}
+
+    if not (data_dir / "trade_journal.db").exists():
+        print("\n[!!] NO LEDGER IN THE CONFIGURED DATA HUB:")
+        print(f"       {data_dir}")
+        print("     An empty book is about to be created here. If this is not a genuine")
+        print("     first run, DATA_PATH in .env names a hub that has moved or been")
+        print("     renamed — the folder you are looking at was recreated, not found.")
+        print("     Check DATA_PATH before ingesting anything.")
 
     found = find_duplicate_hub_files(p.name for p in data_dir.iterdir() if p.is_file())
 
@@ -112,6 +177,9 @@ def smart_sync():
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(remote_path, local_path)
             else:
+                if local_path.name == '.env':
+                    _warn_on_data_path_divergence(local_path, remote_path)
+
                 local_mtime = local_path.stat().st_mtime
                 remote_mtime = remote_path.stat().st_mtime
 
