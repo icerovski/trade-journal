@@ -7,6 +7,43 @@ from logger import logger
 from core.asset_registry import AssetRegistry
 
 
+def _conid_key(val) -> str:
+    """Canonical string form of a Conid, independent of how pandas typed the column.
+
+    One blank Conid anywhere in a Flex CSV types the whole column float64, so the
+    same asset reads as 12345 in one file and "12345.0" in the next. Every key built
+    from a Conid — the snapshot key, the LOT-date lookup, the ledger join — has to
+    agree on one spelling or the same asset silently splits in two.
+    """
+    try:
+        return str(int(float(str(val))))
+    except Exception:
+        return str(val).strip()
+
+
+def _parse_flex_date(raw):
+    """Parse an IBKR Flex date whatever format the query was configured with.
+
+    Flex sets the date format per query: the open-positions query emits ISO
+    ('2026-07-30'), the trades query yyyyMMdd. Pandas types an all-digit column as
+    int64, and to_datetime(20260730) then reads it as NANOSECONDS since the epoch —
+    1970 — with no error at all. Returns None, never NaT, when nothing parses:
+    NaT is truthy, so it slips past the `if not report_date` guard in
+    _filter_pending_deltas and then compares False against every trade date,
+    silently discarding every pending delta.
+    """
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    text = str(raw).strip()
+    if text.endswith('.0'):          # one blank row floats an integer column
+        text = text[:-2]
+    if not text or text.lower() == 'nan':
+        return None
+    fmt = '%Y%m%d' if (text.isdigit() and len(text) == 8) else None
+    parsed = pd.to_datetime(text, format=fmt, errors='coerce')
+    return None if pd.isna(parsed) else parsed
+
+
 class DataLoader:
     """
     Centralized data loader for DB and CSV sources.
@@ -104,12 +141,12 @@ class DataLoader:
         if 'Conid' in df.columns:
             def normalize_conid(val):
                 try:
-                    if pd.isna(val) or str(val).strip() == '' or str(val).strip() == 'nan': 
+                    if pd.isna(val) or str(val).strip() in ('', 'nan'):
                         return np.nan
-                    return str(int(float(str(val))))
                 except Exception:
-                    return str(val).strip()
-            
+                    pass
+                return _conid_key(val)
+
             df['Conid'] = df['Conid'].apply(normalize_conid)
             df['Conid'] = df['Conid'].fillna(df['Symbol']).astype(str)
             
@@ -172,14 +209,16 @@ class DataLoader:
             lots = df[df['LevelOfDetail'] == 'LOT'].copy()
             earliest_dates = {}
             if not lots.empty:
-                # Ensure Conid is string for consistent mapping
-                lots['Conid'] = lots['Conid'].astype(str)
+                # Key the lots the same way the summaries are keyed below. astype(str)
+                # is not enough: a single blank Conid floats the column, and "12345.0"
+                # never matches the "12345" the lookup asks for — losing every
+                # inception date without a trace.
+                lots['Conid'] = lots['Conid'].map(_conid_key)
                 # OpenDateTime often has multiple timestamps separated by semicolon
                 lots['OpenDateClean'] = pd.to_datetime(lots['OpenDateTime'].astype(str).str.split(';').str[0], errors='coerce')
                 earliest_dates = lots.groupby('Conid')['OpenDateClean'].min().to_dict()
             
-            report_date_raw = summaries['ReportDate'].iloc[0]
-            report_date = pd.to_datetime(report_date_raw, errors='coerce')
+            report_date = _parse_flex_date(summaries['ReportDate'].iloc[0])
             broker_data = {}
             # Asset-master rows are COLLECTED during the parse and written once at
             # the end. Reading a CSV should not open a database connection per row.
@@ -191,11 +230,7 @@ class DataLoader:
                 summaries[acct_col] = 'U0000000'
 
             for (acct_val, conid_val), group in summaries.groupby([acct_col, 'Conid']):
-                try:
-                    conid_str = str(int(float(str(conid_val))))
-                except (ValueError, TypeError):
-                    conid_str = str(conid_val)
-                
+                conid_str = _conid_key(conid_val)
                 acct_str = str(acct_val)
                 key = f"{acct_str}:{conid_str}"
                     

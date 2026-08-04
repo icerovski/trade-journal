@@ -75,28 +75,38 @@ def test_summary_row_becomes_one_keyed_position(snapshot):
     assert report_date == pd.Timestamp("2026-07-30")
 
 
-def test_yyyymmdd_report_date_silently_becomes_1970_known_defect(snapshot):
-    """PINS A REAL RISK — latent under the current Flex configuration.
+def test_yyyymmdd_report_date_parses_to_the_right_year(snapshot):
+    """IBKR Flex sets the date format per query. The live open-positions query
+    emits ISO ('2026-07-29'), but the *trades* query in this same app is configured
+    yyyyMMdd, so the format can change under us without notice.
 
-    The live open-positions query emits ISO dates ('2026-07-29'), which parse
-    correctly. But IBKR Flex lets the date format be set per query, and the
-    *trades* query in this same app is configured as yyyyMMdd. Feed that format
-    here and `pd.to_datetime(20260730)` reads the integer as NANOSECONDS since the
-    epoch — 1970-01-01 — with no error.
-
-    The consequence is not a cosmetic date: `report_date` is the reconciliation
-    checkpoint. `_filter_pending_deltas` applies every IBKR_CONFIRMATION dated
-    AFTER it as a delta on top of the snapshot, so a 1970 checkpoint means every
-    confirmation is re-applied to a snapshot that already contains it —
-    double-counted positions.
-
-    Pinned rather than fixed: the fix is a format-aware parse, which is a
-    behaviour change and belongs in its own commit.
+    An all-digit column reads as int64, and `pd.to_datetime(20260730)` takes the
+    integer as NANOSECONDS since the epoch — 1970-01-01 — with no error. That is
+    not a cosmetic date: `report_date` is the reconciliation checkpoint, and
+    `_filter_pending_deltas` re-applies every IBKR_CONFIRMATION dated after it. A
+    1970 checkpoint re-applies every confirmation onto a snapshot that already
+    contains it, double-counting positions.
     """
     snapshot(AAPL_SUMMARY.replace(",2026-07-30,", ",20260730,"))
     _, report_date = _load()
-    assert report_date == pd.Timestamp("1970-01-01 00:00:00.020260730")
-    assert report_date.year == 1970
+    assert report_date == pd.Timestamp("2026-07-30")
+
+
+def test_a_floated_report_date_column_still_parses(snapshot):
+    # A blank ReportDate on any row floats the column: 20260730 -> "20260730.0".
+    snapshot(AAPL_SUMMARY.replace(",2026-07-30,", ",20260730.0,"))
+    _, report_date = _load()
+    assert report_date == pd.Timestamp("2026-07-30")
+
+
+def test_an_unparseable_report_date_is_none_not_nat(snapshot):
+    """None, never NaT. `_filter_pending_deltas` guards with `if not report_date`,
+    and NaT is TRUTHY — it slips past the guard and then compares False against
+    every trade date, silently discarding every pending delta instead of applying
+    them all. None takes the intended branch."""
+    snapshot(AAPL_SUMMARY.replace(",2026-07-30,", ",not-a-date,"))
+    _, report_date = _load()
+    assert report_date is None
 
 
 def test_asset_master_is_updated_from_the_snapshot(snapshot, _no_db_writes):
@@ -277,26 +287,22 @@ def test_no_lot_rows_leaves_the_date_unset(snapshot):
     assert data["U1:12345"]["Date"] is None
 
 
-def test_blank_conid_silently_drops_every_lot_date_known_defect(snapshot):
-    """PINS A REAL DEFECT — currently latent, deliberately not fixed here.
+def test_a_blank_conid_elsewhere_does_not_drop_the_lot_dates(snapshot):
+    """LOT dates are looked up by `earliest_dates.get(conid_str)`. The lot keys and
+    the summary key must be spelled identically, and that only held while pandas
+    read Conid as int: one blank Conid anywhere in the file — a totals row, a
+    trailer — flips the column to float64, so the lot keys became "12345.0" while
+    the lookup asked for "12345", and every inception date was silently lost.
 
-    LOT dates are looked up by `earliest_dates.get(conid_str)`, where the lot keys
-    come from `lots['Conid'].astype(str)` and `conid_str` from
-    `str(int(float(conid)))`. Those agree only while pandas reads Conid as int.
-    One blank Conid anywhere in the file — a totals row, a trailer — flips the
-    whole column to float64, so the lot keys become "12345.0" while the lookup asks
-    for "12345". Every inception date is then silently lost.
-
-    Not firing on the current live file: that Flex query returns no LOT rows at
-    all, and its repeated header rows make Conid a str column. It would fire the
-    moment lot detail is enabled in the query. Fixing it is a one-line
-    normalisation and belongs in its own commit.
+    Latent on the live file (that query returns no LOT rows, and its repeated
+    header rows make Conid a str column); it would fire the moment lot detail is
+    enabled. Both sides now go through `_conid_key`.
     """
     snapshot(AAPL_SUMMARY,
              LOT.format(dates="2025-01-15"),
-             "U1,TOTAL,,,0,0,0,1,0,1,,,,,,,2026-07-30,")   # blank Conid
+             "U1,TOTAL,,,0,0,0,1,0,1,,,,,,,2026-07-30,")   # blank Conid floats the column
     data, _ = _load()
-    assert data["U1:12345"]["Date"] is None      # the date was found, then lost
+    assert data["U1:12345"]["Date"] == pd.Timestamp("2025-01-15")
 
 
 # --------------------------------------------------------------------------
