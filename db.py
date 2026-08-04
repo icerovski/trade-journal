@@ -1,5 +1,6 @@
 # db.py
 import sqlite3
+from contextlib import contextmanager
 from config import DB_PATH
 from logger import logger
 from models import RiskProfile
@@ -9,6 +10,32 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def connect():
+    """The one way this module opens the ledger. Use it for every access.
+
+    Every function here used to pair `get_conn()` with a bare `conn.close()` on the
+    happy path only, so any exception in between — a locked file, a malformed row,
+    a bug in the mapping below — left the handle open. The connection then survives
+    inside the traceback's frame, taking any transaction it had begun with it, and
+    it is holding a lock on a SQLite file that OneDrive is also touching. `with
+    connect() as conn:` closes on every path out, including a `return` mid-body.
+
+    Note this is NOT `with conn:` — sqlite3's own connection context manager
+    commits or rolls back a transaction and leaves the handle open. Commits stay
+    explicit here, exactly as before.
+
+    Deliberately layered on top of `get_conn()` rather than replacing it, so
+    `get_conn` remains the single chokepoint the tests patch to prove a read path
+    opens no connection at all (tests/test_write_boundaries.py).
+    """
+    conn = get_conn()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +122,15 @@ def _apply_one_shot_migrations(cursor):
 
 
 def init_db():
-    conn = get_conn()
+    """Create/upgrade the schema and run any pending one-shot data migration."""
+    with connect() as conn:
+        _create_schema(conn)
+        conn.commit()
+
+
+def _create_schema(conn):
     cursor = conn.cursor()
-    
+
     # 1. Trades Table (Activity Only)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
@@ -286,15 +319,12 @@ def init_db():
         )
     """)
 
-    conn.commit()
-    conn.close()
 
 def wipe_trades_only():
     """Drops and recreates the trades table, preserving risk profiles."""
-    conn = get_conn()
-    conn.execute("DROP TABLE IF EXISTS trades")
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute("DROP TABLE IF EXISTS trades")
+        conn.commit()
     init_db()
 
 # Sentinel for set_position_risk: distinguishes "leave the TP override untouched" (default,
@@ -318,86 +348,81 @@ def set_position_risk(conid, ticker, atr, stop_type, start_date=None, reset_sl=F
     ccy: pricing currency of a WATCH prospect (e.g. from yfinance at add time). Pass a string
     to set it; None leaves the stored value untouched (legacy rows stay NULL → USD assumed).
     """
-    conn = get_conn()
     conid = str(conid)
-    cursor = conn.execute("SELECT id, inception_stop, inception_atr FROM risk_profiles WHERE conid = ? AND status = ?", (conid, status))
-    existing = cursor.fetchone()
+    with connect() as conn:
+        cursor = conn.execute("SELECT id, inception_stop, inception_atr FROM risk_profiles WHERE conid = ? AND status = ?", (conid, status))
+        existing = cursor.fetchone()
 
-    if existing:
-        sql = """UPDATE risk_profiles SET atr_value = ?, stop_type = ?, entry_type = ?,
-                 scale_step = ?, max_r_pct = ?, max_exp_pct = ?, ticker = ?"""
-        params = [float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), ticker.upper()]
+        if existing:
+            sql = """UPDATE risk_profiles SET atr_value = ?, stop_type = ?, entry_type = ?,
+                     scale_step = ?, max_r_pct = ?, max_exp_pct = ?, ticker = ?"""
+            params = [float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), ticker.upper()]
 
-        # Only update inception_stop if it's currently NULL and a value is provided
-        if existing['inception_stop'] is None and inception_stop is not None:
-            sql += ", inception_stop = ?"
-            params.append(float(inception_stop))
+            # Only update inception_stop if it's currently NULL and a value is provided
+            if existing['inception_stop'] is None and inception_stop is not None:
+                sql += ", inception_stop = ?"
+                params.append(float(inception_stop))
 
-        # Only update inception_atr if it's currently NULL. Fallback to current atr if no explicit inception_atr provided.
-        if existing['inception_atr'] is None:
-            sql += ", inception_atr = ?"
-            params.append(float(inception_atr) if inception_atr is not None else float(atr))
+            # Only update inception_atr if it's currently NULL. Fallback to current atr if no explicit inception_atr provided.
+            if existing['inception_atr'] is None:
+                sql += ", inception_atr = ?"
+                params.append(float(inception_atr) if inception_atr is not None else float(atr))
 
-        if profile is not None:
-            sql += ", profile = ?"
-            params.append(profile or None)
+            if profile is not None:
+                sql += ", profile = ?"
+                params.append(profile or None)
 
-        # Write-many: set/clear the TP override only when the caller explicitly passes it.
-        if tp_atr_mult is not _KEEP:
-            sql += ", tp_atr_mult = ?"
-            params.append(float(tp_atr_mult) if tp_atr_mult is not None else None)
+            # Write-many: set/clear the TP override only when the caller explicitly passes it.
+            if tp_atr_mult is not _KEEP:
+                sql += ", tp_atr_mult = ?"
+                params.append(float(tp_atr_mult) if tp_atr_mult is not None else None)
 
-        # Write-many: set/clear the classification only when explicitly passed.
-        if classification is not _KEEP:
-            sql += ", classification = ?"
-            params.append(classification or None)
+            # Write-many: set/clear the classification only when explicitly passed.
+            if classification is not _KEEP:
+                sql += ", classification = ?"
+                params.append(classification or None)
 
-        # Write-many: set/clear the exit shape only when explicitly passed.
-        if exit_shape is not _KEEP:
-            sql += ", exit_shape = ?"
-            params.append(exit_shape or None)
+            # Write-many: set/clear the exit shape only when explicitly passed.
+            if exit_shape is not _KEEP:
+                sql += ", exit_shape = ?"
+                params.append(exit_shape or None)
 
-        # Pricing currency: set only when the caller resolved one (never clears).
-        # Case preserved — 'GBp' (pence) must not become 'GBP' (pounds).
-        if ccy is not None:
-            sql += ", ccy = ?"
-            params.append(str(ccy).strip())
+            # Pricing currency: set only when the caller resolved one (never clears).
+            # Case preserved — 'GBp' (pence) must not become 'GBP' (pounds).
+            if ccy is not None:
+                sql += ", ccy = ?"
+                params.append(str(ccy).strip())
 
-        if reset_sl:
-            sql += ", highest_sl = 0.0"
-        sql += " WHERE id = ?"
-        params.append(existing['id'])
-        conn.execute(sql, tuple(params))
-    else:
-        # For new profiles, use provided values or current atr/stop as inception
-        i_stop = float(inception_stop) if inception_stop is not None else None
-        i_atr = float(inception_atr) if inception_atr is not None else float(atr)
-        i_tp = float(tp_atr_mult) if (tp_atr_mult is not _KEEP and tp_atr_mult is not None) else None
-        i_class = classification or None if classification is not _KEEP else None
-        i_shape = exit_shape or None if exit_shape is not _KEEP else None
-        i_ccy = str(ccy).strip() if ccy else None  # case preserved: 'GBp' != 'GBP'
+            if reset_sl:
+                sql += ", highest_sl = 0.0"
+            sql += " WHERE id = ?"
+            params.append(existing['id'])
+            conn.execute(sql, tuple(params))
+        else:
+            # For new profiles, use provided values or current atr/stop as inception
+            i_stop = float(inception_stop) if inception_stop is not None else None
+            i_atr = float(inception_atr) if inception_atr is not None else float(atr)
+            i_tp = float(tp_atr_mult) if (tp_atr_mult is not _KEEP and tp_atr_mult is not None) else None
+            i_class = classification or None if classification is not _KEEP else None
+            i_shape = exit_shape or None if exit_shape is not _KEEP else None
+            i_ccy = str(ccy).strip() if ccy else None  # case preserved: 'GBp' != 'GBP'
 
-        conn.execute("""
-            INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape, ccy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape, i_ccy))
+            conn.execute("""
+                INSERT INTO risk_profiles (conid, ticker, atr_value, stop_type, entry_type, scale_step, max_r_pct, max_exp_pct, start_date, status, inception_stop, inception_atr, profile, tp_atr_mult, classification, exit_shape, ccy)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (conid, ticker.upper(), float(atr), stop_type.upper(), entry_type.upper(), float(scale_step), float(max_r_pct), float(max_exp_pct), start_date, status, i_stop, i_atr, profile or None, i_tp, i_class, i_shape, i_ccy))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
 
 def get_watch_list_profiles():
-    conn = get_conn()
-    cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'WATCH'")
-    rows = cursor.fetchall()
-    conn.close()
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM risk_profiles WHERE status = 'WATCH'").fetchall()
     return [RiskProfile.from_row(r) for r in rows]
 
 def get_all_monitored_profiles():
     """Retrieves all risk profiles with status 'WATCH' or 'ACTIVE'."""
-    conn = get_conn()
-    cursor = conn.execute("SELECT * FROM risk_profiles WHERE status IN ('WATCH', 'ACTIVE') ORDER BY ticker ASC")
-    rows = cursor.fetchall()
-    conn.close()
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM risk_profiles WHERE status IN ('WATCH', 'ACTIVE') ORDER BY ticker ASC").fetchall()
     return [RiskProfile.from_row(r) for r in rows]
 
 # Columns carried from a WATCH prospect onto the ACTIVE profile it becomes.
@@ -423,8 +448,7 @@ def promote_prospect_to_active(ticker, real_conid):
     and take the whole dashboard down. In that case the existing ACTIVE profile
     wins untouched and the redundant WATCH row is simply retired.
     """
-    conn = get_conn()
-    try:
+    with connect() as conn:
         prospect = conn.execute(
             "SELECT * FROM risk_profiles WHERE ticker = ? AND status = 'WATCH'",
             (ticker.upper(),)
@@ -460,29 +484,24 @@ def promote_prospect_to_active(ticker, real_conid):
         )
         conn.commit()
         logger.info(f"PROMOTED: Prospect {ticker} is now ACTIVE with conid {real_conid}")
-    finally:
-        conn.close()
 
 def delete_risk_profile(conid):
-    conn = get_conn()
-    conn.execute("DELETE FROM risk_profiles WHERE conid = ?", (str(conid),))
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute("DELETE FROM risk_profiles WHERE conid = ?", (str(conid),))
+        conn.commit()
 
 def close_risk_profile(conid, end_date):
-    conn = get_conn()
-    conn.execute("UPDATE risk_profiles SET status = 'CLOSED', end_date = ? WHERE conid = ? AND status = 'ACTIVE'", (end_date, str(conid)))
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute("UPDATE risk_profiles SET status = 'CLOSED', end_date = ? WHERE conid = ? AND status = 'ACTIVE'", (end_date, str(conid)))
+        conn.commit()
 
 _RATCHET_SQL = ("UPDATE risk_profiles SET highest_sl = MAX(highest_sl, ?) "
                 "WHERE conid = ? AND status = 'ACTIVE'")
 
 def update_high_water_mark(conid, sl_price):
-    conn = get_conn()
-    conn.execute(_RATCHET_SQL, (float(sl_price), str(conid)))
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute(_RATCHET_SQL, (float(sl_price), str(conid)))
+        conn.commit()
 
 def update_high_water_marks(pairs):
     """Advance several trailing stops in one transaction.
@@ -498,75 +517,58 @@ def update_high_water_marks(pairs):
     rows = [(float(sl), str(conid)) for conid, sl in pairs]
     if not rows:
         return
-    conn = get_conn()
-    try:
+    with connect() as conn:
         conn.executemany(_RATCHET_SQL, rows)
         conn.commit()
-    finally:
-        conn.close()
 
 def reset_inception_on_reopen(conid, new_start_date):
     """Clear the stale ratchet and frozen inception for a position that went flat (reset-on-zero)
     and was reopened, re-anchoring start_date to the new lot. highest_sl rebuilds from the new
     lot's high-water mark; inception_stop/atr re-freeze on the next stop save. Prevents a prior
     lot's settings (e.g. a ratcheted stop above the new lot's high) from fabricating a breach."""
-    conn = get_conn()
-    conn.execute(
-        "UPDATE risk_profiles SET highest_sl = 0.0, inception_stop = NULL, inception_atr = NULL, "
-        "start_date = ? WHERE conid = ? AND status = 'ACTIVE'",
-        (new_start_date, str(conid))
-    )
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE risk_profiles SET highest_sl = 0.0, inception_stop = NULL, inception_atr = NULL, "
+            "start_date = ? WHERE conid = ? AND status = 'ACTIVE'",
+            (new_start_date, str(conid))
+        )
+        conn.commit()
 
 def get_all_risk_settings():
-    conn = get_conn()
-    cursor = conn.execute("SELECT * FROM risk_profiles WHERE status = 'ACTIVE'")
-    rows = cursor.fetchall()
-    conn.close()
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM risk_profiles WHERE status = 'ACTIVE'").fetchall()
     return {r['conid']: RiskProfile.from_row(r) for r in rows}
 
 def trade_exists(external_id):
     if not external_id: return False
-    conn = get_conn()
-    cursor = conn.execute("SELECT 1 FROM trades WHERE external_id = ?", (external_id,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM trades WHERE external_id = ?", (external_id,)).fetchone() is not None
 
 def add_trade(date, ticker, side, quantity, price, conid, account_id='U0000000', multiplier=1.0, notes="", source="MANUAL", external_id=None):
-    conn = get_conn()
-    try:
-        conid_val = str(conid) if conid is not None else None
-        conn.execute(
-            """INSERT INTO trades (date, account_id, ticker, side, quantity, price, multiplier, conid, notes, source, external_id) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (date, account_id, ticker.upper(), side.upper(), float(quantity), float(price), 
-             float(multiplier), conid_val, notes, source, external_id)
-        )
-        conn.commit()
-    except sqlite3.IntegrityError: pass 
-    finally: conn.close()
+    with connect() as conn:
+        try:
+            conid_val = str(conid) if conid is not None else None
+            conn.execute(
+                """INSERT INTO trades (date, account_id, ticker, side, quantity, price, multiplier, conid, notes, source, external_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (date, account_id, ticker.upper(), side.upper(), float(quantity), float(price),
+                 float(multiplier), conid_val, notes, source, external_id)
+            )
+            conn.commit()
+        except sqlite3.IntegrityError: pass
 
 def get_conid_for_ticker(ticker):
-    conn = get_conn()
     ticker = ticker.upper()
-    cursor = conn.execute("SELECT conid FROM ticker_info WHERE ticker_ibkr = ? LIMIT 1", (ticker,))
-    row = cursor.fetchone()
-    if row:
-        conn.close()
-        return row['conid']
-    cursor = conn.execute("SELECT conid FROM trades WHERE ticker = ? AND conid IS NOT NULL LIMIT 1", (ticker,))
-    row = cursor.fetchone()
-    conn.close()
-    return row['conid'] if row else None
+    with connect() as conn:
+        row = conn.execute("SELECT conid FROM ticker_info WHERE ticker_ibkr = ? LIMIT 1", (ticker,)).fetchone()
+        if row:
+            return row['conid']
+        row = conn.execute("SELECT conid FROM trades WHERE ticker = ? AND conid IS NOT NULL LIMIT 1", (ticker,)).fetchone()
+        return row['conid'] if row else None
 
 def get_ticker_info(conid):
-    conn = get_conn()
-    cursor = conn.execute("SELECT * FROM ticker_info WHERE conid = ?", (str(conid),))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    with connect() as conn:
+        return conn.execute("SELECT * FROM ticker_info WHERE conid = ?", (str(conid),)).fetchone()
 
 # Upsert that never overwrites a known value with a blank one: every field
 # COALESCEs to the stored value when the incoming one is empty, so a sparse feed
@@ -599,14 +601,11 @@ def _ticker_info_params(conid, ticker_ibkr, ticker_yfinance=None, isin=None, ass
 
 
 def save_ticker_info(conid, ticker_ibkr, ticker_yfinance=None, isin=None, asset_class=None, multiplier=None, description=None, listing_exchange=None, currency=None, underlying_symbol=None):
-    conn = get_conn()
-    try:
+    with connect() as conn:
         conn.execute(_TICKER_INFO_UPSERT, _ticker_info_params(
             conid, ticker_ibkr, ticker_yfinance, isin, asset_class, multiplier,
             description, listing_exchange, currency, underlying_symbol))
         conn.commit()
-    finally:
-        conn.close()
 
 
 def save_ticker_info_bulk(rows):
@@ -620,18 +619,13 @@ def save_ticker_info_bulk(rows):
     params = [_ticker_info_params(**row) for row in rows]
     if not params:
         return
-    conn = get_conn()
-    try:
+    with connect() as conn:
         conn.executemany(_TICKER_INFO_UPSERT, params)
         conn.commit()
-    finally:
-        conn.close()
 
 def get_yf_ticker(ticker_ibkr):
-    conn = get_conn()
-    cursor = conn.execute("SELECT ticker_yfinance FROM ticker_info WHERE ticker_ibkr = ? LIMIT 1", (ticker_ibkr.upper(),))
-    row = cursor.fetchone()
-    conn.close()
+    with connect() as conn:
+        row = conn.execute("SELECT ticker_yfinance FROM ticker_info WHERE ticker_ibkr = ? LIMIT 1", (ticker_ibkr.upper(),)).fetchone()
     return row['ticker_yfinance'] if row else None
 
 def get_asset_details_from_trades(conid):
@@ -639,33 +633,26 @@ def get_asset_details_from_trades(conid):
     Returns asset metadata (isin, category, etc) from ticker_info for a conid.
     Note: Function name is legacy; metadata now resides primarily in ticker_info Asset Master.
     """
-    conn = get_conn()
-    cursor = conn.execute("""
-        SELECT isin, asset_class as asset_category, listing_exchange, currency, underlying_symbol
-        FROM ticker_info WHERE conid = ?
-    """, (str(conid),))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    with connect() as conn:
+        return conn.execute("""
+            SELECT isin, asset_class as asset_category, listing_exchange, currency, underlying_symbol
+            FROM ticker_info WHERE conid = ?
+        """, (str(conid),)).fetchone()
 
 def get_kids_config():
     """Returns all rows from kids_config as a list of dicts."""
     import pandas as pd
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM kids_config", conn)
-    conn.close()
-    return df
+    with connect() as conn:
+        return pd.read_sql("SELECT * FROM kids_config", conn)
 
 def get_kids_trades(account_id, after_date):
     """Returns BUY/SELL trades for the kids account after a given date."""
     import pandas as pd
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT side, quantity, price, multiplier FROM trades WHERE account_id = ? AND date > ?",
-        conn, params=(account_id, after_date)
-    )
-    conn.close()
-    return df
+    with connect() as conn:
+        return pd.read_sql(
+            "SELECT side, quantity, price, multiplier FROM trades WHERE account_id = ? AND date > ?",
+            conn, params=(account_id, after_date)
+        )
 
 # ---------------------------------------------------------------------------
 # Preset Definitions
@@ -673,42 +660,37 @@ def get_kids_trades(account_id, after_date):
 
 def get_presets() -> dict:
     """Loads preset definitions from the DB (preserves user matrix edits)."""
-    conn = get_conn()
-    rows = conn.execute("SELECT key, label, max_r_pct, max_exp_pct FROM preset_definitions ORDER BY key").fetchall()
-    conn.close()
+    with connect() as conn:
+        rows = conn.execute("SELECT key, label, max_r_pct, max_exp_pct FROM preset_definitions ORDER BY key").fetchall()
     return {r['key']: {'label': r['label'], 'max_r_pct': r['max_r_pct'], 'max_exp_pct': r['max_exp_pct']} for r in rows}
 
 def save_preset(key: str, label: str, max_r_pct: float, max_exp_pct: float):
     """Persists a single preset definition change."""
-    conn = get_conn()
-    conn.execute(
-        "UPDATE preset_definitions SET label = ?, max_r_pct = ?, max_exp_pct = ? WHERE key = ?",
-        (label, float(max_r_pct), float(max_exp_pct), key)
-    )
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE preset_definitions SET label = ?, max_r_pct = ?, max_exp_pct = ? WHERE key = ?",
+            (label, float(max_r_pct), float(max_exp_pct), key)
+        )
+        conn.commit()
 
 def get_setting(key: str, default: str = '') -> str:
-    conn = get_conn()
-    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-    conn.close()
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     return row['value'] if row else default
 
 def save_setting(key: str, value: str):
-    conn = get_conn()
-    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
+        conn.commit()
 
 def update_preset_profiles(key: str, new_max_r_pct: float, new_max_exp_pct: float):
     """Applies new E%/R% limits to all ACTIVE/WATCH positions tagged with this preset key."""
-    conn = get_conn()
-    conn.execute(
-        "UPDATE risk_profiles SET max_r_pct = ?, max_exp_pct = ? WHERE profile = ? AND status IN ('ACTIVE', 'WATCH')",
-        (float(new_max_r_pct), float(new_max_exp_pct), key)
-    )
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE risk_profiles SET max_r_pct = ?, max_exp_pct = ? WHERE profile = ? AND status IN ('ACTIVE', 'WATCH')",
+            (float(new_max_r_pct), float(new_max_exp_pct), key)
+        )
+        conn.commit()
 
 # ---------------------------------------------------------------------------
 # Trade Journal Log (Entry & Stop System §7)
@@ -730,14 +712,12 @@ def add_trade_log_entry(entry) -> int:
     columns = ", ".join(PERSISTED_FIELDS)
     values = [data[k] for k in PERSISTED_FIELDS]
 
-    conn = get_conn()
-    cursor = conn.execute(
-        f"INSERT INTO trade_log ({columns}) VALUES ({placeholders})", values
-    )
-    conn.commit()
-    row_id = cursor.lastrowid
-    conn.close()
-    return row_id
+    with connect() as conn:
+        cursor = conn.execute(
+            f"INSERT INTO trade_log ({columns}) VALUES ({placeholders})", values
+        )
+        conn.commit()
+        return cursor.lastrowid
 
 def get_trade_log_entries(status=None, ticker=None):
     """Load decision-journal rows as TradeLogEntry objects, oldest first.
@@ -754,21 +734,19 @@ def get_trade_log_entries(status=None, ticker=None):
         query += " WHERE " + " AND ".join(conds)
     query += " ORDER BY date ASC, id ASC"
 
-    conn = get_conn()
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [TradeLogEntry.from_row(r) for r in rows]
 
 def get_trades_for_conid(conid):
     """Chronological raw trade rows for one instrument, as plain dicts — the
     minimal feed for core/outcome_backfill's zero-crossing replay. Deliberately
     NOT a Position source (that is LedgerEngine's job); this is read-only."""
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT date, side, quantity, price, source FROM trades WHERE conid = ? ORDER BY date ASC, id ASC",
-        (str(conid),),
-    ).fetchall()
-    conn.close()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT date, side, quantity, price, source FROM trades WHERE conid = ? ORDER BY date ASC, id ASC",
+            (str(conid),),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -779,32 +757,30 @@ def save_scan_context(rows):
     freshness window via get_scan_context(max_age_days)."""
     from datetime import date
     today = date.today().isoformat()
-    conn = get_conn()
-    for r in rows:
-        ticker = (r.get("ticker") or "").upper()
-        if not ticker:
-            continue
-        conn.execute(
-            "REPLACE INTO scan_context (ticker, scan_date, regime, flagged, confluence_count, "
-            "stop_source, stop_price, trail_anchor, tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (ticker, today, r.get("regime") or "",
-             (1 if r.get("flagged") else 0) if r.get("flagged") is not None else None,
-             r.get("confluence_count"), r.get("stop_source") or "",
-             r.get("stop_price"), r.get("trail_anchor"), r.get("tag") or ""),
-        )
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        for r in rows:
+            ticker = (r.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            conn.execute(
+                "REPLACE INTO scan_context (ticker, scan_date, regime, flagged, confluence_count, "
+                "stop_source, stop_price, trail_anchor, tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, today, r.get("regime") or "",
+                 (1 if r.get("flagged") else 0) if r.get("flagged") is not None else None,
+                 r.get("confluence_count"), r.get("stop_source") or "",
+                 r.get("stop_price"), r.get("trail_anchor"), r.get("tag") or ""),
+            )
+        conn.commit()
 
 
 def get_scan_context(ticker, max_age_days=None):
     """Latest scan context for a ticker as a dict, or None when absent or older
     than `max_age_days` (stale structure must degrade gates to NA, not misfire)."""
     from datetime import date
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT * FROM scan_context WHERE ticker = ?", ((ticker or "").upper(),)
-    ).fetchone()
-    conn.close()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM scan_context WHERE ticker = ?", ((ticker or "").upper(),)
+        ).fetchone()
     if not row:
         return None
     ctx = dict(row)
@@ -823,13 +799,12 @@ def get_scan_context(ticker, max_age_days=None):
 def avg_sell_price_since(conid, since_date):
     """Qty-weighted average SELL price for a conid since a date — the realized
     exit basis for §7 backfill suggestions. None when no sells exist yet."""
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT SUM(quantity * price) / SUM(quantity) AS avg_px FROM trades "
-        "WHERE conid = ? AND side = 'SELL' AND quantity > 0 AND date >= ?",
-        (str(conid), since_date or ""),
-    ).fetchone()
-    conn.close()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT SUM(quantity * price) / SUM(quantity) AS avg_px FROM trades "
+            "WHERE conid = ? AND side = 'SELL' AND quantity > 0 AND date >= ?",
+            (str(conid), since_date or ""),
+        ).fetchone()
     return float(row["avg_px"]) if row and row["avg_px"] is not None else None
 
 
@@ -841,13 +816,12 @@ def find_open_trade_log_id(conid):
     the last decision was closed out (a fresh lot starts a fresh row)."""
     if conid is None:
         return None
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT id FROM trade_log WHERE conid = ? AND status = ? AND realized_r IS NULL "
-        "ORDER BY id DESC LIMIT 1",
-        (str(conid), "TAKEN"),
-    ).fetchone()
-    conn.close()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM trade_log WHERE conid = ? AND status = ? AND realized_r IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (str(conid), "TAKEN"),
+        ).fetchone()
     return row["id"] if row else None
 
 
@@ -858,10 +832,9 @@ def update_trade_log_entry(entry_id, **fields):
     if not updates:
         return
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    conn = get_conn()
-    conn.execute(
-        f"UPDATE trade_log SET {set_clause} WHERE id = ?",
-        (*updates.values(), entry_id),
-    )
-    conn.commit()
-    conn.close()
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE trade_log SET {set_clause} WHERE id = ?",
+            (*updates.values(), entry_id),
+        )
+        conn.commit()

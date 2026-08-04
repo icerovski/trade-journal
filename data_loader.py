@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from contextlib import closing
 from typing import List
 import db
 from models import Trade
@@ -60,7 +61,6 @@ class DataLoader:
         """
         Loads all trades joined with ticker_info metadata.
         """
-        conn = DataLoader.get_connection()
         query = """
             SELECT 
                 t.date as TradeDate,
@@ -83,8 +83,10 @@ class DataLoader:
             FROM trades t
             LEFT JOIN ticker_info i ON t.conid = i.conid
         """
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        # closing=... rather than db.connect() so tests keep their seam on
+        # DataLoader.get_connection; a read_sql_query failure still closes.
+        with closing(DataLoader.get_connection()) as conn:
+            df = pd.read_sql_query(query, conn)
         return DataLoader.clean_trade_data(df)
 
     @classmethod
