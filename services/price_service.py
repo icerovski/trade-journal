@@ -318,27 +318,16 @@ class PriceService:
             conn.close()
         return float(row[0]) if row and row[0] is not None else None
 
-    def get_trend_analysis(self, conid: str, yf_ticker: str) -> dict:
-        """
-        Calculates the 200-DMA trend over the last 100 days.
-        Finds the consecutive undisturbed trend direction.
-        """
-        # Ensure we have the latest data
-        df = self.fetch_and_store(conid, yf_ticker)
-        
-        df = df.dropna(subset=['Close'])
-        if df.empty or len(df) < 200:
-            logger.warning(f"[get_trend_analysis] {yf_ticker} (conid={conid}): INSUFFICIENT_DATA rows={len(df)}")
-            return {"status": "INSUFFICIENT_DATA"}
-
-        # 1. Calculate 200-DMA for trend engine
-        dma200 = df['Close'].rolling(window=200).mean()
-        recent_dma = dma200.tail(100).dropna()
-        
-        if len(recent_dma) < 2:
-            return {"status": "INSUFFICIENT_DATA"}
-            
-        diffs = recent_dma.diff().dropna()
+    @staticmethod
+    def _series_trend(series: pd.Series, confirm_days: int = 21) -> dict:
+        """Slope direction + consecutive undisturbed days of a moving-average series
+        (last 100 bars). Returns {} when there is not enough data. The `signal`
+        flips to BUY/SELL once the run reaches `confirm_days` (21 for the 200-DMA;
+        faster lenses confirm sooner — see constants.REGIME_LENS_BANDS)."""
+        recent = series.tail(100).dropna()
+        if len(recent) < 2:
+            return {}
+        diffs = recent.diff().dropna()
         current_direction = 1 if diffs.iloc[-1] > 0 else -1
         consecutive_days = 0
         for val in diffs.iloc[::-1]:
@@ -347,24 +336,73 @@ class PriceService:
                 consecutive_days += 1
             else:
                 break
-                
         signal = "NEUTRAL"
-        if consecutive_days >= 21:
+        if consecutive_days >= confirm_days:
             signal = "BUY" if current_direction == 1 else "SELL"
-            
+        return {
+            "direction": "UP" if current_direction == 1 else "DOWN",
+            "consecutive_days": consecutive_days,
+            "signal": signal,
+        }
+
+    @staticmethod
+    def _wilder_atr_daily(df: pd.DataFrame, window: int = 14) -> float:
+        """Daily Wilder ATR via the same EWM method as core/stop_loss.py and
+        core/zone_scan.py (com=window-1, adjust=False), on the capitalized OHLC
+        columns this service loads. 0.0 when High/Low are unavailable."""
+        if not {'High', 'Low', 'Close'}.issubset(df.columns):
+            return 0.0
+        high, low, close = df['High'], df['Low'], df['Close']
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+        ).max(axis=1)
+        atr = tr.ewm(com=window - 1, min_periods=window, adjust=False).mean()
+        val = atr.iloc[-1]
+        return float(val) if pd.notna(val) else 0.0
+
+    def get_trend_analysis(self, conid: str, yf_ticker: str) -> dict:
+        """
+        Calculates the 200-DMA trend over the last 100 days.
+        Finds the consecutive undisturbed trend direction.
+        Also returns per-window (50/100/200) trends and a daily ATR14 for the
+        opt-in horizon regime lens — additive keys; `dma200_trend` is unchanged.
+        """
+        from constants import REGIME_LENS_BANDS
+
+        # Ensure we have the latest data
+        df = self.fetch_and_store(conid, yf_ticker)
+
+        df = df.dropna(subset=['Close'])
+        if df.empty or len(df) < 200:
+            logger.warning(f"[get_trend_analysis] {yf_ticker} (conid={conid}): INSUFFICIENT_DATA rows={len(df)}")
+            return {"status": "INSUFFICIENT_DATA"}
+
+        # 1. Calculate 200-DMA for trend engine
+        trend200 = self._series_trend(df['Close'].rolling(window=200).mean())
+        if not trend200:
+            return {"status": "INSUFFICIENT_DATA"}
+
+        # 1b. Faster-lens trends (horizon regime lens). Each window confirms at its
+        # own threshold so the displayed signal matches the lens's clock.
+        lens_confirm = {window: trend_min for _, window, trend_min, _ in REGIME_LENS_BANDS}
+        dma_trends = {200: trend200}
+        for window, confirm in lens_confirm.items():
+            t = self._series_trend(df['Close'].rolling(window=window).mean(), confirm_days=confirm)
+            if t:
+                dma_trends[window] = t
+
         # 2. Calculate Comprehensive Moving Averages (DMA & EMA)
         # We'll return 200, 100, 50, 10 for both Simple and Exponential
         tech = {}
         for window in [200, 100, 50, 10]:
             tech[f'DMA{window}'] = df['Close'].rolling(window=window).mean().iloc[-1]
             tech[f'EMA{window}'] = df['Close'].ewm(span=window, adjust=False).mean().iloc[-1]
-            
+
         return {
             "status": "OK",
             "dmas": tech, # tech contains both DMA and EMA now
-            "dma200_trend": {
-                "direction": "UP" if current_direction == 1 else "DOWN",
-                "consecutive_days": consecutive_days,
-                "signal": signal
-            }
+            "dma200_trend": trend200,
+            "dma_trends": dma_trends,              # {50: {...}, 100: {...}, 200: {...}}
+            "atr14_daily": self._wilder_atr_daily(df),  # lens-selection yardstick
         }

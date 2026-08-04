@@ -4,7 +4,7 @@ How to enter a stop-loss / sizing command in the Risk Workspace. The input box a
 one command of the form:
 
 ```
-VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [TP:n]  [C:TH/TE]  [G:gap]  [X:H/T]  [+N/-N]  [BE]
+VALUE [F/T]  [P:S/B/L]  [R:x]  [E:x]  [TP:n]  [C:TH/TE]  [G:gap]  [X:H/T]  [SRC:name]  [THM:theme]  [+N/-N]  [BE]
 ```
 
 Tokens can appear in any order. Only the parts you want to change are required —
@@ -102,43 +102,96 @@ reward:risk `(target − price)/(price − stop)`, flagged **⚠ below 3:1** if 
 
 ---
 
-## Entry & Stop System tokens (all optional, default-off)
+## Trade character — classify, shape the exit, size for gaps
 
-### `C:` — Trade classification (THESIS / TECHNICAL)
+These three tokens come from the **Entry & Stop System** (§0a, §5a, §6). They describe
+*what kind of trade this is* rather than where the stop sits. All are optional and
+default-off — omit them and the trade behaves exactly as before. Each is **sticky**: once
+saved it is preserved until you change it (`:-` clears it back to the default).
 
-Tags *why* the trade exists. Information only — no exit logic branches on it — but a
-classified commit also writes a row to the decision journal (`trade_log`) for the
-expectancy report (menu 9).
+### `C:TH` / `C:TE` — classify the idea (THESIS vs TECHNICAL)
 
-```
-C:TH           → tag THESIS   (own the story; exit when the story breaks)
-C:TE           → tag TECHNICAL (own the level; exit at the objective)
-C:-            → clear the tag
-```
+Tags *why you are in the trade*. The two are managed on different clocks, and blending
+them is the most common quiet loss — a multi-year fundamental hold exited on a 15%
+technical wobble that never invalidated the thesis.
 
-### `X:` — Exit shape (how the trade is banked)
+| Token | Classification | You're in because… | Invalidation is… |
+|---|---|---|---|
+| `C:TH` | **THESIS** | a fundamental case (often slow, multi-year) | the *fundamental* reason is gone |
+| `C:TE` | **TECHNICAL** | a structural setup (a defined chart level) | the structural stop |
+| `C:-` | *clear* | — | back to unset |
 
-Decided at entry alongside the stop. The default (no token) is the regime-aware
-M1/M2/TP ladder — scale out at the objective, runner behind the trailing stop.
-
-```
-X:H            → Hard target: bank the FULL position at TP, no runner
-X:T            → Thesis exit: no price target at all; stop/thesis only
-X:-            → back to the default ladder
-```
-
-*(`X:R` is still accepted as a legacy alias of the default ladder — it was never
-behaviourally distinct. There is no time stop: no shape exits on elapsed time.)*
-
-### `G:` — Gap-aware sizing (event risk)
-
-Supplies a plausible post-event gap price for a name entered through a catalyst.
-Sizing then risks against the **larger** of R₁ (entry − stop) and R_gap
-(entry − gap price), which can only shrink the size. Modeling shows a
-`GAP-SIZED @ …` chip.
+The tag is **carried and displayed** (a chip shows while you draft, and a classified commit
+writes a row to the decision journal for the expectancy report) — it does **not** itself
+change the stop. As a convenience, **`C:TH` auto-applies the thesis exit** (`X:T`, below) when
+you have not typed an explicit `X:` and the position is still on the default ladder — so a
+fundamental hold carries no guessed-at-entry target. Type `X:L` or `X:H` on the same commit
+to override.
 
 ```
-480 F G:440 P:B   → stop 480, but sized as if the exit fills at 440
+C:TH           → tag this position THESIS (fundamental clock)
+C:TE           → tag this position TECHNICAL (structural clock)
+15 T C:TH X:T  → trailing 15%, tagged THESIS, thesis-only exit (the full "one clock" pairing)
+```
+
+### `X:H` / `X:R` / `X:T` — exit shape (how you bank being right)
+
+Sets the **exit shape at entry**, alongside the stop. The stop says *where you're wrong*;
+the exit shape says *how you take the win*. They are two separate decisions — never let one
+imply the other.
+
+| Token | Shape | What it does |
+|---|---|---|
+| `X:L` | **Ladder** *(default)* | today's regime-aware M1/M2/TP ladder — scale out, trail a runner |
+| `X:R` | **Scale + runner** | same as the default ladder (explicit) — partial at objective, runner trails |
+| `X:H` | **Hard target** | a TECHNICAL setup with a defined objective: bank the **full** position at the TP stage, no runner |
+| `X:T` | **Thesis exit** | **drops the price target** entirely — exit on stop or broken thesis only |
+| `X:-` | *clear* | back to the default ladder |
+
+Only `X:H` and `X:T` change behaviour; both are opt-in hooks on the existing ladder.
+`X:T` is the natural partner of `C:TH` — a fundamental hold should not carry a
+guessed-at-entry price target.
+
+```
+X:H            → hard target: exit in full at the objective (defined TECHNICAL setup)
+X:T            → thesis exit: no target, ride until stop/thesis breaks
+X:R            → explicit scale-out + runner (same as default)
+```
+
+### `G:<price>` — gap-aware sizing (size for the gap, not the level)
+
+For names held through a known event (earnings/catalyst), a structural stop won't survive
+an overnight gap. `G:` supplies the **plausible post-event gap price** and sizes off
+`R_gap = entry − gap_price` instead of `R₁ = entry − stop` — so the position is small
+enough that the *gap*, not the clean stop, stays within your risk budget. Opt-in: omit it
+and sizing stays on the standard fixed-fractional path.
+
+```
+150 F G:135     → fixed stop 150, but size as if a stop-out slips to 135 (the gap)
+```
+
+If gap-aware sizing shrinks the trade to something not worth taking — that's the event gate
+working, not a bug.
+
+### `SRC:name` / `THM:theme` — journal the idea's origin
+
+Feeds the **decision journal** (Entry & Stop System §7) so the expectancy report can
+benchmark the *source* of your ideas, not just your execution. Single uppercase tokens,
+no spaces (e.g. `SRC:ZACKS`, `THM:SEMIS`, `THM:JAPAN`).
+
+- A commit carrying `SRC:` **or** `C:` writes a journal row (date, source, theme, tag,
+  entry, stop, R₁). No token → no row, exactly as before.
+- These are journal-only: they are *not* stored on the risk profile, so type them on the
+  commit that opens the trade.
+- The outcome fields (realized R, MAE/MFE, vs-benchmark) are backfilled **automatically**
+  when the position later closes — see the Expectancy report (menu 9).
+- The other half of the funnel — source picks you *didn't* take — is logged from the
+  **Watch List** (`L` key → skipped-pick form). After ~20–30 picks per source, menu 9
+  answers whether the source beats the benchmark at all.
+
+```
+@156 T C:TE X:H SRC:ZACKS THM:SEMIS   → full journal row: technical breakout from Zacks
+15% T C:TH SRC:OWN THM:JAPAN          → thesis hold, own research, Japan theme
 ```
 
 ---
@@ -171,6 +224,9 @@ can't be reached by buying, it says so.
 @655 T TP:3:1   → trailing floor at 655 AND target auto-set to 3:1 vs that stop
 TP:+35%         → set only the target to +35% from entry
 R:0.5           → change only the risk limit, keep everything else
+15 T C:TH X:T   → trailing 15%, THESIS trade, thesis-only exit (no price target)
+@200 F C:TE X:H → fixed floor 200, TECHNICAL trade, hard target (bank in full)
+150 F G:135     → fixed stop 150, sized for a plausible gap down to 135
 ```
 
 ---
@@ -185,10 +241,63 @@ When risk is YELLOW or RED the execution desk shows two paths:
 
 ---
 
+## Settings & entry gates — the `M` modal
+
+Press **`M`** to open the Presets / Settings modal. It edits three things that shape
+*every* trade, then persists them (`CTRL+ENTER` to commit the modal, `ESC` to cancel):
+
+- **Preset definitions** — the R% / Exposure% behind `P:S` / `P:B` / `P:L`. Change them
+  here and every future use of that preset (and existing profiles on it) updates.
+- **Action threshold (% of position)** — how far off-target a position must drift before
+  the workspace surfaces an *Add* / *Trim* action, filtering transaction noise
+  (default 10%; ≥10% remaining → Add, ≥5% → Trim).
+- **Entry gates (`off` / `advisory` / `blocking`)** — the §4 hard-gate check that runs on
+  commit (see below).
+- **Regime lens (`default` / `horizon`)** — which DMA the trim-driving regime is judged
+  on. `default` = 200-DMA for every position (today's behaviour). `horizon` = match the
+  lens to the horizon the **stop declares**: a stop about one daily ATR wide (e.g. a
+  leveraged-ETF trade) → 50-DMA with faster confirmation (TREND ≥ 10d); a weekly-ATR
+  stop → 100-DMA (≥ 15d); a wide monthly-ATR conviction stop → 200-DMA, unchanged. The
+  regime string names a non-default lens, e.g. `BUY (12d, DMA50)`.
+
+### Entry gates (G1–G8)
+
+An opt-in pre-trade validator (Entry & Stop System §4). On commit each drafted trade is
+run through eight gates; a gate is a **stop sign, not a size penalty**. Only an explicit
+**FAIL** blocks — a gate whose inputs are missing returns **NA** and never blocks, so
+partial context degrades gracefully.
+
+| Mode | What happens on commit |
+|---|---|
+| `off` *(default)* | gates never run — commits behave exactly as before |
+| `advisory` | gates run and warn, but the commit still goes through |
+| `blocking` | an explicit gate **FAIL** stops the commit until you fix or downgrade the mode |
+
+| Gate | Checks |
+|---|---|
+| G1 | Stop-width — `R₁ ≤ 1.5×ATR` and `R₁/entry ≤ 8%` (a wide stop = wrong location) |
+| G2 | Basis quality — tight `stop_source` and ≥2 *independent* confluent levels |
+| G3 | Not a fallback artifact — reject an unflagged MOMO row on a double-digit `VAL_*` stop |
+| G4 | Event — no new entry within N days of earnings/catalyst (size for the gap if held through) |
+| G5 | Extension — don't initiate > 2 ATR above the anchor you'd trail from (chasing) |
+| G6 | Liquidity — size ≤ a fraction of ADV; modeled slippage within budget |
+| G7 | Portfolio & theme heat — `Σ R%` over correlated names / themes ≤ heat cap |
+| G8 | Currency — measure R% and exposure in your base currency |
+
+Thresholds are tunables (`constants.py`, `GATE_*`), meant to be calibrated from the log —
+not laws. Full rationale in the **Stop Playbook** / Entry & Stop System guide.
+
+---
+
 ## Controls
 
 | Key | Action |
 |---|---|
 | `ENTER` | Model hypothetically — updates the grid without saving |
-| `CTRL+ENTER` | Commit permanently to the database |
-| `S` | Save all pending drafts at once |
+| `CTRL+ENTER` | Commit the current draft permanently to the database |
+| `S` | Save all pending drafts at once (runs the entry gates per mode) |
+| `M` | Open the Presets / Settings modal (presets, action threshold, gates mode) |
+| `G` | Launch the price chart (200-DMA, 5Y) for the selected row |
+| `R` | Refresh the portfolio from the ledger |
+| `F1` | Open this help |
+| `Q` | Back / exit the workspace |

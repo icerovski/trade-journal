@@ -145,6 +145,16 @@ Daily DMA change = `(today's close − close 200 days ago) / 200`. Because it av
 
 In a confirmed TREND the M2 trim is **0% (hold)** by design: trimming a confirmed compounder cuts the winner against the trend-following mandate. The trailing stop is the exit mechanism and profits are banked at TP. A `TRIM_MATRIX` fraction of `0.0` renders a "Hold — no trim" directive instead of a sell.
 
+**Horizon lens (opt-in — `regime_lens` setting).** The table above reads the 200-DMA for every position regardless of the trade's horizon, which mis-clocks short trades: a tight-stopped leveraged-ETF trade lives for weeks, and the 200-DMA barely moves within its lifetime. With `regime_lens = horizon` (Presets/Settings modal `M`; default `default` = today's behaviour), each position's regime is instead judged on a DMA matched to **the horizon its stop declares** — the frozen inception ATR measured in daily-ATR14 multiples (`select_regime_lens`):
+
+| Risk unit ÷ daily ATR14 | Lens | TREND ≥ | NORMAL ≥ |
+|---|---|---|---|
+| ≤ 1.6 (≈ daily-ATR stop) | 50-DMA | 10d | 5d |
+| ≤ 3.4 (≈ weekly-ATR stop) | 100-DMA | 15d | 7d |
+| wider, or missing data | 200-DMA | 21d | 10d (unchanged) |
+
+This mirrors the inception-ATR snapping the milestone ladder already does — the ladder and the regime then run on the same clock, both derived from the stop. TREND is gated on price being above the *lens* DMA; reversal hysteresis (3d) is shared. The `RegimeDMA` string names a non-default lens (e.g. `BUY (12d, DMA50)`), and `Position.regime_lens` carries the window. Classification (`C:`) stays carried-only — the lens keys off stop geometry, not the tag. Bands are tunables in `constants.REGIME_LENS_BANDS` (§8 governance: validate from the log).
+
 ### Exit Stages
 
 Milestones are anchored to `entry_price + N × R`, where `R` is the **inception ATR** (the ATR/risk unit at first entry) for **both** stop types. The ladder is uniform — M1=+1R, M2=+2R, TP=+3R from entry — and measures profit in *R-multiples*. Falls back to `entry − final_sl` if inception_atr is unavailable.
@@ -181,7 +191,7 @@ Orthogonal to the ATR exit ladder — it answers "is this capital working?", not
 ### Technical Implementation
 
 - **`core/stop_loss.py`** — `calculate_position_risk()` sets `tp_price` (entry-anchored, §3) and calls `profit_taking.compute_exit_milestones()` (§8), which computes `m1_price`, `m2_price`, `exit_stage`. Fields stored on the `Position` object.
-- **`core/profit_taking.py`** — `enrich_regime(positions, mapper)` sets `trend_regime`, `regime_dma`, `regime_dma_signal`, `regime_dma_days`, `regime_dma200` on each position via the 200-DMA consecutive-rising-days signal (TREND gated on price > 200-DMA). `TRIM_MATRIX` holds the `(stage, regime) → (fraction, rationale)` guidance. Called as step 4 in `portfolio_manager.get_dashboard_df()`.
+- **`core/profit_taking.py`** — `enrich_regime(positions, mapper, lens_mode="default")` sets `trend_regime`, `regime_dma`, `regime_dma_signal`, `regime_dma_days`, `regime_dma200`, `regime_lens` on each position via the DMA consecutive-rising-days signal (TREND gated on price > lens DMA; lens = 200-DMA unless `regime_lens = horizon`, which picks 50/100/200 per the stop's ATR horizon via `select_regime_lens`). `TRIM_MATRIX` holds the `(stage, regime) → (fraction, rationale)` guidance. Called as step 4 in `portfolio_manager.get_dashboard_df()`.
 - **`dashboard.py`** — EXIT column in main grid; EXIT MILESTONES sidebar panel with M1/M2 prices and trim share counts.
 - **`risk_workspace.py`** — the exit ladder is one input to the reconciled verdict that leads the asset context window (see §6). The full regime-calculation breakdown (raw ATRs, 200-DMA level vs current price, DMA signal with consecutive-day count, combined regime verdict) and the trim-action prose now live in that panel's demoted **DETAILS** block; the milestone ladder (✓ passed, ◄ current, dim future) sits in the top metric strip.
 
@@ -307,9 +317,10 @@ The **`F1` Help Desk** (Risk Workspace and Dashboard) is a tabbed reference rend
 
 The Risk Workspace Strategy Lab command line carries optional per-trade controls from the **Entry & Stop Selection System**. All are **additive and default-off** — a command that uses none of them behaves exactly as before.
 
-Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/T]`
+Full syntax: `VALUE [F/T] [P:S/B/L] [R:x] [E:x] [TP:n] [C:TH/TE] [G:gap] [X:H/T] [SRC:name] [THM:theme]`
 
 - **`C:` — Trade classification (THESIS / TECHNICAL).** `C:TH` tags the trade THESIS, `C:TE` TECHNICAL, `C:-` clears it. The tag is carried on the position and shown as a chip in the panel header. It is **information only** — no exit logic branches on it. A classified commit also writes to the decision journal (`trade_log`) — **one row per open lot**: re-committing the same position updates its open row rather than appending a duplicate (duplicates would double-count the lot in the expectancy report); once the lot's outcome is backfilled, the next commit starts a fresh row. **§0a coupling:** `C:TH` with no explicit `X:` token (and no stored non-default shape) auto-applies the **thesis-exit** shape — one clock per trade, no guessed-at-entry price target. Override any time with `X:L` or `X:H`.
+- **`SRC:` / `THM:` — Idea source and theme (§0a, §7).** Single uppercase tokens (`SRC:ZACKS THM:SEMIS`) that ride the commit into the decision journal — journal-only, never stored on the risk profile. A commit carrying `SRC:` or `C:` writes the journal row (date, source, theme, classification, entry, stop, R₁); the outcome fields are backfilled automatically when the position closes (§11).
 - **`X:` — Exit shape (§5a).** How the trade is *banked*, decided at entry alongside the stop. Two shapes beyond the default:
     - `X:H` **Hard target** — a defined objective (TECHNICAL): bank the full position at the target, no runner.
     - `X:T` **Thesis exit** — **no price target**: the position carries no TP and is exited on the stop or a broken thesis only.
@@ -345,7 +356,7 @@ Thresholds live in `constants.py` (`GATE_*`) and are meant to be tuned from the 
 
 ### Expectancy Report
 
-Menu option **9** renders the decision journal (`trade_log`) and is also its **capture point** (§7). The report itself is a pure read; after it renders, a small action loop offers the only journal writes:
+Menu option **9** renders the decision journal (`trade_log`) and is also its **capture point** (§7). Before the report renders, `core/outcome_backfill.py` runs an **automated pass** — filling realized R, MAE/MFE, and result-vs-benchmark on closed lots and refreshing skipped picks against the benchmark to date. The report itself is a pure read; after it renders, a small action loop offers manual journal writes for anything the automated pass could not settle:
 
 - **`B` — backfill closed lots.** Open journal rows whose position has since closed are listed with a **ledger-suggested realized R** — `(qty-weighted average SELL price − entry) / R₁` from the `trades` table. Enter accepts the suggestion, a typed value overrides it, `s` skips. Nothing is written unconfirmed; rows without usable geometry fall back to manual input.
 - **`K` — log a skipped source pick** (§0a): ticker, source (defaults to Stansberry), optional note; the entry price is auto-resolved from Yahoo when possible so the funnel benchmark has an anchor. Works even when the journal is empty — this is how it stops being dark.
@@ -355,6 +366,17 @@ Menu option **9** renders the decision journal (`trade_log`) and is also its **c
 - **Base-currency return** — total and average realized return in the book's base currency over closed trades.
 
 Empty and short logs are handled gracefully. Engine: `core/expectancy.py`; view: `ui/expectancy_report.py`.
+
+**Automated outcome backfill (`core/outcome_backfill.py`).** Opening the report first runs the backfill that closes the §7 loop, so the journal's outcome fields never depend on manual entry:
+
+- **Closed TAKEN rows** (`realized_r` NULL): the position's close is detected from the `trades` ledger — the first quantity zero-crossing after the log date, mirroring `LedgerEngine` sign conventions (reset-on-zero re-entries and prior lots are excluded; a **split inside the window bails out** rather than compute a wrong R). Exit price = qty-weighted average of the close-out sells. Writes `realized_r = (exit − entry)/R₁`, `mae_r`/`mfe_r` (worst/best excursion in R from cached daily bars), and `result_vs_benchmark` (pick return − benchmark return over the same window).
+- **SKIPPED rows**: `result_vs_benchmark` is refreshed *to date* on every run — the funnel verdict for picks not taken.
+- **Benchmark**: the `benchmark_ticker` setting (default `SPY`), cached in `prices.db` under the pseudo-conid `BENCHMARK:<ticker>`.
+- `realized_return_base` is deliberately **not** backfilled: the FX rate at exit is not recorded, and today's rate would fabricate history. NULL until an FX-at-exit source exists.
+
+Unresolvable rows (still open, missing entry/stop/conid, mid-window split) are counted and left untouched — never guessed. A summary line prints before the report.
+
+**Feeding the journal.** Taken trades: commit with `SRC:`/`C:` in the Strategy Lab (§10). Skipped picks: the Watch List **`L` key** opens a small form (ticker prefilled from the selected row, source required, theme optional) and writes a `SKIPPED` row with today's date and the best available price — the pick need not be on the watch list.
 
 ### Horizon Calibration Lens
 

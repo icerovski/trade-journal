@@ -48,6 +48,15 @@ counter-trend day crashing a long TREND straight to RANGING, a reversal shorter 
 days** is treated as *unconfirmed* and the regime is held one notch up at NORMAL. The PLAN
 panel labels this "DMA reversed Nd (< 3, unconfirmed) → held at NORMAL".
 
+**Horizon lens (opt-in).** By default every position is judged on the 200-DMA — a slow,
+structural clock that barely moves within the lifetime of a short, tight-stopped trade.
+Setting **Regime lens = `horizon`** (the `M` settings modal in the Risk Workspace) matches
+the lens to the horizon the *stop* declares: a stop about one daily ATR wide → **50-DMA**
+(TREND ≥ 10d, NORMAL ≥ 5d); a weekly-ATR stop → **100-DMA** (15d/7d); a wide monthly-ATR
+conviction stop → the 200-DMA table above, unchanged. Time is a function of risk — the
+tighter the stop, the faster the clock the trade is judged on. A non-default lens is named
+in the regime string, e.g. `BUY (12d, DMA50)`.
+
 ---
 
 ## Exit stages

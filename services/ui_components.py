@@ -14,6 +14,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # updates the F1 help automatically; there are no hardcoded help strings to drift.
 HELP_FILES = [
     ("User Guide",    "docs/guides/User_Guide.md"),
+    ("Rhythm",        "docs/guides/Operating_Rhythm.md"),
     ("Glossary",      "docs/guides/Indicator_Glossary.md"),
     ("Stop Playbook", "docs/guides/Stop_Placement_Playbook.md"),
     ("Entry & Stops", "docs/guides/Entry_and_Stop_System.md"),
