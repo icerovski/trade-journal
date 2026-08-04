@@ -980,14 +980,23 @@ class RiskWorkspace(App):
                 capital_str = ""
 
             # Compact metric strip: the three audit axes + stop integrity on one line.
-            r_pct, e_pct = res['current_risk_pct'], res['current_exposure_pct']
-            r_c = 'red' if r_pct > active_max_r * 1.5 else ('yellow' if r_pct > active_max_r else 'green')
-            e_c = 'red' if e_pct > active_max_exp * 1.1 else ('yellow' if e_pct >= active_max_exp else 'green')
+            # RR and the stop buffer are pure price geometry and stay valid without NAV;
+            # R% and exposure% do not. Printing them as 0.00% would read as "no risk"
+            # when the truth is "not computed", so they are replaced outright.
             eff_c = 'green' if efficiency >= 2.0 else ('yellow' if efficiency >= 1.0 else 'red')
             buf_c = 'green' if is_safe else 'red'
+            if not res.get('nav_known', True):
+                risk_cells = "[bold yellow]R n/a   Exp n/a[/][dim] (NAV unavailable)[/]"
+            else:
+                r_pct, e_pct = res['current_risk_pct'], res['current_exposure_pct']
+                r_c = 'red' if r_pct > active_max_r * 1.5 else ('yellow' if r_pct > active_max_r else 'green')
+                e_c = 'red' if e_pct > active_max_exp * 1.1 else ('yellow' if e_pct >= active_max_exp else 'green')
+                risk_cells = (
+                    f"R [bold {r_c}]{r_pct:.2f}%[/][dim]/{active_max_r}[/]   "
+                    f"Exp [bold {e_c}]{e_pct:.2f}%[/][dim]/{active_max_exp}[/]"
+                )
             strip = (
-                f"  R [bold {r_c}]{r_pct:.2f}%[/][dim]/{active_max_r}[/]   "
-                f"Exp [bold {e_c}]{e_pct:.2f}%[/][dim]/{active_max_exp}[/]   "
+                f"  {risk_cells}   "
                 f"RR [bold {eff_c}]{efficiency:.2f}[/]   "
                 f"[{buf_c}]{'SAFE' if is_safe else 'BREACH'} {buffer:.0f}% buf[/]\n"
             )

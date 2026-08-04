@@ -227,7 +227,9 @@ These axes are orthogonal *inputs* but must collapse to one action. Left unrecon
 
 > Exposure headroom sizes a **new or early** position. It is never licence to add to a winner that has reached a profit-taking stage.
 
-Precedence, strict order: **breach → exit-stage ladder → sizing add/trim → hold.** (The former "urgent RR-floor exit" tier was removed with the RR efficiency floor — RR is informational only; see §5.) At an exit stage the ladder governs and any exposure headroom is reported but muted ("3.4% exposure room exists, but no adds at target"). This is enforced in both the panel verdict and the table **ACTION** column, so the row and the panel can never disagree.
+Precedence, strict order: **breach → explicit `+N/-N/BE` model → exit-stage ladder → sizing add/trim → hold.** (The former "urgent RR-floor exit" tier was removed with the RR efficiency floor — RR is informational only; see §5.) At an exit stage the ladder governs and any exposure headroom is reported but muted ("3.4% exposure room exists, but no adds at target"). This is enforced in both the panel verdict and the table **ACTION** column, so the row and the panel can never disagree.
+
+**When NAV is unavailable.** A failed IBKR sync leaves NAV at 0, and every arm below the exit ladder divides by it. Rather than reporting "HOLD — within all limits" — which would assert a limit check that never ran — the panel gives **NAV UNAVAILABLE — sizing suspended**, replaces the R% and Exp% cells with `R n/a  Exp n/a`, and suppresses the sizing table. The arms *above* that line are unaffected, because none of them needs NAV: a **stop breach is a pure price comparison and is still reported**, a `+N/-N/BE` model is arithmetic on quantity, and the exit ladder reads stage and regime. Re-run SYNC ALL to restore sizing.
 
 ### Single source of truth
 

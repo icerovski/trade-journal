@@ -215,6 +215,16 @@ def decide_verdict(*, audit: dict, qty: float, price: float, max_exp_pct: float,
             sub += f"  [dim]({headroom:.1f}% exposure room exists, but no adds at target.)[/]"
         return Verdict(exit_rec['color'], exit_rec['headline'], sub, int(qty))
 
+    # Everything above this line is computable without NAV — a breach is a price
+    # comparison, a user model is arithmetic on quantity, the ladder reads stage and
+    # regime. Everything BELOW divides by NAV. With no NAV there is no room figure,
+    # so saying "HOLD — within all limits" would assert a limit check that never ran.
+    if not audit.get('nav_known', True):
+        return Verdict('yellow', "NAV UNAVAILABLE — sizing suspended",
+                       "Portfolio NAV could not be read, so R% and exposure cannot be "
+                       "computed. Re-run SYNC ALL (menu 1) before sizing this trade.",
+                       int(qty))
+
     if room > 0:
         target = int(qty + room)
         return Verdict('green', f"ADD +{room} sh",

@@ -242,16 +242,48 @@ def test_no_projection_when_no_transaction_is_implied():
                   entry=100.0, stop=90.0).sizing is None                     # nothing held yet
 
 
-def test_zero_nav_raises_known_defect():
-    """Carried over from the pre-extraction behaviour, deliberately unchanged.
+# --------------------------------------------------------------------------
+# NAV unavailable (a failed IBKR sync returns 0.0)
+# --------------------------------------------------------------------------
+def test_zero_nav_suspends_sizing_rather_than_asserting_safety():
+    # "HOLD — within all limits" would assert a limit check that never ran.
+    m = _model(total_nav=0.0)
+    assert m.verdict.label == "NAV UNAVAILABLE — sizing suspended"
+    assert m.verdict.target_qty == 1000       # no trade suggested
+    assert m.room == 0
+    assert m.sizing is None                   # no projection without a denominator
+    assert m.audit["nav_known"] is False
 
-    `audit_position_risk` early-returns on `nav <= 0` with a dict that omits
-    `adjustment`, so the engine raises. Reachable in practice — `fetch_nav_data`
-    returns 0.0 when the IBKR download fails. Fixing it is a behaviour change and
-    belongs in its own commit; pinned here so the extraction is provably neutral.
-    """
-    with pytest.raises(KeyError, match="adjustment"):
-        _model(total_nav=0.0)
+
+def test_zero_nav_still_detects_a_breach():
+    # Pure price geometry — losing this would be the worst failure of a degraded panel.
+    m = _model(_position(current_price=90.0, sl_price=95.0), total_nav=0.0)
+    assert m.audit["is_breached"] is True
+    assert m.verdict.label == "EXIT NOW — stop breached"
+    assert m.verdict.target_qty == 0
+
+
+def test_zero_nav_preserves_the_arms_that_do_not_need_nav():
+    # A user model is arithmetic on quantity; the ladder reads stage and regime.
+    assert _model(total_nav=0.0, add=50).verdict.label == "MODELING: ADD 50 sh"
+    laddered = _model(_position(exit_stage="M2"), total_nav=0.0, exit_recommender=_exit_rec())
+    assert laddered.verdict.label == "TRIM ~330 sh (33%)"
+
+
+def test_zero_nav_audit_dict_has_the_same_keys_as_a_normal_one():
+    # The original defect was a PARTIAL dict. Key parity is the actual fix.
+    from core.stop_loss import audit_position_risk
+    normal = audit_position_risk(110.0, 95.0, 100.0, 1000.0, 1.0, NAV)
+    degraded = audit_position_risk(110.0, 95.0, 100.0, 1000.0, 1.0, 0.0)
+    assert set(degraded) == set(normal)
+
+
+def test_zero_nav_never_suggests_a_size():
+    from core.stop_loss import audit_position_risk
+    degraded = audit_position_risk(110.0, 95.0, 100.0, 1000.0, 1.0, 0.0)
+    assert degraded["adjustment"] == 0.0
+    assert degraded["stop_to_restore"] is None and degraded["shares_to_trim"] is None
+    assert degraded["status_color"] == "GRAY"      # not assessable, not "fine"
 
 
 def test_add_projection_blends_the_average_cost():

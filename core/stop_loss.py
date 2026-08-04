@@ -20,13 +20,33 @@ def audit_position_risk(
     Evaluate a position against two hard limits: Risk-at-Stop and Total Market Exposure.
     Returns remaining capital budget for both constraints.
     HCM (Higher of Cost or Market) is used for exposure. All values normalized to NAV currency.
+
+    Every return carries the SAME keys, including the degraded `nav <= 0` path — a
+    partial dict is how a caller ends up raising KeyError on a failed NAV download
+    (`fetch_nav_data` returns 0.0 when the IBKR Flex fetch fails). Consumers must
+    check `nav_known` before showing any percentage: with no NAV the R and exposure
+    figures are 0.0 as a placeholder, and 0.0 read as a real reading means "no risk",
+    which is the opposite of "unknown".
+
+    `status_color` ∈ {GREEN, YELLOW, RED, GRAY}; GRAY means "not assessable".
     """
     if nav <= 0:
+        # NAV unknown: percentages are undefined, but the stop breach is not — it is
+        # a pure price comparison and remains the most important thing on the panel.
+        breached = bool(current_price and current_price <= stop)
         return {
-            "status_color": "RED",
-            "risk_budget_remaining": 0.0,
-            "exposure_budget_remaining": 0.0,
-            "is_breached": False,
+            "status_color": "RED" if breached else "GRAY",
+            "current_risk_pct": 0.0,
+            "current_exposure_pct": 0.0,
+            "risk_budget_rem": 0.0,
+            "exposure_budget_rem": 0.0,
+            "adjustment": 0.0,        # no NAV, no sizing — never suggest a trade
+            "is_breached": breached,
+            "max_r_pct": max_r_pct,
+            "max_exp_pct": max_exp_pct,
+            "stop_to_restore": None,
+            "shares_to_trim": None,
+            "nav_known": False,
         }
 
     risk_val = (entry_price - stop) * qty * multiplier * fx_rate
@@ -82,6 +102,7 @@ def audit_position_risk(
         "max_exp_pct": max_exp_pct,
         "stop_to_restore": stop_to_restore,
         "shares_to_trim": shares_to_trim,
+        "nav_known": True,
     }
 
 

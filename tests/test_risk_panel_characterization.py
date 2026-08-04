@@ -168,6 +168,10 @@ SCENARIOS = {
     "r_budget_breached":            (dict(qty=5000.0, sl_price=80.0, max_r_pct=1.0), {}, {}),
     "no_stop_assigned":             (dict(sl_price=None, exit_stage=""), {}, {}),
     "thesis_shape_no_target":       (dict(exit_shape="THESIS", tp_price=None), {}, {}),
+    # NAV unreadable (a failed IBKR sync returns 0.0). Percentages are suppressed,
+    # but the stop breach is pure price geometry and must survive.
+    "zero_nav":                     ({}, {"total_nav": 0.0}, {}),
+    "zero_nav_breached":            (dict(current_price=90.0, sl_price=95.0), {"total_nav": 0.0}, {}),
     "classification_chip":          (dict(classification="THESIS"), {}, {}),
     "gap_sized_chip":               ({}, {"draft": _draft(gap_price=85.0)}, {}),
     "modeling_header_only":         ({}, {"draft": _draft()}, {}),
@@ -222,23 +226,31 @@ def test_every_scenario_actually_renders():
         assert _render(name), f"scenario '{name}' rendered nothing"
 
 
-def test_zero_nav_raises_keyerror_known_defect():
-    """Documents a PRE-EXISTING defect, deliberately not fixed by the extraction.
+def test_zero_nav_renders_a_degraded_panel_instead_of_crashing():
+    """A failed IBKR sync leaves NAV at 0.0. That must degrade, not throw.
 
-    `audit_position_risk` early-returns on `nav <= 0` with a four-key dict that
-    omits `adjustment` (and names the budget keys `*_remaining` where the normal
-    path returns `*_rem`). `refresh_risk_checklist` then does `int(res['adjustment'])`
-    and raises. NAV reaching 0 is reachable in practice: `fetch_nav_data` returns
-    `0.0, "???"` when the IBKR Flex download fails, so a failed sync makes selecting
-    a row in the risk workspace throw.
-
-    Pinned here so the refactor is proven to change nothing, including this. Fixing
-    it is a behaviour change and belongs in its own commit — at which point this
-    test should be replaced by one asserting the correct degraded render.
+    Previously `audit_position_risk` early-returned a four-key dict omitting
+    `adjustment`, so selecting a row after a failed sync raised KeyError. Now the
+    panel renders and says what it cannot compute.
     """
-    ws = _Workspace(_position(), total_nav=0.0)
-    with pytest.raises(KeyError, match="adjustment"):
-        ws.render()
+    panel = _Workspace(_position(), total_nav=0.0).render()
+    assert "NAV UNAVAILABLE — sizing suspended" in panel
+    assert "R n/a" in panel and "Exp n/a" in panel
+    # Never print a percentage that would read as a real, safe measurement.
+    # "<pct>%[/][dim]/<limit>" is the signature of the R% and Exp% cells specifically
+    # — RR and the stop buffer stay, since neither needs NAV.
+    assert "%[/][dim]/" not in panel
+    assert "RR [bold" in panel and "buf" in panel
+    # No sizing table without a denominator.
+    assert "BAL-BEG" not in panel
+
+
+def test_zero_nav_still_reports_a_stop_breach():
+    # The breach is a price comparison and does not need NAV. Losing it would be
+    # the most dangerous possible failure mode for a degraded panel.
+    panel = _Workspace(_position(current_price=90.0, sl_price=95.0), total_nav=0.0).render()
+    assert "EXIT NOW — stop breached" in panel
+    assert "BREACH" in panel
 
 
 def _verdict_line(name):
