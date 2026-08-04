@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from models import Position, ATRDiscoveryRow
-from db import update_high_water_mark
 from services.price_service import PriceService
 from logger import logger
 from constants import RISK_RED_MULTIPLIER, EXPOSURE_RED_MULTIPLIER, TP_ATR_MULTIPLE, ATR_DISCOVERY_INTERVALS
@@ -152,9 +151,13 @@ def calculate_position_risk(position: Position, risk_settings: dict) -> Position
     position.exit_shape = normalize_shape(getattr(profile, 'exit_shape', None))
 
     # 2. Ratchet Rule (High-Water Mark)
+    # Pure: an advanced stop is REPORTED on the position, not written here. This
+    # runs once per position inside the dashboard enrichment loop, and the ratchet
+    # is monotonic and permanent — a write buried in a read path means one bad
+    # price tick raises a stop for good, with nothing in the call stack saying so.
+    # PortfolioManager._enrich_metrics owns the write and batches it.
     final_sl = max(calculated_sl, highest_sl)
-    if final_sl > highest_sl:
-        update_high_water_mark(position.conid, final_sl)
+    position.pending_ratchet = final_sl if final_sl > highest_sl else None
     position.sl_price = final_sl
 
     # 3. Take Profit

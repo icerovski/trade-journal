@@ -107,12 +107,11 @@ def test_exit_milestones_falls_back_to_mark_price():
 
 # --- TP anchoring in calculate_position_risk (#1 regression) ---------------
 
-def test_trailing_ladder_uses_inception_atr_not_live(monkeypatch):
+def test_trailing_ladder_uses_inception_atr_not_live():
     """Regression (AVGO): the TRAILING ladder/TP must use the inception ATR (original R),
     not the live trailing ATR. Otherwise the milestones drift away as volatility expands
     and a healthy winner gets mislabelled as an early stage. The live ATR sets only the
     stop. Also covers the prior stop-anchored TP collision (TP must not equal M2)."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p = _pos(entry_price=100.0, current_price=130.0, max_since_entry=140.0)
     # Live ATR (atr_value) = 20 has expanded well beyond the inception ATR (R) = 5.
     profile = RiskProfile(conid="1", ticker="TST", atr_value=20.0, stop_type="TRAILING",
@@ -126,8 +125,7 @@ def test_trailing_ladder_uses_inception_atr_not_live(monkeypatch):
     assert p.sl_price == pytest.approx(120.0)
 
 
-def test_fixed_tp_is_entry_anchored(monkeypatch):
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
+def test_fixed_tp_is_entry_anchored():
     p = _pos(entry_price=100.0, current_price=112.0)
     # FIXED: atr_value holds the stop *price*; inception_atr is the true ATR distance.
     profile = RiskProfile(conid="1", ticker="TST", atr_value=95.0, stop_type="FIXED",
@@ -136,9 +134,8 @@ def test_fixed_tp_is_entry_anchored(monkeypatch):
     assert p.tp_price == pytest.approx(100.0 + TP_ATR_MULTIPLE * 5.0)  # 115
 
 
-def test_fixed_tp_fallback_uses_entry_minus_stop(monkeypatch):
+def test_fixed_tp_fallback_uses_entry_minus_stop():
     """When inception_atr is missing, the ATR for TP falls back to entry - final_sl."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p = _pos(entry_price=100.0, current_price=112.0)
     profile = RiskProfile(conid="1", ticker="TST", atr_value=95.0, stop_type="FIXED",
                           highest_sl=0.0, inception_atr=None)
@@ -149,10 +146,9 @@ def test_fixed_tp_fallback_uses_entry_minus_stop(monkeypatch):
 
 # --- TP override (extendable R-ladder) -------------------------------------
 
-def test_tp_override_extends_target(monkeypatch):
+def test_tp_override_extends_target():
     """A per-position tp_atr_mult lifts the TP to that multiple of the *inception* ATR,
     leaving M1/M2 on the original 1R/2R rungs and using the frozen ATR (not the live one)."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p = _pos(entry_price=100.0, current_price=130.0, max_since_entry=140.0)
     # Live ATR (20) ≫ inception (5): the override must still anchor to inception.
     profile = RiskProfile(conid="1", ticker="TST", atr_value=20.0, stop_type="TRAILING",
@@ -165,8 +161,7 @@ def test_tp_override_extends_target(monkeypatch):
     assert p.tp_atr_mult == pytest.approx(5.0)
 
 
-def test_tp_override_none_is_default_3r(monkeypatch):
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
+def test_tp_override_none_is_default_3r():
     p = _pos(entry_price=100.0, current_price=112.0)
     profile = RiskProfile(conid="1", ticker="TST", atr_value=95.0, stop_type="FIXED",
                           highest_sl=0.0, inception_atr=5.0, tp_atr_mult=None)
@@ -176,9 +171,8 @@ def test_tp_override_none_is_default_3r(monkeypatch):
     assert p.tp_atr_mult == pytest.approx(TP_ATR_MULTIPLE)
 
 
-def test_tp_override_recomputes_rr(monkeypatch):
+def test_tp_override_recomputes_rr():
     """RR efficiency picks up the overridden target rather than the default 3R."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p_def = _pos(entry_price=100.0, current_price=110.0)
     calculate_position_risk(p_def, {"1": RiskProfile(conid="1", ticker="TST", atr_value=90.0,
                             stop_type="FIXED", highest_sl=0.0, inception_atr=5.0)})
@@ -191,9 +185,8 @@ def test_tp_override_recomputes_rr(monkeypatch):
     assert p_ovr.rr_ratio == pytest.approx(1.5)    # (140-110)/(110-90)
 
 
-def test_tp_override_shifts_exit_stage(monkeypatch):
+def test_tp_override_shifts_exit_stage():
     """Extending the target keeps a position that ran past the default 3R in an earlier stage."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     # current 122 ≥ default TP(115) → would be TP; with a 5R override (125) it is still M2.
     p = _pos(entry_price=100.0, current_price=122.0, max_since_entry=122.0)
     profile = RiskProfile(conid="1", ticker="TST", atr_value=3.0, stop_type="TRAILING",
@@ -214,26 +207,23 @@ def _fixed_stop_pos(current_price):
     return p
 
 
-def test_risk_val_live_equals_planned_above_stop(monkeypatch):
+def test_risk_val_live_equals_planned_above_stop():
     """While price holds above the stop, the live figure equals the planned stop-out."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p = _fixed_stop_pos(current_price=110.0)
     assert p.risk_val == pytest.approx(-50.0)        # (95 - 100) * 10
     assert p.risk_val_live == pytest.approx(-50.0)   # price above stop -> planned holds
 
 
-def test_risk_val_live_degrades_below_stop(monkeypatch):
+def test_risk_val_live_degrades_below_stop():
     """Once price breaches the stop, the realisable exit is the live price, so the
     figure degrades past the planned stop-out and tracks the price down."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p = _fixed_stop_pos(current_price=90.0)          # 5 below the 95 stop
     assert p.risk_val == pytest.approx(-50.0)        # planned unchanged
     assert p.risk_val_live == pytest.approx(-100.0)  # (90 - 100) * 10
 
 
-def test_risk_val_live_recovers_on_reclaim(monkeypatch):
+def test_risk_val_live_recovers_on_reclaim():
     """Exactly at the stop the live figure snaps back to the planned value."""
-    monkeypatch.setattr("core.stop_loss.update_high_water_mark", lambda *a, **k: None)
     p = _fixed_stop_pos(current_price=95.0)          # back at the stop
     assert p.risk_val_live == pytest.approx(-50.0)
 

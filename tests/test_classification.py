@@ -95,8 +95,7 @@ def _position():
     return p
 
 
-def test_classification_carried_onto_position(monkeypatch):
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
+def test_classification_carried_onto_position():
     profile = RiskProfile(
         conid="999", ticker="TST", atr_value=90.0, stop_type="FIXED",
         highest_sl=0.0, inception_stop=90.0, inception_atr=10.0,
@@ -107,8 +106,7 @@ def test_classification_carried_onto_position(monkeypatch):
     assert p.classification == "THESIS"
 
 
-def test_untagged_position_classification_empty(monkeypatch):
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
+def test_untagged_position_classification_empty():
     profile = RiskProfile(
         conid="999", ticker="TST", atr_value=90.0, stop_type="FIXED",
         highest_sl=0.0, inception_stop=90.0, inception_atr=10.0,

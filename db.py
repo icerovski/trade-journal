@@ -475,11 +475,35 @@ def close_risk_profile(conid, end_date):
     conn.commit()
     conn.close()
 
+_RATCHET_SQL = ("UPDATE risk_profiles SET highest_sl = MAX(highest_sl, ?) "
+                "WHERE conid = ? AND status = 'ACTIVE'")
+
 def update_high_water_mark(conid, sl_price):
     conn = get_conn()
-    conn.execute("UPDATE risk_profiles SET highest_sl = MAX(highest_sl, ?) WHERE conid = ? AND status = 'ACTIVE'", (float(sl_price), str(conid)))
+    conn.execute(_RATCHET_SQL, (float(sl_price), str(conid)))
     conn.commit()
     conn.close()
+
+def update_high_water_marks(pairs):
+    """Advance several trailing stops in one transaction.
+
+    `pairs` is an iterable of (conid, sl_price). The batched form exists because
+    the ratchet is computed for every position on every dashboard refresh — one
+    connection per position turned a read into dozens of writes. `MAX(highest_sl, ?)`
+    keeps the rule in SQL: a stop only ever moves in the trader's favour, so an
+    out-of-order or stale batch can never lower one.
+
+    An empty batch opens no connection — an idle refresh stays genuinely read-only.
+    """
+    rows = [(float(sl), str(conid)) for conid, sl in pairs]
+    if not rows:
+        return
+    conn = get_conn()
+    try:
+        conn.executemany(_RATCHET_SQL, rows)
+        conn.commit()
+    finally:
+        conn.close()
 
 def reset_inception_on_reopen(conid, new_start_date):
     """Clear the stale ratchet and frozen inception for a position that went flat (reset-on-zero)
@@ -544,26 +568,64 @@ def get_ticker_info(conid):
     conn.close()
     return row
 
+# Upsert that never overwrites a known value with a blank one: every field
+# COALESCEs to the stored value when the incoming one is empty, so a sparse feed
+# (a CSV missing ISINs, say) enriches the asset master instead of eroding it.
+_TICKER_INFO_UPSERT = """
+    INSERT INTO ticker_info (conid, ticker_ibkr, ticker_yfinance, isin, asset_class, multiplier, description, listing_exchange, currency, underlying_symbol, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(conid) DO UPDATE SET
+        ticker_ibkr = excluded.ticker_ibkr,
+        ticker_yfinance = COALESCE(NULLIF(excluded.ticker_yfinance, ''), ticker_info.ticker_yfinance),
+        isin = COALESCE(NULLIF(excluded.isin, ''), ticker_info.isin),
+        asset_class = COALESCE(NULLIF(excluded.asset_class, ''), ticker_info.asset_class),
+        multiplier = COALESCE(excluded.multiplier, ticker_info.multiplier),
+        description = COALESCE(NULLIF(excluded.description, ''), ticker_info.description),
+        listing_exchange = COALESCE(NULLIF(excluded.listing_exchange, ''), ticker_info.listing_exchange),
+        currency = COALESCE(NULLIF(excluded.currency, ''), ticker_info.currency),
+        underlying_symbol = COALESCE(NULLIF(excluded.underlying_symbol, ''), ticker_info.underlying_symbol),
+        last_updated = CURRENT_TIMESTAMP
+"""
+
+
+def _ticker_info_params(conid, ticker_ibkr, ticker_yfinance=None, isin=None, asset_class=None,
+                        multiplier=None, description=None, listing_exchange=None,
+                        currency=None, underlying_symbol=None):
+    """Bind order for _TICKER_INFO_UPSERT. Single source so the row and bulk forms
+    cannot drift apart."""
+    m_val = float(multiplier) if multiplier is not None and str(multiplier).strip() != '' else 1.0
+    return (str(conid), ticker_ibkr.upper(), ticker_yfinance, isin, asset_class, m_val,
+            description, listing_exchange, currency, underlying_symbol)
+
+
 def save_ticker_info(conid, ticker_ibkr, ticker_yfinance=None, isin=None, asset_class=None, multiplier=None, description=None, listing_exchange=None, currency=None, underlying_symbol=None):
     conn = get_conn()
-    m_val = float(multiplier) if multiplier is not None and str(multiplier).strip() != '' else 1.0
-    conn.execute("""
-        INSERT INTO ticker_info (conid, ticker_ibkr, ticker_yfinance, isin, asset_class, multiplier, description, listing_exchange, currency, underlying_symbol, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(conid) DO UPDATE SET
-            ticker_ibkr = excluded.ticker_ibkr,
-            ticker_yfinance = COALESCE(NULLIF(excluded.ticker_yfinance, ''), ticker_info.ticker_yfinance),
-            isin = COALESCE(NULLIF(excluded.isin, ''), ticker_info.isin),
-            asset_class = COALESCE(NULLIF(excluded.asset_class, ''), ticker_info.asset_class),
-            multiplier = COALESCE(excluded.multiplier, ticker_info.multiplier),
-            description = COALESCE(NULLIF(excluded.description, ''), ticker_info.description),
-            listing_exchange = COALESCE(NULLIF(excluded.listing_exchange, ''), ticker_info.listing_exchange),
-            currency = COALESCE(NULLIF(excluded.currency, ''), ticker_info.currency),
-            underlying_symbol = COALESCE(NULLIF(excluded.underlying_symbol, ''), ticker_info.underlying_symbol),
-            last_updated = CURRENT_TIMESTAMP
-    """, (str(conid), ticker_ibkr.upper(), ticker_yfinance, isin, asset_class, m_val, description, listing_exchange, currency, underlying_symbol))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(_TICKER_INFO_UPSERT, _ticker_info_params(
+            conid, ticker_ibkr, ticker_yfinance, isin, asset_class, multiplier,
+            description, listing_exchange, currency, underlying_symbol))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_ticker_info_bulk(rows):
+    """Upsert many asset-master rows in one transaction.
+
+    `rows` is an iterable of dicts keyed like `save_ticker_info`'s parameters. Used
+    by the broker-snapshot parse, which previously opened one connection per
+    position — 45 writes buried inside what reads as a pure CSV read. An empty
+    batch opens no connection.
+    """
+    params = [_ticker_info_params(**row) for row in rows]
+    if not params:
+        return
+    conn = get_conn()
+    try:
+        conn.executemany(_TICKER_INFO_UPSERT, params)
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_yf_ticker(ticker_ibkr):
     conn = get_conn()

@@ -116,6 +116,10 @@ class Position:
     entry_type: str = "SINGLE"
     scale_step: float = 0.5
     sl_price: Optional[float] = None
+    # A newly advanced trailing stop that the CALLER must persist, or None when the
+    # ratchet did not move. Risk calculation is pure — it reports what changed and
+    # the owner of writes (PortfolioManager._enrich_metrics) commits it in one batch.
+    pending_ratchet: Optional[float] = None
     inception_stop: Optional[float] = None
     inception_atr: Optional[float] = None
     tp_price: Optional[float] = None

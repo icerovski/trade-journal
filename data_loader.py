@@ -181,6 +181,9 @@ class DataLoader:
             report_date_raw = summaries['ReportDate'].iloc[0]
             report_date = pd.to_datetime(report_date_raw, errors='coerce')
             broker_data = {}
+            # Asset-master rows are COLLECTED during the parse and written once at
+            # the end. Reading a CSV should not open a database connection per row.
+            asset_master_rows = []
             
             # Use ClientAccountID if available to support isolation
             acct_col = next((c for c in ['ClientAccountID', 'AccountId'] if c in summaries.columns), 'AccountId')
@@ -209,8 +212,7 @@ class DataLoader:
                 entry = group['CostBasisPrice'].iloc[0] if 'CostBasisPrice' in group.columns else 0
                 isin_val = group['ISIN'].iloc[0] if 'ISIN' in group.columns else np.nan
                 
-                # Update Asset Master during snapshot
-                db.save_ticker_info(
+                asset_master_rows.append(dict(
                     conid=conid_str,
                     ticker_ibkr=group['Symbol'].iloc[0],
                     isin=str(isin_val),
@@ -219,8 +221,8 @@ class DataLoader:
                     description=group['Description'].iloc[0],
                     listing_exchange=group['ListingExchange'].iloc[0],
                     currency=group['CurrencyPrimary'].iloc[0],
-                    underlying_symbol=group['UnderlyingSymbol'].iloc[0]
-                )
+                    underlying_symbol=group['UnderlyingSymbol'].iloc[0],
+                ))
 
                 broker_data[key] = {
                     'account_id': acct_str,
@@ -241,6 +243,7 @@ class DataLoader:
                     'FXRateToEUR': group['FXRateToEUR'].iloc[0]
                 }
             
+            db.save_ticker_info_bulk(asset_master_rows)
             logger.info(f"Successfully loaded {len(broker_data)} positions from {path.name}")
             return broker_data, report_date
         except Exception as e:

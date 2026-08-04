@@ -65,8 +65,7 @@ def _profile(exit_shape=None):
                        exit_shape=exit_shape)
 
 
-def test_default_shape_keeps_target(monkeypatch):
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
+def test_default_shape_keeps_target():
     p = _position()
     calculate_position_risk(p, {"1": _profile(None)})
     assert p.exit_shape == SHAPE_LADDER
@@ -74,8 +73,7 @@ def test_default_shape_keeps_target(monkeypatch):
     assert p.exit_stage in ("M1", "M2", "PRE-M1", "TP")
 
 
-def test_thesis_shape_drops_target(monkeypatch):
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
+def test_thesis_shape_drops_target():
     p = _position()
     calculate_position_risk(p, {"1": _profile(SHAPE_THESIS)})
     assert p.exit_shape == SHAPE_THESIS
@@ -85,8 +83,7 @@ def test_thesis_shape_drops_target(monkeypatch):
     assert p.sl_price == pytest.approx(90.0)      # stop still governs the exit
 
 
-def test_hard_and_runner_keep_target(monkeypatch):
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
+def test_hard_and_runner_keep_target():
     for shape in (SHAPE_HARD_TARGET, SHAPE_SCALE_RUNNER):
         p = _position()
         calculate_position_risk(p, {"1": _profile(shape)})
@@ -126,10 +123,9 @@ def test_hard_target_only_changes_tp_stage():
 # --------------------------------------------------------------------------
 # No time stop
 # --------------------------------------------------------------------------
-def test_no_time_stop_ancient_position_not_forced_out(monkeypatch):
+def test_no_time_stop_ancient_position_not_forced_out():
     """A very old position with an intact stop and (thesis) no target is never forced
     out by elapsed time — no shape adds a time-based exit."""
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
     p = _position()
     p.date_entry = pd.Timestamp("2000-01-01")   # decades old
     calculate_position_risk(p, {"1": _profile(SHAPE_THESIS)})

@@ -148,9 +148,7 @@ def _make_position(**over):
     return p
 
 
-def _exit_ladder_cases(monkeypatch):
-    # Never touch the DB from a snapshot test.
-    monkeypatch.setattr(stop_loss, "update_high_water_mark", lambda *a, **k: None)
+def _exit_ladder_cases():
 
     out = {}
     fields = [
@@ -213,7 +211,7 @@ def test_phase0_golden_master(monkeypatch):
         "scanner": _scanner_cases(),
         "sizing": _sizing_cases(),
         "regime": _regime_cases(),
-        "exit_ladder": _exit_ladder_cases(monkeypatch),
+        "exit_ladder": _exit_ladder_cases(),
     })
 
     if not GOLDEN.exists():

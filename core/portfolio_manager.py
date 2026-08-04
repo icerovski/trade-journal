@@ -9,7 +9,7 @@ from services.market_data_service import MarketDataService
 from .profit_taking import enrich_regime
 from .asset_registry import AssetRegistry
 from .reconciliation_service import ReconciliationService
-from db import get_all_risk_settings, reset_inception_on_reopen, get_setting
+from db import get_all_risk_settings, reset_inception_on_reopen, update_high_water_marks, get_setting
 from .stop_loss import calculate_position_risk
 from models import Position
 from logger import logger
@@ -186,11 +186,22 @@ class PortfolioManager:
                         p.date_entry = profile_date
 
     def _enrich_metrics(self, positions: list[Position], risk_settings: dict, total_nav: float | None):
-        """Calculates performance and risk metrics for all positions."""
+        """Calculates performance and risk metrics for all positions.
+
+        This method owns the one write the enrichment pipeline performs: advancing
+        trailing stops. `calculate_position_risk` is pure and only reports which
+        stops moved (`pending_ratchet`); they are committed here in a single
+        transaction. Nothing is written when no stop advanced, so an idle refresh
+        is genuinely read-only.
+        """
         # Calculate financial metrics (P/L, AAGR, Age)
         for p in positions:
             p.calculate_financial_metrics()
             calculate_position_risk(p, risk_settings)
+
+        ratchets = [(p.conid, p.pending_ratchet) for p in positions if p.pending_ratchet]
+        if ratchets:
+            update_high_water_marks(ratchets)
 
         # Calculate NAV Exposure %
         total_mv = sum(p.market_value * p.fx_rate for p in positions)
@@ -225,7 +236,12 @@ class PortfolioManager:
         if not open_list:
             logger.warning("No open positions found in Hybrid mode.")
 
-        # Consolidation Logic & Prospect Promotion
+        # A watch-list idea that now appears in the book has been bought: retire the
+        # WATCH row and carry its settings onto the real conid. An explicit step —
+        # it is a state transition, and it used to hide inside the WAC merge below,
+        # where nothing suggested a read could rewrite risk profiles.
+        self._promote_bought_prospects(open_list)
+
         if not account_id:
             open_list = self._consolidate_positions(open_list)
 
@@ -238,12 +254,27 @@ class PortfolioManager:
 
         return open_list
 
-    def _consolidate_positions(self, open_list: list[Position]) -> list[Position]:
-        """Merges positions sharing the same conid across accounts using WAC."""
+    def _promote_bought_prospects(self, open_list: list[Position]) -> None:
+        """Promote any WATCH prospect that now appears in the book.
+
+        Deliberately keyed off the held positions rather than the watch list: only
+        a position that actually exists proves the idea was taken. `promote_...` is
+        a cheap no-op when there is no matching WATCH row, and it never raises — an
+        existing ACTIVE profile wins and the redundant prospect is retired.
+        """
+        if not open_list:
+            return
         from db import promote_prospect_to_active
-        consolidated = {}
         for p in open_list:
             promote_prospect_to_active(p.ticker, p.conid)
+
+    def _consolidate_positions(self, open_list: list[Position]) -> list[Position]:
+        """Merges positions sharing the same conid across accounts using WAC.
+
+        Pure: arithmetic over the list it is given, no persistence.
+        """
+        consolidated = {}
+        for p in open_list:
             c_id = str(p.conid)
             if c_id not in consolidated:
                 consolidated[c_id] = p

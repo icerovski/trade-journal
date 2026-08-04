@@ -9,7 +9,7 @@ from textual.message import Message
 from textual import on, work
 
 from core.portfolio_manager import PortfolioManager
-from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data
+from core.stop_loss import get_atr_discovery_data
 from core.trade_log import TradeLogEntry, STATUS_SKIPPED
 from services.market_data_service import fetch_ticker_currency
 from db import get_all_monitored_profiles, delete_risk_profile, set_position_risk, get_presets, add_trade_log_entry

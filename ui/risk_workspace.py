@@ -14,7 +14,7 @@ from textual import on, work
 
 from core.portfolio_manager import PortfolioManager, resolve_prospect_fx
 from core.profit_taking import TRIM_MATRIX
-from core.stop_loss import audit_position_risk, calculate_position_risk, get_atr_discovery_data, snap_inception_atr
+from core.stop_loss import audit_position_risk, get_atr_discovery_data, snap_inception_atr
 from services.market_data_service import fetch_ticker_currency
 from core.ui_utils import UIUtils
 from .chart_utils import launch_price_chart

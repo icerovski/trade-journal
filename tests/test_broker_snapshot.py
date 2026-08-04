@@ -103,11 +103,14 @@ def test_asset_master_is_updated_from_the_snapshot(snapshot, _no_db_writes):
     snapshot(AAPL_SUMMARY)
     _load()
 
-    kwargs = _no_db_writes.save_ticker_info.call_args.kwargs
-    assert kwargs["conid"] == "12345"
-    assert kwargs["ticker_ibkr"] == "AAPL"
-    assert kwargs["isin"] == "US0378331005"
-    assert kwargs["asset_class"] == "STK"
+    # Collected during the parse, written once at the end (see test_write_boundaries).
+    rows = _no_db_writes.save_ticker_info_bulk.call_args.args[0]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["conid"] == "12345"
+    assert row["ticker_ibkr"] == "AAPL"
+    assert row["isin"] == "US0378331005"
+    assert row["asset_class"] == "STK"
 
 
 # --------------------------------------------------------------------------
